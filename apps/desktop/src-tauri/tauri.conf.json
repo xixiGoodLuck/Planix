@@ -6,7 +6,7 @@
   "identifier": "com.planix.app",
   "build": {
     "beforeDevCommand": "powershell -ExecutionPolicy Bypass -File ../../scripts/dev-desktop.ps1",
-    "devUrl": "http://127.0.0.1:5173",
+    "devUrl": "http://127.0.0.1:5176",
     "beforeBuildCommand": "powershell -ExecutionPolicy Bypass -File ../../scripts/build-web.ps1",
     "frontendDist": "resources"
   },

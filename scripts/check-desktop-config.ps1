@@ -28,7 +28,7 @@ if ($Config.mainBinaryName -ne "planix") {
     throw "Unexpected mainBinaryName: $($Config.mainBinaryName)"
 }
 
-if ($Config.build.devUrl -ne "http://127.0.0.1:5173") {
+if ($Config.build.devUrl -ne "http://127.0.0.1:5176") {
     throw "Unexpected devUrl: $($Config.build.devUrl)"
 }
 
@@ -72,7 +72,7 @@ if ($Resources.'resources/binaries/planix-api.exe' -ne "resources/binaries/plani
     throw "Desktop bundle must copy resources/binaries/planix-api.exe."
 }
 
-$WebEntryPath = Join-Path $Root "apps\web\index.html"
+$WebEntryPath = Join-Path $Root "Frontend\index.html"
 if (-not (Test-Path $WebEntryPath)) {
     throw "Missing frontend entry: $WebEntryPath"
 }

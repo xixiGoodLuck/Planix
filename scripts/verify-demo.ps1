@@ -1,5 +1,5 @@
 param(
-  [string]$ApiBaseUrl = "http://127.0.0.1:8000"
+  [string]$ApiBaseUrl = "http://127.0.0.1:8003"
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,19 +68,19 @@ try {
 }
 
 Invoke-Step "Backend compile" {
-  & $Python -m compileall backend
+  & $Python -m compileall Backend\backend
 }
 
 Invoke-Step "Backend golden demo tests" {
   & $Python -m pytest -p no:cacheprovider --basetemp $PytestTemp `
-    backend\tests\test_planning.py `
-    backend\tests\test_command.py `
-    backend\tests\test_runtime.py `
-    backend\tests\test_health.py
+    Backend\backend\tests\test_planning.py `
+    Backend\backend\tests\test_command.py `
+    Backend\backend\tests\test_runtime.py `
+    Backend\backend\tests\test_health.py
 }
 
 Invoke-Step "Frontend typecheck" {
-  Push-Location apps\web
+  Push-Location Frontend
   try {
     & npx.cmd tsc -b
   } finally {
@@ -89,7 +89,7 @@ Invoke-Step "Frontend typecheck" {
 }
 
 Invoke-Step "Frontend key tests" {
-  Push-Location apps\web
+  Push-Location Frontend
   try {
     & npm.cmd run test
   } finally {

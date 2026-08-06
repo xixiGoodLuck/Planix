@@ -1,5 +1,5 @@
 param(
-    [string]$Url = "http://127.0.0.1:8000/api/health",
+    [string]$Url = "http://127.0.0.1:8003/api/health",
     [int]$TimeoutSeconds = 30
 )
 

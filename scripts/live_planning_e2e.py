@@ -31,7 +31,7 @@ from urllib.parse import urlsplit
 import httpx
 
 
-DEFAULT_BASE_URL = "http://127.0.0.1:8000"
+DEFAULT_BASE_URL = "http://127.0.0.1:8003"
 RETRY_MESSAGE = "请重试当前深度规划"
 STRATEGY_APPROVAL_MESSAGE = "确认方向"
 
@@ -117,8 +117,8 @@ _SENSITIVE_LABEL_PATTERN = re.compile(
 )
 
 SOURCE_FINGERPRINT_ROOTS = (
-    Path("backend/app"),
-    Path("apps/web/src"),
+    Path("Backend/backend/app"),
+    Path("Frontend/src"),
     Path("scripts/live_planning_e2e.py"),
 )
 

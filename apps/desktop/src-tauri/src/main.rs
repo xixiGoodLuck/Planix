@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{path::BaseDirectory, Emitter, Manager, WindowEvent};
 
 const DESKTOP_LOG_MAX_BYTES: u64 = 1_000_000;
-const API_PORT: &str = "8000";
+const API_PORT: &str = "8003";
 
 fn api_port() -> String {
     std::env::var("PLANIX_API_PORT").unwrap_or_else(|_| API_PORT.to_string())
@@ -419,7 +419,7 @@ fn poll_api_health(port: String, log_path: PathBuf) {
         }
 
         let message = format!(
-            "Planix backend did not become ready within 30 seconds. Port 8000 may be busy or the installation may be incomplete.\n\nLog: {}",
+            "Planix backend did not become ready within 30 seconds. Port 8003 may be busy or the installation may be incomplete.\n\nLog: {}",
             log_path.display()
         );
         write_log(&log_path, "sidecar health check failed after 30 seconds");
@@ -453,11 +453,11 @@ fn pipe_sidecar_output(
                                 || lower.contains("normally permitted"));
                         if port_conflict && !conflict_reported {
                             conflict_reported = true;
-                            write_log(&log_path, "port 8000 is already in use");
+                            write_log(&log_path, "port 8003 is already in use");
                             show_error(
                                 "Planix",
                                 &format!(
-                                    "Planix backend failed to start because port 8000 is already in use.\nClose the program using port 8000 and try again.\n\nLog: {}",
+                                    "Planix backend failed to start because port 8003 is already in use.\nClose the program using port 8003 and try again.\n\nLog: {}",
                                     log_path.display()
                                 ),
                             );
@@ -564,7 +564,7 @@ fn main() {
                         || err.contains("No connection could be made");
                     if !is_port_closed {
                         let msg = format!(
-                            "Planix backend failed to start because port 8000 is being used by another program.\nClose the program using port 8000 and try again.\n\nDiagnostic: {err}"
+                            "Planix backend failed to start because port 8003 is being used by another program.\nClose the program using port 8003 and try again.\n\nDiagnostic: {err}"
                         );
                         write_log(
                             &log_path,
@@ -667,7 +667,7 @@ fn main() {
                 Ok(result) => result,
                 Err(err) => {
                     let message = format!(
-                        "Planix backend failed to start. Port 8000 may be busy or the installation may be incomplete.\nRestart the computer and try again, or check the log.\n\nLog: {}",
+                        "Planix backend failed to start. Port 8003 may be busy or the installation may be incomplete.\nRestart the computer and try again, or check the log.\n\nLog: {}",
                         log_path.display()
                     );
                     write_log(&log_path, format!("sidecar start failure: {err}"));

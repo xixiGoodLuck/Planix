@@ -21,7 +21,7 @@ $DesktopDir = Join-Path $Root "apps\desktop"
 $TauriBundleDir = Join-Path $DesktopDir "src-tauri\target\release\bundle"
 $NsisTargetDir = Join-Path $TauriBundleDir "nsis"
 $MsiTargetDir = Join-Path $TauriBundleDir "msi"
-$WebIndexPath = Join-Path $Root "apps\web\dist\index.html"
+$WebIndexPath = Join-Path $Root "Frontend\dist\index.html"
 $DesktopResourceIndexPath = Join-Path $Root "apps\desktop\src-tauri\resources\index.html"
 $SidecarPath = Join-Path $Root "apps\desktop\src-tauri\resources\binaries\planix-api.exe"
 

@@ -2,7 +2,7 @@ param(
     [string]$InstallerPath = "",
     [string]$InstalledDir = "",
     [switch]$InstallMsi,
-    [string]$ApiBaseUrl = "http://127.0.0.1:8000",
+    [string]$ApiBaseUrl = "http://127.0.0.1:8003",
     [int]$TimeoutSeconds = 45,
     [switch]$UseRealLlm
 )

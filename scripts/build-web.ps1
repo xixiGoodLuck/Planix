@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
-$WebDir = Join-Path $Root "apps\web"
+$WebDir = Join-Path $Root "Frontend"
 $IndexPath = Join-Path $WebDir "index.html"
 $DistIndexPath = Join-Path $WebDir "dist\index.html"
 $DesktopResourcesDir = Join-Path $Root "apps\desktop\src-tauri\resources"
@@ -21,25 +21,25 @@ try {
     if (Test-Path "node_modules") {
         npm.cmd install
         if ($LASTEXITCODE -ne 0) {
-            throw "npm install failed for apps/web."
+            throw "npm install failed for Frontend."
         }
     }
     elseif (Test-Path "package-lock.json") {
         npm.cmd ci
         if ($LASTEXITCODE -ne 0) {
-            throw "npm ci failed for apps/web."
+            throw "npm ci failed for Frontend."
         }
     }
     else {
         npm.cmd install
         if ($LASTEXITCODE -ne 0) {
-            throw "npm install failed for apps/web."
+            throw "npm install failed for Frontend."
         }
     }
 
     npm.cmd run build
     if ($LASTEXITCODE -ne 0) {
-        throw "npm run build failed for apps/web."
+        throw "npm run build failed for Frontend."
     }
 
     if (-not (Test-Path $DistIndexPath)) {

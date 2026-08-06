@@ -37,7 +37,7 @@ datas += copy_metadata("pydantic")
 
 a = Analysis(
     [str(entry)],
-    pathex=[str(ROOT)],
+    pathex=[str(ROOT / "Backend")],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
