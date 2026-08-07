@@ -3,12 +3,12 @@ import json
 import httpx
 import pytest
 
-from backend.app.db import get_conn
-from backend.app.services.ai_settings import EffectiveAiSettings
-from backend.app.services.ai_settings import ModelRoutingRuleConfig
-from backend.app.services import llm as llm_module
-from backend.app.services import model_provider
-from backend.app.services.model_provider import (
+from app.db import get_conn
+from app.services.ai_settings import EffectiveAiSettings
+from app.services.ai_settings import ModelRoutingRuleConfig
+from app.services import llm as llm_module
+from app.services import model_provider
+from app.services.model_provider import (
     ModelCallError,
     ModelCallRequest,
     ModelCallResult,
