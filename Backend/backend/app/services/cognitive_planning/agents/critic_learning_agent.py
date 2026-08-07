@@ -54,7 +54,8 @@ repair instructions that target the weakest dimensions.
 Before returning the first critique, complete the entire audit and report every blocker/major finding together;
 do not reveal one issue per repair round.
 Treat stated weekly availability as a capacity ceiling unless the Goal explicitly makes it a minimum or exact
-commitment; unused capacity is valid. Treat "within N weeks" as a latest deadline unless the Goal explicitly says
+commitment; unused capacity is valid. Never require a catch-up task or require task minutes to equal the full
+capacity merely to represent slack. Treat "within N weeks" as a latest deadline unless the Goal explicitly says
 exactly N weeks. Never elevate important/optional unknowns or accepted assumptions to blocker/major findings; use
 verification and fallback instead. The ExecutionBlueprint schema permits at most 10 tasks, so never request more;
 group recurring sessions. sourceRef is optional: without a verified Evidence source, selection criteria,
@@ -64,7 +65,14 @@ the primary plan solely because the contingency extends the timeline. When previ
 is present, use it only for continuity, not as authority: independently re-audit the current formal artifacts and
 first verify every prior blocker/major repair. A new blocker/major must state in evidence whether it was
 introduced_by_revision or previously_missed. Never reverse a compliant prior repair or prescribe a contradictory
-repair.
+repair. Before repeating a prior finding, quote the exact current field that still violates it; if the current
+artifact contains the requested change, treat that finding as resolved and do not repeat it.
+currentReviewContext identifies the only current Artifact versions and deterministic validator result. Treat it as
+authoritative for structural facts. supersededReviewHistory is audit-only and must never establish a current issue.
+criticPolicy is also authoritative: when spendingBudget.explicitInGoal is false, never attribute a spending cap to
+the Goal, even if Execution contains an advisory budgetSummary. When numericExecutionFacts has no allocationIssues
+and every periodSlack is non-negative, do not report a capacity overflow from narrative wording. In policy_repair
+mode, remove every finding listed in violationsToCorrect instead of repeating or paraphrasing it.
 """.strip()
 
 
@@ -99,6 +107,7 @@ class CriticLearningAgent:
         critic_policy_violations: list[dict[str, Any]] | None = None,
     ) -> AgentResult[PlanCritiqueReport]:
         policy_payload = dict(critic_policy or {})
+        review_context = policy_payload.pop("currentReviewContext", None)
         policy_payload.update(
             {
                 "enforcement": "deterministic_semantic_policy",
@@ -122,10 +131,19 @@ class CriticLearningAgent:
             "executionBlueprint": execution.model_dump(by_alias=True),
             "criticPolicy": policy_payload,
         }
+        if review_context:
+            payload["currentReviewContext"] = review_context
         if previous_critique is not None:
-            payload["previousCritiqueReport"] = previous_critique.model_dump(by_alias=True)
-        if repair_history:
-            payload["repairHistory"] = list(repair_history)
+            payload["supersededReviewHistory"] = {
+                "previousCritiqueReport": previous_critique.model_dump(by_alias=True),
+                "repairHistory": list(repair_history or []),
+                "authority": "audit_only",
+            }
+        elif repair_history:
+            payload["supersededReviewHistory"] = {
+                "repairHistory": list(repair_history),
+                "authority": "audit_only",
+            }
         if critic_policy_violations:
             payload["criticPolicyViolations"] = list(critic_policy_violations)
         return self.model.complete_contract(

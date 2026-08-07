@@ -15,8 +15,6 @@ from .contracts import (
 
 
 _APPROVAL_POLICY_GATES: dict[ApprovalGate, PolicyGate] = {
-    "strategy": "strategy_approval",
-    "execution": "execution_approval",
     "calendar": "calendar_approval",
 }
 
@@ -100,48 +98,17 @@ class PolicyEngine:
         *,
         session_id: str,
         planning_mode: str,
-        strategy_artifact: ArtifactRef | None,
         execution_artifact: ArtifactRef | None,
         critic: CriticGateResult | None,
         approvals: Sequence[ApprovalRecord],
     ) -> PolicyDecision:
         required: tuple[PolicyGate, ...] = (
-            "strategy_approval",
-            "execution_approval",
             "critic",
             "calendar_approval",
         )
         failed: list[PolicyGate] = []
         if planning_mode != "model_backed":
             failed.append("runtime")
-
-        strategy_approved = bool(
-            strategy_artifact
-            and strategy_artifact.session_id == session_id
-            and strategy_artifact.kind == "strategy_portfolio"
-            and _has_approval(
-                approvals,
-                session_id=session_id,
-                gate="strategy",
-                artifact=strategy_artifact,
-            )
-        )
-        if not strategy_approved:
-            failed.append("strategy_approval")
-
-        execution_approved = bool(
-            execution_artifact
-            and execution_artifact.session_id == session_id
-            and execution_artifact.kind == "execution_blueprint"
-            and _has_approval(
-                approvals,
-                session_id=session_id,
-                gate="execution",
-                artifact=execution_artifact,
-            )
-        )
-        if not execution_approved:
-            failed.append("execution_approval")
 
         critic_passed = bool(
             critic
@@ -174,14 +141,12 @@ class PolicyEngine:
                 subject="calendar_write",
                 action="allow",
                 allowed=True,
-                reason="Strategy, execution, independent Critic, and Calendar approval gates all passed for the current artifact versions.",
+                reason="The independent review and Calendar approval gates passed for the current artifact versions.",
                 sessionId=session_id,
                 requiredGates=required,
             )
 
         approval_order: tuple[tuple[PolicyGate, ApprovalGate], ...] = (
-            ("strategy_approval", "strategy"),
-            ("execution_approval", "execution"),
             ("calendar_approval", "calendar"),
         )
         required_approval = next((gate for policy_gate, gate in approval_order if policy_gate in failed), None)

@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from app.main import app  # noqa: E402
 from app.schemas import GoalUnderstandingResult, ModelUsage  # noqa: E402
@@ -16,9 +17,6 @@ from app.services.command_agent import detect_command_intent  # noqa: E402
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'planix-test.db'}")
     monkeypatch.setenv("USE_REAL_LLM", "0")
-    monkeypatch.delenv("PLANIX_USE_LANGGRAPH_PLANNING", raising=False)
-    monkeypatch.delenv("PLANIX_USE_COGNITIVE_PLANNING", raising=False)
-    monkeypatch.setenv("PLANIX_COGNITIVE_MODE", "false")
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("AI_API_KEY", raising=False)
 

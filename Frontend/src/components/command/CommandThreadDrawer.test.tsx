@@ -5,7 +5,7 @@ import { CommandThreadDrawer } from './CommandThreadDrawer';
 const labels: Record<string, string> = {
   'command.workspaceRunning': 'Running',
   'command.workspaceClarification': 'Needs clarification',
-  'command.workspaceStrategyApproval': 'Strategy approval',
+  'command.workspaceWaitingConfirmation': 'Waiting for confirmation',
   'command.workspaceModelBlocked': 'Model blocked',
   'command.workspaceAccepted': 'Acceptance passed',
   'command.workspaceUnconfirmed': 'Input unconfirmed',

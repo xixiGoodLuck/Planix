@@ -4,15 +4,15 @@ This document maps the Phase 7 product requirements to code and automated eviden
 
 ## Canonical Runtime
 
-- Entry point: `backend/app/cognitive_planning/runtime.py`
-- Graph: `backend/app/cognitive_planning/graph/planning_graph.py`
-- Contracts: `backend/app/cognitive_planning/contracts/artifacts.py`
-- Agents: `backend/app/cognitive_planning/agents`
-- User Model Memory: `backend/app/cognitive_planning/memory/user_model.py`
-- Critic invariants: `backend/app/cognitive_planning/evaluation/critic_rules.py`
-- P Mode adapter: `backend/app/services/command_agent.py`
+- Entry point: `Backend/backend/app/cognitive_planning/runtime.py`
+- Graph: `Backend/backend/app/cognitive_planning/graph/planning_graph.py`
+- Contracts: `Backend/backend/app/cognitive_planning/contracts/artifacts.py`
+- Agents: `Backend/backend/app/cognitive_planning/agents`
+- User Model Memory: `Backend/backend/app/cognitive_planning/memory/user_model.py`
+- Shared execution and Calendar invariants: `Backend/backend/app/services/cognitive_planning/evaluation/deterministic_guards.py`
+- P Mode adapter: `Backend/backend/app/services/command_agent.py`
 
-`PLANIX_COGNITIVE_MODE=true` selects the canonical runtime. Phase 6 services, legacy Planning Session snapshots, and Workbench Runtime remain compatibility paths.
+The canonical planning runtime is always selected; there is no planning feature flag or executable legacy fallback. Existing generic Harness, checkpoint, artifact, memory, and Calendar infrastructure remains shared.
 
 ## Behavioral Gates
 
@@ -30,7 +30,7 @@ This document maps the Phase 7 product requirements to code and automated eviden
 
 ## Golden Scenarios
 
-Automated coverage lives in `backend/tests/planning_evals/test_cognitive_kernel.py`.
+Automated coverage lives in `Backend/backend/tests/planning_evals/test_cognitive_kernel.py`.
 
 1. **Swimming**: the model discovers safety, training environment, target standard, and time horizon; project, internship, and README templates are forbidden.
 2. **Xinjiang travel**: Reality and Evidence address season and long-distance transport without asking software-career questions or using a static resource catalog as the decision source.
@@ -41,9 +41,10 @@ Automated coverage lives in `backend/tests/planning_evals/test_cognitive_kernel.
 ## Validation
 
 ```powershell
-python -m compileall backend
-.\.venv\Scripts\python.exe -m pytest backend\tests
-cd apps\web
+cd Backend
+..\.venv\Scripts\python.exe -m compileall backend
+..\.venv\Scripts\python.exe -m pytest backend\tests
+cd ..\Frontend
 npx.cmd tsc -b
 npm.cmd run lint
 npm.cmd run test

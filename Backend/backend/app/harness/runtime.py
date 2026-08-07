@@ -52,9 +52,8 @@ _NODE_BY_AGENT = {
 }
 
 _WAIT_BY_NODE = {
-    "wait_for_goal_answer": "user_input",
-    "wait_for_strategy_approval": "strategy_approval",
-    "wait_for_execution_approval": "execution_approval",
+    "wait_for_understanding": "user_input",
+    "wait_for_final_review": "user_input",
 }
 
 
@@ -223,10 +222,6 @@ class HarnessRuntime:
             lifecycle = "waiting"
             waiting_state = "user_input"
             pending_agent = None
-        elif decision.action == SchedulerAction.WAIT_APPROVAL:
-            lifecycle = "waiting"
-            waiting_state = _WAIT_BY_NODE.get(decision.next_node, "none")
-            pending_agent = None
         elif decision.action == SchedulerAction.COMPLETE:
             pending_agent = None
         elif decision.action == SchedulerAction.RECOVER:
@@ -240,7 +235,6 @@ class HarnessRuntime:
             SchedulerAction.INVOKE_AGENT: "invoke_agent",
             SchedulerAction.INVOKE_CONTROLLER: "invoke_agent",
             SchedulerAction.WAIT_USER: "wait_user",
-            SchedulerAction.WAIT_APPROVAL: "wait_approval",
             SchedulerAction.REPAIR: "repair_artifact",
             SchedulerAction.RECOVER: "invoke_agent",
             SchedulerAction.BLOCK: "block_runtime",
@@ -290,10 +284,6 @@ class HarnessRuntime:
         graph_state: Mapping[str, Any],
         decision: SchedulerDecision,
     ) -> tuple[SchedulerDecision, PolicyDecision]:
-        approvals = HumanApprovalController(persistent.approvals)
-        strategy = persistent.checkpoint.artifact_refs.get("strategy_portfolio")
-        execution = persistent.checkpoint.artifact_refs.get("execution_blueprint")
-
         runtime_blocked = persistent.lifecycle == "blocked"
         if runtime_blocked and decision.action != SchedulerAction.RECOVER:
             decision = SchedulerDecision(
@@ -308,63 +298,7 @@ class HarnessRuntime:
                 next_agent=persistent.pending_agent,
             )
 
-        if decision.next_node in {"execution", "calendar_gate"}:
-            if not strategy or not approvals.is_approved(
-                session_id=persistent.session_id,
-                gate="strategy",
-                artifact=strategy,
-            ):
-                decision = SchedulerDecision(
-                    action=SchedulerAction.WAIT_APPROVAL,
-                    next_node="wait_for_strategy_approval",
-                    reason_code="strategy_approval_required_for_current_version",
-                )
-        if decision.next_node == "calendar_gate":
-            if not execution or not approvals.is_approved(
-                session_id=persistent.session_id,
-                gate="execution",
-                artifact=execution,
-            ):
-                decision = SchedulerDecision(
-                    action=SchedulerAction.WAIT_APPROVAL,
-                    next_node="wait_for_execution_approval",
-                    reason_code="execution_approval_required_for_current_version",
-                )
-
-        if decision.action == SchedulerAction.WAIT_APPROVAL:
-            gate = (
-                "strategy"
-                if decision.next_node == "wait_for_strategy_approval"
-                else "execution"
-            )
-            artifact = strategy if gate == "strategy" else execution
-            if artifact and approvals.is_approved(
-                session_id=persistent.session_id,
-                gate=gate,
-                artifact=artifact,
-            ):
-                decision = SchedulerDecision(
-                    action=SchedulerAction.INVOKE_CONTROLLER,
-                    next_node=decision.next_node,
-                    reason_code=f"{gate}_approval_verified_for_current_version",
-                )
-                policy = PolicyDecision(
-                    subject="planning_progress",
-                    action="allow",
-                    allowed=True,
-                    reason=decision.reason_code,
-                    sessionId=persistent.session_id,
-                    requiredGates=(
-                        "strategy_approval" if gate == "strategy" else "execution_approval",
-                    ),
-                )
-            else:
-                policy = self.policy.decide_planning_progress(
-                    session_id=persistent.session_id,
-                    runtime_blocked=False,
-                    approval_gate=gate,
-                )
-        elif decision.action == SchedulerAction.WAIT_USER:
+        if decision.action == SchedulerAction.WAIT_USER:
             completion = graph_state.get("goal_completion")
             raw_unknowns = list(getattr(completion, "blocking_unknowns", []) or [])
             blocking = tuple(
@@ -576,42 +510,21 @@ class HarnessRuntime:
             result_state = node(state)
             persistent = self.bootstrap(result_state)
             waiting = _WAIT_BY_NODE[node_name]
-            approval_consumed = (
-                node_name == "wait_for_execution_approval"
-                and result_state.get("status") == "ready_to_write_calendar"
-            )
-            approvals = persistent.approvals
-            gate = {
-                "wait_for_strategy_approval": "strategy",
-                "wait_for_execution_approval": "execution",
-            }.get(node_name)
-            if gate and not approval_consumed:
-                kind = "strategy_portfolio" if gate == "strategy" else "execution_blueprint"
-                artifact = persistent.checkpoint.artifact_refs.get(kind)
-                if artifact:
-                    controller = HumanApprovalController(persistent.approvals)
-                    controller.request(
-                        session_id=persistent.session_id,
-                        gate=gate,
-                        artifact=artifact,
-                    )
-                    approvals = controller.records
             updated = persistent.model_copy(
                 update={
-                    "lifecycle": "active" if approval_consumed else "waiting",
+                    "lifecycle": "waiting",
                     "current_stage": node_name,
                     "pending_agent": None,
-                    "waiting_state": "none" if approval_consumed else waiting,
-                    "approvals": approvals,
+                    "waiting_state": waiting,
                 }
             )
             self.observability.record(
                 updated,
                 event_type="harness_decision",
-                decision="approval_applied" if approval_consumed else "wait_checkpoint",
+                decision="wait_checkpoint",
                 payload={
                     "graphNode": node_name,
-                    "waitingState": "none" if approval_consumed else waiting,
+                    "waitingState": waiting,
                 },
             )
             return result_state
@@ -665,9 +578,11 @@ class HarnessRuntime:
 
         return wrapped
 
-    def record_approval(self, session_id: str, gate: str):
+    def record_approval(self, session_id: str, gate: str = "calendar"):
+        if gate != "calendar":
+            raise ValueError("only the final Calendar approval gate is supported")
         persistent = self.bootstrap({"session_id": session_id})
-        artifact_kind = "strategy_portfolio" if gate == "strategy" else "execution_blueprint"
+        artifact_kind = "execution_blueprint"
         artifact = persistent.checkpoint.artifact_refs.get(artifact_kind)
         if artifact is None:
             raise ValueError(f"cannot approve {gate}: {artifact_kind} artifact is missing")
@@ -678,18 +593,13 @@ class HarnessRuntime:
         else:
             approved = pending
         updated = persistent.model_copy(update={"approvals": controller.records})
-        policy_gate = {
-            "strategy": "strategy_approval",
-            "execution": "execution_approval",
-            "calendar": "calendar_approval",
-        }[gate]
         policy = PolicyDecision(
-            subject="calendar_write" if gate == "calendar" else "planning_progress",
+            subject="calendar_write",
             action="allow",
             allowed=True,
             reason=f"Human approval is bound to {artifact.kind} v{artifact.version}.",
             sessionId=session_id,
-            requiredGates=(policy_gate,),
+            requiredGates=("calendar_approval",),
         )
         self.observability.typed_policy_decision(
             updated,
@@ -737,7 +647,6 @@ class HarnessRuntime:
     ) -> PolicyDecision:
         persistent = self.bootstrap({"session_id": session_id})
         refs = persistent.checkpoint.artifact_refs
-        strategy = refs.get("strategy_portfolio")
         execution = refs.get("execution_blueprint")
         critique = refs.get("critique_report")
         critic_gate = None
@@ -763,7 +672,6 @@ class HarnessRuntime:
         decision = self.policy.authorize_calendar_write(
             session_id=session_id,
             planning_mode=planning_mode,
-            strategy_artifact=strategy,
             execution_artifact=execution,
             critic=critic_gate,
             approvals=persistent.approvals,
@@ -772,7 +680,6 @@ class HarnessRuntime:
             persistent,
             decision,
             context={
-                "strategyVersion": strategy.version if strategy else None,
                 "executionVersion": execution.version if execution else None,
                 "critiqueVersion": critique.version if critique else None,
             },

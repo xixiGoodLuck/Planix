@@ -17,16 +17,15 @@ from .strategy import StrategyPortfolio
 PlanningMode = Literal["model_backed", "degraded_read_only", "blocked_model_unavailable"]
 CognitivePlanningStatus = Literal[
     "needs_goal_clarification",
-    "waiting_design_approval",
-    "design_revision",
-    "waiting_execution_approval",
-    "execution_revision",
-    "ready_to_write_calendar",
+    "waiting_understanding_confirmation",
+    "planning",
+    "final_revision",
+    "waiting_final_review",
     "waiting_calendar_write_approval",
     "written_to_calendar",
     "learning_from_feedback",
-    "blocked_model_unavailable",
     "MODEL_UNAVAILABLE",
+    "ARCHIVED",
     "cancelled",
 ]
 
@@ -40,7 +39,7 @@ class SafePlanningError(CognitiveContract):
 
 
 class CognitivePlanningMetadata(CognitiveContract):
-    engine_version: Literal["cognitive-v2", "cognitive-os-v1"] = "cognitive-v2"
+    engine_version: Literal["planning-engine-2", "cognitive-v2", "cognitive-os-v1", "cognitive-os-v2"] = "planning-engine-2"
     planning_mode: PlanningMode
     current_stage: str
     agent_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -51,9 +50,7 @@ class CognitivePlanningMetadata(CognitiveContract):
 UserAction = Literal[
     "create",
     "answer_question",
-    "approve_strategy",
-    "revise_strategy",
-    "approve_execution",
+    "confirm_understanding",
     "give_feedback",
     "write_calendar",
     "restart",
@@ -64,6 +61,7 @@ UserAction = Literal[
 
 
 class CognitivePlanningState(TypedDict, total=False):
+    planning_flow_version: str
     session_id: str
     thread_id: str
     user_input: str
@@ -79,7 +77,7 @@ class CognitivePlanningState(TypedDict, total=False):
     approved_strategy_id: str
     execution_blueprint: ExecutionBlueprint
     critique_report: PlanCritiqueReport
-    learning_update: PlanningLearningUpdate
+    learning_update: PlanningLearningUpdate | None
     user_action: UserAction
     status: CognitivePlanningStatus
     business_status: str
@@ -87,9 +85,21 @@ class CognitivePlanningState(TypedDict, total=False):
     resume_node: str
     planning_mode: PlanningMode
     repair_count: int
+    schedule_repair_count: int
     repair_loop: bool
     repair_instructions: list[dict[str, Any]]
     finalized_critique_artifact_id: str
     next_node: str
+    understanding_snapshot: Any
+    understanding_updated: bool
+    constraint_set: Any
+    context_pack: Any
+    plan_blueprint: Any
+    plan_quality_report: Any
+    schedule_blueprint: Any
+    schedule_quality_report: Any
+    calendar_proposal: Any
+    feedback_route: Any
+    final_approval_bundle: Any
     errors: list[SafePlanningError]
     response: Any

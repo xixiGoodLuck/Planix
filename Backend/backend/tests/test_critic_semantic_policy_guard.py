@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.services.cognitive_planning.agents.critic_learning_agent import CRITIC_SYSTEM
 from app.services.cognitive_planning.contracts import (
     Constraint,
     CriticRepairRequest,
@@ -16,8 +17,13 @@ from app.services.cognitive_planning.contracts import (
     UserGoalModel,
 )
 from app.services.cognitive_planning.evaluation import (
+    bind_critique_to_execution,
     critic_policy_context,
     critic_policy_violations,
+    reviewer_consistency_violations,
+)
+from app.services.cognitive_planning.orchestration.runtime import (
+    _discard_deterministically_contradicted_findings,
 )
 
 
@@ -231,6 +237,205 @@ def test_guard_accepts_selection_and_fallback_when_source_ref_is_optional() -> N
     ) == []
 
 
+def test_guard_rejects_critic_that_requires_unused_capacity_as_a_task() -> None:
+    report = _repair_report(
+        description=(
+            "The 54-minute buffer is not listed as an explicit catch-up task, so the "
+            "unused capacity is inconsistent and not actionable."
+        ),
+        evidence="Task minutes do not equal the full available weekly capacity.",
+        instruction="Add an explicit catch-up task so task minutes equal weekly capacity.",
+        expected_change="All unused minutes are allocated as work.",
+    )
+
+    violations = critic_policy_violations(
+        report,
+        goal=_goal(weekly_capacity=True),
+        execution=_execution(),
+    )
+
+    assert {item["code"] for item in violations} == {
+        "unused_capacity_incorrectly_required_as_task"
+    }
+
+
+def test_guard_rejects_critic_buffer_arithmetic_contradiction() -> None:
+    report = _repair_report(
+        description="The buffer of 120 minutes is insufficient to cover the delay.",
+        evidence="The simulated deficit is 54 minutes.",
+    )
+
+    violations = critic_policy_violations(
+        report,
+        goal=_goal(weekly_capacity=True),
+        execution=_execution(),
+    )
+
+    assert {item["code"] for item in violations} == {
+        "critic_buffer_arithmetic_contradiction"
+    }
+
+
+def test_guard_rejects_budget_cap_invented_by_critic() -> None:
+    report = _repair_report(
+        description=(
+            "The plan lacks a budgetSummary despite the Goal having an explicit CNY "
+            "spending cap (spendingLimitCny=0)."
+        ),
+        evidence="The Goal's hard constraints include a spending cap of 0 CNY.",
+    )
+
+    violations = critic_policy_violations(
+        report,
+        goal=_goal(),
+        execution=_execution(),
+    )
+
+    assert "critic_invented_explicit_budget_constraint" in {
+        item["code"] for item in violations
+    }
+
+    cleaned = _discard_deterministically_contradicted_findings(report, violations)
+    assert cleaned.status == "passed"
+    assert cleaned.calendar_writable is True
+    assert cleaned.issues == []
+    assert cleaned.repair_requests == []
+
+
+def test_guard_rejects_capacity_claim_when_numeric_allocations_fit() -> None:
+    report = _repair_report(
+        description=(
+            "The plan's total estimated minutes exceed the available weekly capacity "
+            "and cause the workload to exceed the time budget."
+        ),
+        evidence="The narrative is inconsistent with the task fields.",
+    )
+
+    violations = critic_policy_violations(
+        report,
+        goal=_goal(weekly_capacity=True),
+        execution=_execution(),
+    )
+
+    assert "critic_contradicts_valid_capacity_arithmetic" in {
+        item["code"] for item in violations
+    }
+
+
+def test_guard_rejects_optional_source_ref_claimed_as_missing_and_unusable() -> None:
+    report = _repair_report(
+        description=(
+            "sourceRef is optional, but this resource has no sourceRef and is therefore "
+            "unactionable."
+        ),
+        evidence="The missing sourceRef cannot be verified.",
+    )
+
+    violations = critic_policy_violations(
+        report,
+        goal=_goal(),
+        execution=_execution(),
+    )
+
+    assert [item["code"] for item in violations] == [
+        "unverified_resource_reference_promoted_to_hard_requirement"
+    ]
+
+
+def test_guard_recognizes_source_ref_next_to_chinese_text() -> None:
+    report = _repair_report(
+        description="资源没有sourceRef，导致资源不可操作。",
+        evidence="sourceRef可选，但当前资源被判定为无法验证。",
+    )
+
+    violations = critic_policy_violations(
+        report,
+        goal=_goal(),
+        execution=_execution(),
+    )
+
+    assert [item["code"] for item in violations] == [
+        "unverified_resource_reference_promoted_to_hard_requirement"
+    ]
+
+
+def test_runtime_binds_every_critic_issue_to_current_execution() -> None:
+    execution = _execution()
+    report = bind_critique_to_execution(
+        _repair_report(
+            description="Task 1 lacks completionEvidence.",
+            evidence="task-1 completionEvidence is missing.",
+        ),
+        execution=execution,
+        artifact_id="execution-current",
+        artifact_version=7,
+        evidence_refs=["validator-current"],
+    )
+
+    issue = report.issues[0]
+    assert issue.artifact_id == "execution-current"
+    assert issue.artifact_version == 7
+    assert issue.target_id == "task-1"
+    assert issue.rule_id == "task_completion_evidence_presence"
+    assert issue.evidence_refs == ["execution-current", "validator-current"]
+
+
+def test_consistency_guard_rejects_stale_and_factually_false_critic_issues() -> None:
+    execution = _execution()
+    report = bind_critique_to_execution(
+        _repair_report(
+            description="Task 1 lacks completionEvidence.",
+            evidence="task-1 completionEvidence is missing.",
+        ),
+        execution=execution,
+        artifact_id="execution-old",
+        artifact_version=6,
+    )
+
+    stale = reviewer_consistency_violations(
+        report,
+        execution=execution,
+        artifact_id="execution-current",
+        artifact_version=7,
+    )
+    current = reviewer_consistency_violations(
+        bind_critique_to_execution(
+            report,
+            execution=execution,
+            artifact_id="execution-current",
+            artifact_version=7,
+        ),
+        execution=execution,
+        artifact_id="execution-current",
+        artifact_version=7,
+    )
+
+    assert stale[0]["code"] == "stale_critic_issue_artifact"
+    assert current[0]["code"] == "critic_contradicts_completion_evidence"
+
+
+def test_consistency_guard_rejects_unknown_task_id() -> None:
+    execution = _execution()
+    report = bind_critique_to_execution(
+        _repair_report(
+            description="Task 999 has no deliverable.",
+            evidence="task999 is missing a deliverable.",
+        ),
+        execution=execution,
+        artifact_id="execution-current",
+        artifact_version=7,
+    )
+
+    violations = reviewer_consistency_violations(
+        report,
+        execution=execution,
+        artifact_id="execution-current",
+        artifact_version=7,
+    )
+
+    assert violations[0]["code"] == "critic_references_unknown_task"
+
+
 def test_guard_does_not_infer_a_missing_reference_when_all_resources_have_one() -> None:
     report = _repair_report(
         description="Every resource must include a sourceRef and URL.",
@@ -250,6 +455,8 @@ def test_guard_context_is_machine_readable_and_does_not_fabricate_capacity() -> 
     assert context["weeklyCapacity"] == {
         "explicitInGoal": False,
         "minutes": None,
+        "isCeiling": True,
+        "unusedCapacityIsValidBuffer": True,
     }
     assert context["halfTimeSimulation"]["isPrimaryWeeklyQuota"] is False
     assert context["resources"]["withoutSourceRef"] == 1
@@ -261,3 +468,15 @@ def test_guard_context_is_machine_readable_and_does_not_fabricate_capacity() -> 
             "title": "候选学习资源",
         }
     ]
+    assert context["spendingBudget"] == {
+        "explicitInGoal": False,
+        "limitCny": None,
+        "executionBudgetDoesNotCreateGoalConstraint": True,
+    }
+    assert context["numericExecutionFacts"]["taskFieldsAreAuthoritativeOverNarrative"] is True
+
+
+def test_critic_prompt_obeys_deterministic_budget_and_capacity_facts() -> None:
+    assert "spendingBudget.explicitInGoal is false" in CRITIC_SYSTEM
+    assert "every periodSlack is non-negative" in CRITIC_SYSTEM
+    assert "remove every finding listed in violationsToCorrect" in CRITIC_SYSTEM

@@ -19,7 +19,7 @@ from ..schemas import (
 
 
 # Compatibility persistence protocol. New planning cognition belongs in
-# CognitivePlanningRuntime; this service remains for artifact/decision/message
+# the formal planning runtime; this service remains for artifact/decision/message
 # audit records and replay only.
 PLANNING_AGENT_RUNTIME_STATUS = "deprecated-compatibility-protocol"
 
@@ -40,6 +40,20 @@ ARTIFACT_OWNER: dict[str, str] = {
     "critique_report": "Independent Critic & Learning Agent",
     "planning_learning_update": "Independent Critic & Learning Agent",
     "memory_evaluation": "Memory Evaluation Agent",
+    "understanding_snapshot": "Understanding Agent",
+    "understanding_patch": "Understanding Agent",
+    "constraint_set": "Constraint Compiler",
+    "context_pack": "Context Builder",
+    "plan_blueprint": "Plan Generator",
+    "plan_quality_report": "Plan Quality Reviewer",
+    "schedule_blueprint": "Schedule Agent",
+    "schedule_quality_report": "Schedule Quality Reviewer",
+    "calendar_proposal": "Calendar Materializer",
+    "final_approval_bundle": "Final Review Controller",
+    "execution_outcome": "Execution Feedback Evaluator",
+    "replan_proposal": "Execution Feedback Evaluator",
+    "learning_observation": "Learning Observer",
+    "promotion_audit": "Learning Observer",
 }
 
 ARTIFACT_OWNER_ALIASES: dict[str, set[str]] = {
@@ -50,6 +64,20 @@ ARTIFACT_OWNER_ALIASES: dict[str, set[str]] = {
     "critique_report": {"Independent Critic & Learning Agent", "Critic Agent"},
     "planning_learning_update": {"Independent Critic & Learning Agent", "Critic Agent"},
     "memory_evaluation": {"Memory Evaluation Agent"},
+    "understanding_snapshot": {"Understanding Agent"},
+    "understanding_patch": {"Understanding Agent"},
+    "constraint_set": {"Constraint Compiler"},
+    "context_pack": {"Context Builder"},
+    "plan_blueprint": {"Plan Generator"},
+    "plan_quality_report": {"Plan Quality Reviewer"},
+    "schedule_blueprint": {"Schedule Agent"},
+    "schedule_quality_report": {"Schedule Quality Reviewer"},
+    "calendar_proposal": {"Calendar Materializer"},
+    "final_approval_bundle": {"Final Review Controller"},
+    "execution_outcome": {"Execution Feedback Evaluator"},
+    "replan_proposal": {"Execution Feedback Evaluator"},
+    "learning_observation": {"Learning Observer"},
+    "promotion_audit": {"Learning Observer"},
 }
 
 
@@ -170,7 +198,7 @@ class PlanningAgentRuntime:
                 """
                 UPDATE planning_sessions
                 SET execution_blueprint_json = ?, critique_report_json = ?,
-                    business_status = 'execution_pending', runtime_status = 'running',
+                    business_status = 'planning', runtime_status = 'running',
                     version = version + 1, updated_at = ?
                 WHERE id = ?
                 """,

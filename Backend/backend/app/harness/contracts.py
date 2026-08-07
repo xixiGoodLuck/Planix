@@ -15,6 +15,18 @@ ArtifactKind = Literal[
     "critique_report",
     "planning_learning_update",
     "memory_evaluation",
+    "understanding_snapshot",
+    "constraint_set",
+    "context_pack",
+    "plan_blueprint",
+    "plan_quality_report",
+    "schedule_blueprint",
+    "schedule_quality_report",
+    "calendar_proposal",
+    "final_approval_bundle",
+    "execution_outcome",
+    "replan_proposal",
+    "learning_observation",
 ]
 
 ArtifactStatus = Literal[
@@ -68,12 +80,10 @@ HarnessWaitState = Literal[
     "none",
     "user_input",
     "model_recovery",
-    "strategy_approval",
-    "execution_approval",
     "calendar_approval",
 ]
 
-ApprovalGate = Literal["strategy", "execution", "calendar"]
+ApprovalGate = Literal["calendar"]
 ApprovalStatus = Literal["pending", "approved", "rejected", "invalidated", "consumed"]
 PolicySubject = Literal[
     "planning_progress",
@@ -95,8 +105,6 @@ PolicyAction = Literal[
 PolicyGate = Literal[
     "runtime",
     "goal_completion",
-    "strategy_approval",
-    "execution_approval",
     "critic",
     "calendar_approval",
     "memory_evaluation",

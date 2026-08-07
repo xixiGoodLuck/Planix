@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -65,7 +67,16 @@ def _safe_error(stage: str, error: LlmError | None, message: str) -> SafePlannin
     )
 
 
-def _usage(result: LlmResult, task_type: str) -> dict[str, Any]:
+def _timestamp() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _usage(
+    result: LlmResult,
+    task_type: str,
+    *,
+    trace: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     raw = result.usage or {}
     return {
         "provider": result.provider,
@@ -79,6 +90,7 @@ def _usage(result: LlmResult, task_type: str) -> dict[str, Any]:
         "fallbackUsed": result.fallback_used,
         "localFallbackAllowed": False,
         "attempts": result.attempts or [],
+        "trace": trace or {},
     }
 
 
@@ -155,6 +167,9 @@ class CognitiveModelClient:
         temperature: float = 0.2,
         validation_context: dict[str, Any] | None = None,
     ) -> AgentResult[ContractT]:
+        agent_started = time.perf_counter()
+        prompt_build_started = _timestamp()
+        prompt_build_clock = time.perf_counter()
         env_name, default_tokens = TOKEN_ENV_BY_TASK[task_type]
         task_token_cap = TOKEN_CAP_BY_TASK[task_type]
         try:
@@ -170,6 +185,10 @@ class CognitiveModelClient:
             ensure_ascii=False,
             separators=(",", ":"),
         )
+        prompt_build_ended = _timestamp()
+        prompt_build_latency_ms = max(0, int((time.perf_counter() - prompt_build_clock) * 1000))
+        http_request_started = _timestamp()
+        http_request_clock = time.perf_counter()
         result, error = self.llm.complete(
             feature,
             system,
@@ -180,9 +199,13 @@ class CognitiveModelClient:
             response_format_json=True,
             task_type=task_type,
         )
+        http_request_ended = _timestamp()
+        provider_latency_ms = max(0, int((time.perf_counter() - http_request_clock) * 1000))
         if not result:
             message = error.message if error else "No configured model completed this cognitive planning stage."
             raise PlanningModelUnavailable(stage, _safe_error(stage, error, message))
+        schema_parse_started = _timestamp()
+        schema_parse_clock = time.perf_counter()
         raw = _extract_json(result.content)
         if not raw:
             raise PlanningModelUnavailable(
@@ -198,6 +221,7 @@ class CognitiveModelClient:
         try:
             artifact = contract_type.model_validate(raw, context=validation_context)
         except ValidationError as exc:
+            first_parse_latency_ms = max(0, int((time.perf_counter() - schema_parse_clock) * 1000))
             repair_user = json.dumps(
                 {
                     "input": payload,
@@ -214,6 +238,8 @@ class CognitiveModelClient:
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
+            retry_started = _timestamp()
+            retry_clock = time.perf_counter()
             repaired, repair_error = self.llm.complete(
                 feature,
                 system + "\nThe previous JSON object failed contract validation. Repair it without changing the user's meaning.",
@@ -224,6 +250,8 @@ class CognitiveModelClient:
                 response_format_json=True,
                 task_type=task_type,
             )
+            retry_ended = _timestamp()
+            retry_latency_ms = max(0, int((time.perf_counter() - retry_clock) * 1000))
             combined_attempts = list(result.attempts or [])
             if repaired:
                 combined_attempts.extend(
@@ -254,6 +282,7 @@ class CognitiveModelClient:
                     stage,
                     safe.model_copy(update={"attempts": combined_attempts}),
                 ) from exc
+            repaired_parse_clock = time.perf_counter()
             repaired_raw = _extract_json(repaired.content)
             try:
                 artifact = contract_type.model_validate(repaired_raw, context=validation_context)
@@ -274,4 +303,54 @@ class CognitiveModelClient:
                     ),
                 ) from repaired_exc
             result = _merge_results(result, repaired)
-        return AgentResult(artifact=artifact, model_usage=_usage(result, task_type))
+            parse_latency_ms = first_parse_latency_ms + max(
+                0,
+                int((time.perf_counter() - repaired_parse_clock) * 1000),
+            )
+        else:
+            parse_latency_ms = max(0, int((time.perf_counter() - schema_parse_clock) * 1000))
+            retry_started = None
+            retry_ended = None
+            retry_latency_ms = 0
+        schema_parse_ended = _timestamp()
+        attempts = list(result.attempts or [])
+        call_attempts = [attempt for attempt in attempts if attempt.get("status") != "skipped"]
+        model_calls = max(1, len(call_attempts))
+        model_retries = sum(
+            1
+            for attempt in call_attempts
+            if bool(attempt.get("automaticRetry")) or bool(attempt.get("retryReason"))
+        )
+        routed_retry_latency_ms = sum(
+            max(0, int(attempt.get("latencyMs") or 0))
+            for attempt in call_attempts
+            if bool(attempt.get("automaticRetry")) or bool(attempt.get("retryReason"))
+        )
+        retry_latency_ms = max(retry_latency_ms, routed_retry_latency_ms)
+        trace = {
+            "promptBuildStart": prompt_build_started,
+            "promptBuildEnd": prompt_build_ended,
+            "httpRequestStart": http_request_started,
+            "httpRequestEnd": http_request_ended,
+            "schemaParseStart": schema_parse_started,
+            "schemaParseEnd": schema_parse_ended,
+            "retryStart": retry_started,
+            "retryEnd": retry_ended,
+            "agentEnd": _timestamp(),
+            "promptBuildLatencyMs": prompt_build_latency_ms,
+            "providerLatencyMs": provider_latency_ms,
+            "parseLatencyMs": parse_latency_ms,
+            "retryLatencyMs": retry_latency_ms,
+            "totalLatencyMs": max(0, int((time.perf_counter() - agent_started) * 1000)),
+            "modelCalls": model_calls,
+            "modelRetries": model_retries,
+            "retryReasons": [
+                str(attempt.get("retryReason"))
+                for attempt in call_attempts
+                if attempt.get("retryReason")
+            ],
+        }
+        return AgentResult(
+            artifact=artifact,
+            model_usage=_usage(result, task_type, trace=trace),
+        )

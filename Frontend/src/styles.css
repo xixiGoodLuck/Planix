@@ -2722,7 +2722,7 @@ select:focus {
 }
 
 .command-workspace-status.waiting_clarification,
-.command-workspace-status.waiting_strategy_approval {
+.command-workspace-status.waiting_confirmation {
   background: rgba(245, 158, 11, 0.2);
   color: #fde68a;
 }

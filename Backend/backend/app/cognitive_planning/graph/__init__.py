@@ -1,3 +1,3 @@
-from .planning_graph import build_cognitive_os_graph
+from .planning_graph import build_planning_graph
 
-__all__ = ["build_cognitive_os_graph"]
+__all__ = ["build_planning_graph"]

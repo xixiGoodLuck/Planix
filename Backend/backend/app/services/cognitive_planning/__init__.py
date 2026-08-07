@@ -1,3 +1,3 @@
-from .orchestration.runtime import CognitivePlanningRuntime, use_cognitive_planning
+from .orchestration.runtime import PlanningRuntimeFoundation
 
-__all__ = ["CognitivePlanningRuntime", "use_cognitive_planning"]
+__all__ = ["PlanningRuntimeFoundation"]

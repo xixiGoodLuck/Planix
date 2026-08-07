@@ -40,11 +40,12 @@ from ..contracts import (
 )
 from ..evaluation import DeterministicGuardError, calendar_write_allowed, validate_execution_invariants
 from ..evaluation.deterministic_guards import (
+    bind_critique_to_execution,
     critic_policy_context,
     critic_policy_violations,
+    reviewer_consistency_violations,
 )
 from ..retrieval import PlanningHypothesisRepository
-from .graph import build_cognitive_graph
 from .persistence import CognitivePlanningPersistence, json_object
 from ..control_intent import detect_planning_control_intent
 
@@ -97,6 +98,40 @@ def _safe_critic_attempts(
             item["retryReason"] = "critic_policy_repair"
         safe.append(item)
     return safe
+
+
+def _discard_deterministically_contradicted_findings(
+    report: PlanCritiqueReport,
+    violations: list[dict[str, Any]],
+) -> PlanCritiqueReport:
+    """Remove only Critic findings already disproved by authoritative facts."""
+
+    invalid_issues = {
+        int(item["sourceIndex"])
+        for item in violations
+        if item.get("sourceKind") == "issue" and str(item.get("sourceIndex", "")).isdigit()
+    }
+    invalid_requests = {
+        int(item["sourceIndex"])
+        for item in violations
+        if item.get("sourceKind") == "repair_request" and str(item.get("sourceIndex", "")).isdigit()
+    }
+    issues = [item for index, item in enumerate(report.issues) if index not in invalid_issues]
+    requests = [
+        item for index, item in enumerate(report.repair_requests) if index not in invalid_requests
+    ]
+    high_impact = [item for item in issues if item.severity in {"major", "blocker"}]
+    if not high_impact:
+        requests = []
+        return report.model_copy(
+            update={
+                "status": "passed",
+                "calendar_writable": True,
+                "issues": issues,
+                "repair_requests": requests,
+            }
+        )
+    return report.model_copy(update={"issues": issues, "repair_requests": requests})
 
 
 def _usage_attempts(
@@ -217,12 +252,8 @@ def _normalize_learning_patch_target(target: str) -> str:
     return LEARNING_PATCH_TARGET_ALIASES.get(normalized, normalized)
 
 
-def use_cognitive_planning() -> bool:
-    return os.getenv("PLANIX_USE_COGNITIVE_PLANNING", "").strip().lower() in TRUE_VALUES
-
-
-class CognitivePlanningRuntime:
-    """Model-backed planning kernel. It never falls back to legacy content templates."""
+class PlanningRuntimeFoundation:
+    """Shared persistence and model-backed node implementation for the formal runtime."""
 
     def __init__(
         self,
@@ -328,23 +359,10 @@ class CognitivePlanningRuntime:
             ):
                 state.pop(key, None)
             state["user_action"] = "continue_current_stage"
-            state["business_status"] = "evidence_pending"
+            state["business_status"] = "planning"
             state["runtime_status"] = "running"
             state["resume_node"] = "evidence"
         return state
-
-    def _resume_if_legacy_evidence(self, row) -> PlanningSessionResponse | None:
-        state = self._state_from_row(row, action="continue_current_stage")
-        if not state.get("evidence_requires_authority_refresh"):
-            return None
-        self.persistence.update(row["id"], runtime_status="running", business_status="evidence_pending")
-        return self._invoke(state)
-
-    def _invoke(self, state: CognitivePlanningState) -> PlanningSessionResponse:
-        graph = build_cognitive_graph(self)
-        result = graph.invoke(state)
-        session_id = str(result.get("session_id") or state["session_id"])
-        return self.get_session(session_id)
 
     def _record_artifact(
         self,
@@ -441,7 +459,7 @@ class CognitivePlanningRuntime:
         if state.get("evidence_requires_authority_refresh"):
             self.persistence.update(
                 state["session_id"],
-                business_status="evidence_pending",
+                business_status="planning",
                 runtime_status="running",
                 clear=(
                     "evidence_pack",
@@ -454,44 +472,7 @@ class CognitivePlanningRuntime:
             )
         return state
 
-    def wait_for_goal_answer_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
-        state["status"] = "needs_goal_clarification"
-        completion = state.get("goal_completion")
-        state["business_status"] = "evidence_pending" if completion and completion.complete else "goal_clarification"
-        state["runtime_status"] = "idle"
-        self.persistence.update(
-            state["session_id"],
-            status="needs_goal_clarification",
-            business_status=state["business_status"],
-            runtime_status="idle",
-        )
-        return state
-
-    def wait_for_strategy_approval_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
-        state["status"] = "waiting_design_approval"
-        state["business_status"] = "strategy_pending"
-        state["runtime_status"] = "idle"
-        self.persistence.update(
-            state["session_id"],
-            status="waiting_design_approval",
-            business_status="strategy_pending",
-            runtime_status="idle",
-        )
-        return state
-
-    def wait_for_execution_approval_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
-        if state.get("user_action") == "approve_execution":
-            return self.execution_approval_node(state)
-        state["business_status"] = "execution_pending"
-        state["runtime_status"] = "idle"
-        self.persistence.update(
-            state["session_id"],
-            business_status="execution_pending",
-            runtime_status="idle",
-        )
-        return state
-
-    def goal_modeling_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
+    def semantic_understanding_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
         previous = state.get("goal_model")
         payload = GoalModelingInput(
             conversationHistory=state.get("conversation_history", []),
@@ -541,7 +522,7 @@ class CognitivePlanningRuntime:
             )
         return state
 
-    def context_evidence_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
+    def synthesize_context_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
         goal = state.get("goal_model")
         if not goal:
             return state
@@ -564,7 +545,7 @@ class CognitivePlanningRuntime:
         evidence = result.artifact
         state["evidence_pack"] = evidence
         state["status"] = "needs_goal_clarification" if not evidence.can_proceed_to_strategy else state.get("status", "needs_goal_clarification")
-        state["business_status"] = "strategy_pending" if evidence.can_proceed_to_strategy else "evidence_pending"
+        state["business_status"] = "planning"
         state["runtime_status"] = "running" if evidence.can_proceed_to_strategy else "idle"
         rules = [item.rule for item in evidence.planning_rules]
         self._record_artifact(
@@ -605,7 +586,7 @@ class CognitivePlanningRuntime:
                 )
         return state
 
-    def strategy_architect_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
+    def design_approach_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
         goal = state.get("goal_model")
         evidence = state.get("evidence_pack")
         if not goal or not evidence:
@@ -628,8 +609,8 @@ class CognitivePlanningRuntime:
             }
         )
         state["strategy_portfolio"] = strategy
-        state["status"] = "waiting_design_approval"
-        state["business_status"] = "strategy_pending"
+        state["status"] = "planning"
+        state["business_status"] = "planning"
         state["runtime_status"] = "idle"
         state.pop("execution_blueprint", None)
         state.pop("critique_report", None)
@@ -649,8 +630,8 @@ class CognitivePlanningRuntime:
         )
         self.persistence.update(
             state["session_id"],
-            status="waiting_design_approval",
-            business_status="strategy_pending",
+            status="planning",
+            business_status="planning",
             runtime_status="idle",
             strategy_portfolio=strategy,
             repair_count=int(state.get("repair_count", 0)),
@@ -793,13 +774,13 @@ class CognitivePlanningRuntime:
             )
         return (reports[-1][1] if reports else None), history
 
-    def execution_designer_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
+    def generate_plan_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
         goal = state.get("goal_model")
         evidence = state.get("evidence_pack")
         strategy = self._approved_strategy(state)
         if not goal or not evidence or not strategy:
-            state["status"] = "waiting_design_approval"
-            state["business_status"] = "strategy_pending"
+            state["status"] = "planning"
+            state["business_status"] = "planning"
             state["runtime_status"] = "idle"
             return state
         previous_execution = state.get("execution_blueprint")
@@ -857,7 +838,7 @@ class CognitivePlanningRuntime:
         state["execution_blueprint"] = execution
         state["critique_report"] = pending_critique
         state.pop("repair_instructions", None)
-        state["business_status"] = "execution_pending"
+        state["business_status"] = "planning"
         state["runtime_status"] = "running"
         self.agent_runtime.record_decision(
             state["session_id"],
@@ -872,7 +853,7 @@ class CognitivePlanningRuntime:
         )
         self.persistence.update(
             state["session_id"],
-            business_status="execution_pending",
+            business_status="planning",
             runtime_status="running",
             execution_blueprint=execution,
             critique_report=pending_critique,
@@ -885,7 +866,7 @@ class CognitivePlanningRuntime:
         self._handoff(state, self.execution_agent.name, self.critic_agent.name, "The draft execution blueprint requires independent semantic review.")
         return state
 
-    def independent_critic_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
+    def semantic_review_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
         goal = state.get("goal_model")
         evidence = state.get("evidence_pack")
         strategy = state.get("strategy_portfolio")
@@ -895,23 +876,55 @@ class CognitivePlanningRuntime:
         execution_artifact, critique_artifact = self._execution_review_slot(state)
         if execution_artifact is None or critique_artifact is None:
             return state
-        prior_critique, repair_history = self._prior_review_context(
-            state["session_id"],
-            exclude_critique_artifact_id=critique_artifact.id,
-        )
+        artifacts = self.agent_runtime.list_artifacts(state["session_id"])
+
+        def latest_ref(artifact_type: str) -> dict[str, Any] | None:
+            matches = [item for item in artifacts if item.artifact_type == artifact_type]
+            if not matches:
+                return None
+            current = max(matches, key=lambda item: item.version)
+            return {"id": current.id, "version": current.version}
+
+        evidence_refs = [
+            item["id"]
+            for item in (
+                latest_ref("plan_blueprint"),
+                latest_ref("plan_quality_report"),
+                latest_ref("constraint_set"),
+                latest_ref("evidence_pack"),
+            )
+            if item
+        ]
+        review_context = {
+            "currentExecutionArtifact": {
+                "id": execution_artifact.id,
+                "version": execution_artifact.version,
+            },
+            "currentPlanArtifact": latest_ref("plan_blueprint"),
+            "currentConstraintArtifact": latest_ref("constraint_set"),
+            "currentEvidenceArtifact": latest_ref("evidence_pack"),
+            "currentValidatorArtifact": latest_ref("plan_quality_report"),
+            "currentPlan": (
+                state["plan_blueprint"].model_dump(by_alias=True)
+                if state.get("plan_blueprint") is not None
+                else None
+            ),
+            "currentValidatorResult": (
+                state["plan_quality_report"].model_dump(by_alias=True)
+                if state.get("plan_quality_report") is not None
+                else None
+            ),
+            "deterministicValidatorAuthoritative": True,
+            "supersededArtifactsIncluded": False,
+        }
         try:
+            policy = critic_policy_context(goal=goal, execution=execution)
+            policy["currentReviewContext"] = review_context
             critique_kwargs: dict[str, Any] = {
-                "critic_policy": critic_policy_context(
-                    goal=goal,
-                    execution=execution,
-                ),
+                "critic_policy": policy,
             }
             if state.get("reality_assessment") is not None:
                 critique_kwargs["reality"] = state.get("reality_assessment")
-            if prior_critique is not None:
-                critique_kwargs["previous_critique"] = prior_critique
-            if repair_history:
-                critique_kwargs["repair_history"] = repair_history
             result = self.critic_agent.critique(
                 goal,
                 evidence,
@@ -919,11 +932,27 @@ class CognitivePlanningRuntime:
                 execution,
                 **critique_kwargs,
             )
-            violations = critic_policy_violations(
+            bound = bind_critique_to_execution(
                 result.artifact,
-                goal=goal,
                 execution=execution,
+                artifact_id=execution_artifact.id,
+                artifact_version=execution_artifact.version,
+                evidence_refs=evidence_refs,
             )
+            result = AgentResult(artifact=bound, model_usage=result.model_usage)
+            violations = [
+                *critic_policy_violations(
+                    bound,
+                    goal=goal,
+                    execution=execution,
+                ),
+                *reviewer_consistency_violations(
+                    bound,
+                    execution=execution,
+                    artifact_id=execution_artifact.id,
+                    artifact_version=execution_artifact.version,
+                ),
+            ]
             if violations:
                 retry_kwargs = {
                     **critique_kwargs,
@@ -939,31 +968,81 @@ class CognitivePlanningRuntime:
                     )
                 except PlanningModelUnavailable as exc:
                     raise _critic_policy_retry_error(exc, result.model_usage) from exc
-                remaining_violations = critic_policy_violations(
+                rebound = bind_critique_to_execution(
                     retried.artifact,
-                    goal=goal,
                     execution=execution,
+                    artifact_id=execution_artifact.id,
+                    artifact_version=execution_artifact.version,
+                    evidence_refs=evidence_refs,
                 )
+                remaining_violations = [
+                    *critic_policy_violations(
+                        rebound,
+                        goal=goal,
+                        execution=execution,
+                    ),
+                    *reviewer_consistency_violations(
+                        rebound,
+                        execution=execution,
+                        artifact_id=execution_artifact.id,
+                        artifact_version=execution_artifact.version,
+                    ),
+                ]
+                if remaining_violations:
+                    rebound = _discard_deterministically_contradicted_findings(
+                        rebound,
+                        remaining_violations,
+                    )
+                    remaining_violations = [
+                        *critic_policy_violations(
+                            rebound,
+                            goal=goal,
+                            execution=execution,
+                        ),
+                        *reviewer_consistency_violations(
+                            rebound,
+                            execution=execution,
+                            artifact_id=execution_artifact.id,
+                            artifact_version=execution_artifact.version,
+                        ),
+                    ]
                 merged_usage = _merge_critic_policy_usage(
                     result.model_usage,
                     retried.model_usage,
                 )
                 if remaining_violations:
+                    contradiction = any(
+                        str(item.get("code") or "").startswith("critic_")
+                        or str(item.get("code") or "").startswith("stale_critic_")
+                        for item in remaining_violations
+                    )
+                    violation_codes = ", ".join(
+                        dict.fromkeys(str(item.get("code") or "unknown") for item in remaining_violations)
+                    )
                     raise PlanningModelUnavailable(
                         "plan_critique",
                         SafePlanningError(
                             stage="plan_critique",
-                            errorType="invalid_model_output",
+                            errorType=(
+                                "reviewer_contradiction"
+                                if contradiction
+                                else "invalid_model_output"
+                            ),
                             message=(
-                                "The independent Critic output violated deterministic semantic "
-                                "policy after one automatic repair. Review remains blocked."
+                                "The independent Critic contradicted current structured facts "
+                                "after one clean-context review retry. Review remains blocked. "
+                                f"Violations: {violation_codes}."
+                                if contradiction
+                                else "The independent Critic output violated deterministic semantic "
+                                "policy after one automatic repair. Review remains blocked. "
+                                f"Violations: {violation_codes}."
                             ),
                             retryable=True,
                             attempts=merged_usage["attempts"],
                         ),
                     )
                 result = AgentResult(
-                    artifact=retried.artifact,
+                    artifact=rebound,
                     model_usage=merged_usage,
                 )
         except PlanningModelUnavailable as exc:
@@ -1128,21 +1207,22 @@ class CognitivePlanningRuntime:
                     ],
                 }
             )
+        critique = bind_critique_to_execution(
+            critique,
+            execution=execution,
+            artifact_id=execution_artifact.id,
+            artifact_version=execution_artifact.version,
+            evidence_refs=evidence_refs,
+        )
         state["critique_report"] = critique
         review_passed = bool(
             critique.status == "passed"
             and critique.calendar_writable
             and meets_critic_score_gate(critique)
         )
-        state["status"] = "waiting_execution_approval" if review_passed else "execution_revision"
-        state["business_status"] = "execution_pending"
+        state["status"] = "planning" if review_passed else "final_revision"
+        state["business_status"] = "planning"
         state["runtime_status"] = "idle"
-        critique = critique.model_copy(
-            update={
-                "evaluated_execution_artifact_id": execution_artifact.id,
-                "evaluated_execution_artifact_version": execution_artifact.version,
-            }
-        )
         finalized = self.agent_runtime.finalize_execution_review(
             state["session_id"],
             critique_artifact_id=critique_artifact.id,
@@ -1169,7 +1249,7 @@ class CognitivePlanningRuntime:
         self.persistence.update(
             state["session_id"],
             status=state["status"],
-            business_status="execution_pending",
+            business_status="planning",
             runtime_status="idle",
             critique_report=critique,
             repair_count=int(state.get("repair_count", 0)),
@@ -1182,13 +1262,13 @@ class CognitivePlanningRuntime:
         )
         return state
 
-    def repair_router_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
+    def repair_plan_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
         update = state.get("learning_update")
         critique = state.get("critique_report")
         if update and update.current_plan_patch:
             target = _normalize_learning_patch_target(update.current_plan_patch.target_artifact)
             instructions = [{"instruction": update.current_plan_patch.instruction}]
-            state.pop("learning_update", None)
+            state["learning_update"] = None
         elif critique and critique.repair_requests:
             target = critique.repair_requests[0].target_agent
             instructions = [item.model_dump(by_alias=True) for item in critique.repair_requests]
@@ -1218,52 +1298,7 @@ class CognitivePlanningRuntime:
             state["next_node"] = "__end__"
         return state
 
-    def execution_approval_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
-        execution = state.get("execution_blueprint")
-        critique = state.get("critique_report")
-        try:
-            if execution:
-                validate_execution_invariants(execution)
-        except DeterministicGuardError as exc:
-            raise HTTPException(status_code=422, detail={"message": "execution blueprint failed deterministic guards", "issues": exc.issues}) from exc
-        allowed = calendar_write_allowed(
-            planning_mode=state.get("planning_mode", "blocked_model_unavailable"),
-            critique=critique,
-            strategy_approved=bool(state.get("approved_strategy_id")),
-            execution_approved=True,
-        )
-        if not allowed:
-            raise HTTPException(status_code=422, detail={"message": "execution plan has not passed the independent critic"})
-        state["status"] = "ready_to_write_calendar"
-        state["business_status"] = "calendar_pending"
-        state["runtime_status"] = "idle"
-        self.persistence.update(
-            state["session_id"],
-            status="ready_to_write_calendar",
-            business_status="calendar_pending",
-            runtime_status="idle",
-            cognitive_metadata=self._metadata(
-                mode="model_backed",
-                stage="waiting_calendar_write",
-                confidence=critique.confidence if critique else None,
-                repair_count=int(state.get("repair_count", 0)),
-            ),
-        )
-        self.agent_runtime.record_decision(
-            state["session_id"],
-            agent=self.execution_agent.name,
-            decision="approve",
-            reason="The user approved an execution blueprint that passed the independent critic.",
-            summary="Execution is confirmed and can now enter the Calendar PermissionGate.",
-            confidence=1,
-            input_artifact_ids=self._latest_artifact_ids(
-                state["session_id"],
-                ("strategy_portfolio", "execution_blueprint", "critique_report"),
-            ),
-        )
-        return state
-
-    def feedback_learning_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
+    def record_learning_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
         try:
             learning_kwargs = {
                 "goal": state.get("goal_model"),
@@ -1280,7 +1315,7 @@ class CognitivePlanningRuntime:
         update = result.artifact
         state["learning_update"] = update
         state["status"] = "learning_from_feedback"
-        state["business_status"] = "execution_pending"
+        state["business_status"] = "planning"
         state["runtime_status"] = "running"
         if update.current_plan_patch:
             state["repair_count"] = 0
@@ -1299,7 +1334,7 @@ class CognitivePlanningRuntime:
         self.persistence.update(
             state["session_id"],
             status="learning_from_feedback",
-            business_status="execution_pending",
+            business_status="planning",
             runtime_status="running",
             planning_learning_update=update,
             repair_count=int(state.get("repair_count", 0)),
@@ -1327,15 +1362,16 @@ class CognitivePlanningRuntime:
     def calendar_gate_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
         execution = state.get("execution_blueprint")
         critique = state.get("critique_report")
-        if state.get("status") != "ready_to_write_calendar":
+        if state.get("status") != "waiting_final_review":
             raise HTTPException(status_code=409, detail={"message": "execution plan must be explicitly approved first"})
         try:
             if not execution:
                 raise DeterministicGuardError(["execution blueprint is missing"])
             validate_execution_invariants(execution)
-            undated = [task.id for task in execution.tasks if not task.scheduled_date]
-            if undated:
-                raise DeterministicGuardError([f"tasks need scheduledDate before Calendar write: {', '.join(undated)}"])
+            if not (state.get("schedule_blueprint") and state.get("calendar_proposal")):
+                undated = [task.id for task in execution.tasks if not task.scheduled_date]
+                if undated:
+                    raise DeterministicGuardError([f"tasks need scheduledDate before Calendar write: {', '.join(undated)}"])
         except DeterministicGuardError as exc:
             raise HTTPException(status_code=422, detail={"message": "calendar write gate blocked", "issues": exc.issues}) from exc
         if not calendar_write_allowed(
@@ -1362,7 +1398,7 @@ class CognitivePlanningRuntime:
         )
         return state
 
-    # Compatibility facade
+    # Public lifecycle shared by the formal runtime.
     def create_session(self, payload: CreatePlanningSessionRequest) -> PlanningSessionResponse:
         session_id = self.persistence.create(
             thread_id=payload.thread_id or "",
@@ -1375,7 +1411,7 @@ class CognitivePlanningRuntime:
         state = self._state_from_row(row, action="create", user_input=payload.user_input)
         return self._invoke(state)
 
-    def clarify(self, session_id: str, payload: PlanningSessionTextRequest) -> PlanningSessionResponse:
+    def answer_understanding(self, session_id: str, payload: PlanningSessionTextRequest) -> PlanningSessionResponse:
         control_intent = detect_planning_control_intent(payload.text)
         if control_intent == "skip_current_stage":
             skip = getattr(self, "skip_current_stage", None)
@@ -1388,10 +1424,10 @@ class CognitivePlanningRuntime:
             return self.cancel(session_id)
         if control_intent == "approve_current_stage":
             current = self.get_session(session_id)
-            if current.status in {"waiting_design_approval", "design_revision"}:
-                return self.approve_design(session_id)
-            if current.status == "waiting_execution_approval":
-                return self.approve_execution(session_id)
+            if current.status == "waiting_understanding_confirmation":
+                return self.confirm_understanding(session_id)
+            if current.status in {"final_revision", "waiting_final_review"}:
+                return self.approve_final(session_id)
             return self.continue_current_stage(session_id)
         if control_intent == "modify_current_stage":
             return self.get_session(session_id)
@@ -1417,9 +1453,8 @@ class CognitivePlanningRuntime:
             not state.get("evidence_requires_authority_refresh")
             and state.get("runtime_status") == "idle"
             and row["status"] in {
-            "waiting_design_approval",
-            "waiting_execution_approval",
-            "ready_to_write_calendar",
+            "waiting_understanding_confirmation",
+            "waiting_final_review",
             "waiting_calendar_write_approval",
             }
         ):
@@ -1435,96 +1470,6 @@ class CognitivePlanningRuntime:
             raise HTTPException(status_code=404, detail={"message": "planning session not found"})
         self.persistence.mark_cancelled(session_id)
         return self.get_session(session_id)
-
-    def revise_design(self, session_id: str, payload: PlanningSessionTextRequest) -> PlanningSessionResponse:
-        self.persistence.append_user_turn(session_id, payload.text)
-        row = self.persistence.get_row(session_id)
-        if not row:
-            raise HTTPException(status_code=404, detail={"message": "planning session not found"})
-        return self._invoke(self._state_from_row(row, action="give_feedback", user_input=payload.text))
-
-    def approve_design(self, session_id: str) -> PlanningSessionResponse:
-        row = self.persistence.get_row(session_id)
-        if not row:
-            raise HTTPException(status_code=404, detail={"message": "planning session not found"})
-        resumed = self._resume_if_legacy_evidence(row)
-        if resumed is not None:
-            return resumed
-        if row["status"] != "waiting_design_approval" or not json_object(row["strategy_portfolio_json"]):
-            raise HTTPException(status_code=409, detail={"message": "strategy is not waiting for approval"})
-        portfolio = StrategyPortfolio.model_validate(json_object(row["strategy_portfolio_json"]))
-        self.harness.record_approval(session_id, "strategy")
-        approved_strategy_id = portfolio.recommended_strategy_id
-        approved_portfolio = portfolio.model_copy(
-            update={
-                "approved_strategy_id": approved_strategy_id,
-                "status": "approved",
-            }
-        )
-        self.persistence.update(
-            session_id,
-            approved_strategy_id=approved_strategy_id,
-            strategy_portfolio=approved_portfolio,
-        )
-        row = self.persistence.get_row(session_id)
-        state = self._state_from_row(row, action="approve_strategy")
-        self.agent_runtime.record_decision(
-            session_id,
-            agent=self.strategy_agent.name,
-            decision="approve",
-            reason="The user explicitly approved the recommended strategy.",
-            summary="The strategy gate passed; execution design may begin.",
-            confidence=1,
-            input_artifact_ids=self._latest_artifact_ids(session_id, ("strategy_portfolio",)),
-        )
-        self._handoff(state, self.strategy_agent.name, self.execution_agent.name, "The user explicitly approved the recommended strategy.")
-        return self._invoke(state)
-
-    def approve_execution(self, session_id: str, *, accept_missing_resources: bool = False) -> PlanningSessionResponse:
-        row = self.persistence.get_row(session_id)
-        if not row:
-            raise HTTPException(status_code=404, detail={"message": "planning session not found"})
-        resumed = self._resume_if_legacy_evidence(row)
-        if resumed is not None:
-            return resumed
-        if row["status"] != "waiting_execution_approval":
-            raise HTTPException(status_code=409, detail={"message": "execution plan is not waiting for approval"})
-        state = self._state_from_row(row, action="approve_execution")
-        critic_policy = self.harness.critic_policy(
-            session_id,
-            critique_report=state.get("critique_report"),
-        )
-        if not critic_policy.allowed:
-            raise HTTPException(
-                status_code=409,
-                detail={"message": "current Execution artifact has not passed the independent Critic"},
-            )
-        self.harness.record_approval(session_id, "execution")
-        return self._invoke(state)
-
-    def revise_execution(self, session_id: str, payload: PlanningSessionTextRequest) -> PlanningSessionResponse:
-        self.persistence.append_user_turn(session_id, payload.text)
-        row = self.persistence.get_row(session_id)
-        if not row:
-            raise HTTPException(status_code=404, detail={"message": "planning session not found"})
-        return self._invoke(self._state_from_row(row, action="give_feedback", user_input=payload.text))
-
-    def submit_feedback(self, session_id: str, payload: PlanningSessionTextRequest) -> PlanningSessionResponse:
-        return self.revise_execution(session_id, payload)
-
-    def prepare_calendar_write(self, session_id: str, *, accept_missing_resources: bool = False) -> PlanningSessionResponse:
-        row = self.persistence.get_row(session_id)
-        if not row:
-            raise HTTPException(status_code=404, detail={"message": "planning session not found"})
-        resumed = self._resume_if_legacy_evidence(row)
-        if resumed is not None:
-            return resumed
-        if row["status"] != "ready_to_write_calendar":
-            raise HTTPException(
-                status_code=409,
-                detail={"message": "execution plan must be approved before Calendar preparation"},
-            )
-        return self._invoke(self._state_from_row(row, action="write_calendar"))
 
     def approve_calendar_write(
         self,

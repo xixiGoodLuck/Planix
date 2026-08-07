@@ -31,7 +31,7 @@ type PlanningAction = {
   disabled?: boolean;
 };
 
-const legacyActions = [
+const secondaryActions = [
   { key: 'viewPlans', textKey: 'command.quickViewPlans', messageKey: 'command.quickViewPlansMessage', icon: ListChecks },
   { key: 'searchMemory', textKey: 'command.quickSearchMemory', messageKey: 'command.quickSearchMemoryMessage', icon: FileSearch },
   { key: 'recordMemory', textKey: 'command.quickRecordMemory', messageKey: 'command.quickRecordMemoryMessage', icon: NotebookPen },
@@ -56,28 +56,26 @@ function primaryActions(status: PlanningStatus | undefined, t: Translator): Plan
       { key: 'supplementGoal', label: t('command.supplementGoal'), message: t('command.supplementGoalMessage'), icon: PencilLine }
     ];
   }
-  if (status === 'waiting_design_approval' || status === 'design_revision') {
+  if (status === 'waiting_understanding_confirmation') {
     return [
-      { key: 'confirmDesign', label: t('command.confirmDesign'), message: t('command.confirmDesignMessage'), icon: CheckCircle2 },
-      { key: 'reviseDesign', label: t('command.reviseDesign'), message: t('command.reviseDesignMessage'), icon: PencilLine }
+      { key: 'confirmUnderstanding', label: t('command.confirmUnderstanding'), message: t('command.confirmUnderstandingMessage'), icon: CheckCircle2 },
+      { key: 'reviseUnderstanding', label: t('command.reviseUnderstanding'), message: t('command.reviseUnderstandingMessage'), icon: PencilLine }
     ];
   }
-  if (status === 'waiting_execution_approval') {
-    return [
-      { key: 'confirmExecution', label: t('command.confirmExecution'), message: t('command.confirmExecutionMessage'), icon: CheckCircle2 },
-      { key: 'feedbackTooHeavy', label: t('command.feedbackTooHeavy'), message: t('command.feedbackTooHeavyMessage'), icon: RotateCcw },
-      { key: 'feedbackResourceHard', label: t('command.feedbackResourceHard'), message: t('command.feedbackResourceHardMessage'), icon: FileSearch }
-    ];
-  }
-  if (status === 'execution_revision' || status === 'learning_from_feedback') {
+  if (status === 'final_revision' || status === 'learning_from_feedback') {
     return [
       { key: 'feedbackTooHeavy', label: t('command.feedbackTooHeavy'), message: t('command.feedbackTooHeavyMessage'), icon: RotateCcw },
       { key: 'feedbackResourceHard', label: t('command.feedbackResourceHard'), message: t('command.feedbackResourceHardMessage'), icon: FileSearch }
     ];
   }
-  if (status === 'ready_to_write_calendar') {
+  if (status === 'waiting_final_review') {
     return [
-      { key: 'writeCalendar', label: t('command.quickWriteCalendar'), message: t('command.quickWriteCalendarMessage'), icon: CalendarPlus }
+      {
+        key: 'writeCalendar',
+        label: t('command.approveFinalPlan'),
+        message: t('command.approveFinalPlanMessage'),
+        icon: CalendarPlus
+      }
     ];
   }
   return [
@@ -113,7 +111,7 @@ export function DeepPlanningActionBar({ disabled, messages, onSend, t }: DeepPla
           <span>{t('command.moreActions')}</span>
         </summary>
         <div className="command-more-action-grid">
-          {legacyActions.map((action) => {
+          {secondaryActions.map((action) => {
             const Icon = action.icon;
             return (
               <button

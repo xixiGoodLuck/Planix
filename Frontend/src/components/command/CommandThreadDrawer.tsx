@@ -22,7 +22,7 @@ function workspaceStatusLabel(status: CommandWorkspaceStatus, t: (key: string) =
     idle: 'command.workspaceIdle',
     running: 'command.workspaceRunning',
     waiting_clarification: 'command.workspaceClarification',
-    waiting_strategy_approval: 'command.workspaceStrategyApproval',
+    waiting_confirmation: 'command.workspaceWaitingConfirmation',
     blocked_model: 'command.workspaceModelBlocked',
     accepted: 'command.workspaceAccepted',
     unconfirmed: 'command.workspaceUnconfirmed',

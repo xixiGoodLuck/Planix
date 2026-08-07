@@ -19,7 +19,7 @@ export interface CommandThreadMessage {
   role: 'user' | 'assistant' | 'card';
   content: string;
   createdAt: number;
-  kind?: 'error' | 'runtime' | 'summary' | 'plan_detail' | 'refined_tasks_result' | 'calendar_preview' | 'approval' | 'calendar_write_result' | 'command_decision' | 'plan_search_results' | 'memory_search_results' | 'note_search_results' | 'plan_patch_preview' | 'plan_patch_result' | 'memory_write_preview' | 'memory_write_result' | 'note_write_preview' | 'note_write_result' | 'planning_session_started' | 'user_need_contract' | 'memory_insight_brief' | 'resource_brief' | 'plan_design_proposal' | 'execution_plan_draft' | 'learning_update' | 'agent_decision' | 'agent_message' | 'planning_session_status' | 'goal_understanding' | 'goal_completion_updated' | 'goal_model_updated' | 'reality_assessment_ready' | 'evidence_pack_ready' | 'strategy_portfolio_ready' | 'execution_blueprint_ready' | 'critique_report_ready' | 'planning_learning_updated' | 'model_usage' | 'clarify_question' | 'execution_result';
+  kind?: 'error' | 'runtime' | 'summary' | 'plan_detail' | 'refined_tasks_result' | 'calendar_preview' | 'approval' | 'calendar_write_result' | 'command_decision' | 'plan_search_results' | 'memory_search_results' | 'note_search_results' | 'plan_patch_preview' | 'plan_patch_result' | 'memory_write_preview' | 'memory_write_result' | 'note_write_preview' | 'note_write_result' | 'planning_session_started' | 'agent_decision' | 'agent_message' | 'planning_session_status' | 'goal_understanding' | 'model_usage' | 'clarify_question' | 'execution_result';
   status?: 'running' | 'success' | 'error';
   title?: string;
   draftId?: string;
@@ -32,7 +32,7 @@ export type CommandWorkspaceStatus =
   | 'idle'
   | 'running'
   | 'waiting_clarification'
-  | 'waiting_strategy_approval'
+  | 'waiting_confirmation'
   | 'blocked_model'
   | 'accepted'
   | 'unconfirmed'
@@ -243,24 +243,10 @@ const CARD_KINDS = new Set([
   'note_write_preview',
   'note_write_result',
   'planning_session_started',
-  'user_need_contract',
-  'memory_insight_brief',
-  'resource_brief',
-  'plan_design_proposal',
-  'execution_plan_draft',
-  'learning_update',
   'agent_decision',
   'agent_message',
   'planning_session_status',
   'goal_understanding',
-  'goal_completion_updated',
-  'goal_model_updated',
-  'reality_assessment_ready',
-  'evidence_pack_ready',
-  'strategy_portfolio_ready',
-  'execution_blueprint_ready',
-  'critique_report_ready',
-  'planning_learning_updated',
   'model_usage',
   'clarify_question',
   'execution_result'
@@ -486,11 +472,6 @@ function deriveWorkspaceStatus(messages: CommandThreadMessage[]): CommandWorkspa
       const warnings = Array.isArray(payload.consistencyWarnings) ? payload.consistencyWarnings : [];
       if (intentState === 'ambiguous_goal' || nextQuestion || warnings.length) return 'waiting_clarification';
     }
-    if (message.kind === 'goal_completion_updated') {
-      const data = message.payload?.data as { complete?: boolean } | undefined;
-      if (data?.complete === false) return 'waiting_clarification';
-      if (data?.complete === true) return 'idle';
-    }
     if (message.kind !== 'planning_session_status') continue;
     const payload = message.payload || {};
     const status = String(payload.status || message.content || '').toLowerCase();
@@ -502,8 +483,7 @@ function deriveWorkspaceStatus(messages: CommandThreadMessage[]): CommandWorkspa
       payload.modelFailure ||
       data?.modelFailure
     ) return 'blocked_model';
-    if (status === 'waiting_design_approval') return 'waiting_strategy_approval';
-    if (status === 'waiting_execution_approval') return 'accepted';
+    if (status === 'waiting_understanding_confirmation' || status === 'waiting_final_review') return 'waiting_confirmation';
     if (status.includes('failed') || status.includes('error')) return 'failed';
   }
   return 'idle';
@@ -517,15 +497,13 @@ function eventWorkspaceStatus(event: CommandChatEvent): CommandWorkspaceStatus |
     const warnings = Array.isArray(event.consistencyWarnings) ? event.consistencyWarnings : [];
     if (intentState === 'ambiguous_goal' || nextQuestion || warnings.length) return 'waiting_clarification';
   }
-  if (event.type === 'goal_completion_updated' && !event.data.complete) return 'waiting_clarification';
   if (event.type === 'planning_session_status') {
     const status = String(event.status || '').toLowerCase();
     const runtimeStatus = String(event.runtimeStatus || event.data?.runtimeStatus || '').toLowerCase();
     if (runtimeStatus === 'blocked_model' || status === 'model_unavailable' || event.modelFailure || event.data?.modelFailure) {
       return 'blocked_model';
     }
-    if (status === 'waiting_design_approval') return 'waiting_strategy_approval';
-    if (status === 'waiting_execution_approval') return 'accepted';
+    if (status === 'waiting_understanding_confirmation' || status === 'waiting_final_review') return 'waiting_confirmation';
     if (status.includes('failed') || status.includes('error')) return 'failed';
   }
   if (event.type === 'runtime_event' && event.status === 'error') return 'failed';
@@ -800,80 +778,6 @@ function addEventCard(event: CommandChatEvent, t: (key: string) => string, works
       payload: { ...event }
     });
   }
-  if (event.type === 'goal_completion_updated') {
-    addMessage({
-      role: 'card',
-      kind: 'goal_completion_updated',
-      status: event.data.complete ? 'success' : 'running',
-      title: t('command.goalCompletion'),
-      content: event.data.blockingUnknowns[0]?.question || event.data.nextStage,
-      payload: { ...event }
-    });
-  }
-  if (event.type === 'user_need_contract') {
-    const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {};
-    addMessage({
-      role: 'card',
-      kind: 'user_need_contract',
-      status: 'success',
-      title: t('command.userNeedContract'),
-      content: String(data.interpretedGoal || t('command.userNeedContract')),
-      payload: { ...event }
-    });
-  }
-  if (event.type === 'memory_insight_brief') {
-    addMessage({
-      role: 'card',
-      kind: 'memory_insight_brief',
-      status: 'success',
-      title: t('command.memoryInsightAgent'),
-      content: t('command.memoryInsightAgent'),
-      payload: { ...event }
-    });
-  }
-  if (event.type === 'resource_brief') {
-    addMessage({
-      role: 'card',
-      kind: 'resource_brief',
-      status: 'success',
-      title: t('command.resourceIntelligenceAgent'),
-      content: t('command.resourceIntelligenceAgent'),
-      payload: { ...event }
-    });
-  }
-  if (event.type === 'plan_design_proposal') {
-    const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {};
-    addMessage({
-      role: 'card',
-      kind: 'plan_design_proposal',
-      status: 'running',
-      title: t('command.planDesignProposal'),
-      content: String(data.strategyName || t('command.planDesignProposal')),
-      payload: { ...event }
-    });
-  }
-  if (event.type === 'execution_plan_draft') {
-    const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {};
-    addMessage({
-      role: 'card',
-      kind: 'execution_plan_draft',
-      status: 'running',
-      title: t('command.executionPlanDraft'),
-      content: String(data.scheduleSummary || t('command.executionPlanDraft')),
-      payload: { ...event }
-    });
-  }
-  if (event.type === 'learning_update') {
-    const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {};
-    addMessage({
-      role: 'card',
-      kind: 'learning_update',
-      status: 'success',
-      title: t('command.learningUpdate'),
-      content: String(data.insight || t('command.learningUpdate')),
-      payload: { ...event }
-    });
-  }
   if (event.type === 'agent_decision') {
     const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {};
     addMessage({
@@ -903,43 +807,6 @@ function addEventCard(event: CommandChatEvent, t: (key: string) => string, works
       status: event.status === 'written_to_calendar' ? 'success' : 'running',
       title: t('command.planningSessionStatus'),
       content: event.status,
-      payload: { ...event }
-    });
-  }
-  if (
-    event.type === 'goal_model_updated' ||
-    event.type === 'reality_assessment_ready' ||
-    event.type === 'evidence_pack_ready' ||
-    event.type === 'strategy_portfolio_ready' ||
-    event.type === 'execution_blueprint_ready' ||
-    event.type === 'critique_report_ready' ||
-    event.type === 'planning_learning_updated'
-  ) {
-    const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {};
-    const titles: Record<typeof event.type, string> = {
-      goal_model_updated: t('command.cognitiveGoalModel'),
-      reality_assessment_ready: t('command.cognitiveReality'),
-      evidence_pack_ready: t('command.cognitiveEvidence'),
-      strategy_portfolio_ready: t('command.cognitiveStrategyPortfolio'),
-      execution_blueprint_ready: t('command.cognitiveExecutionBlueprint'),
-      critique_report_ready: t('command.cognitiveCritique'),
-      planning_learning_updated: t('command.cognitiveLearning')
-    };
-    const summary = String(
-      data.goalStatement ||
-      data.feasibilitySummary ||
-      data.synthesis ||
-      data.recommendationReason ||
-      data.simulationSummary ||
-      data.originalFeedback ||
-      titles[event.type]
-    );
-    addMessage({
-      role: 'card',
-      kind: event.type,
-      status: event.type === 'critique_report_ready' && data.status !== 'passed' ? 'error' : 'success',
-      title: titles[event.type],
-      content: summary,
       payload: { ...event }
     });
   }
@@ -1028,24 +895,10 @@ function createStreamHandler(t: (key: string) => string, workspaceId: string) {
         event.type === 'note_write_preview' ||
         event.type === 'note_write_result' ||
         event.type === 'planning_session_started' ||
-        event.type === 'user_need_contract' ||
-        event.type === 'memory_insight_brief' ||
-        event.type === 'resource_brief' ||
-        event.type === 'plan_design_proposal' ||
-        event.type === 'execution_plan_draft' ||
-        event.type === 'learning_update' ||
         event.type === 'agent_decision' ||
         event.type === 'agent_message' ||
         event.type === 'planning_session_status' ||
         event.type === 'goal_understanding' ||
-        event.type === 'goal_completion_updated' ||
-        event.type === 'goal_model_updated' ||
-        event.type === 'reality_assessment_ready' ||
-        event.type === 'evidence_pack_ready' ||
-        event.type === 'strategy_portfolio_ready' ||
-        event.type === 'execution_blueprint_ready' ||
-        event.type === 'critique_report_ready' ||
-        event.type === 'planning_learning_updated' ||
         event.type === 'model_usage' ||
         event.type === 'clarify_question' ||
         event.type === 'execution_result'

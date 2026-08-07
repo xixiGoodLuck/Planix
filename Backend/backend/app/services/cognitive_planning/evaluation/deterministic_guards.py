@@ -178,7 +178,7 @@ _OVERRIDING_BINDING_LANGUAGE = re.compile(
     re.IGNORECASE,
 )
 _DIRECT_SOURCE_REFERENCE = re.compile(
-    r"(?:\bsource\s*ref\b|\burl\b|\b(?:source\s+)?link\b|来源引用|来源链接|网址|链接)",
+    r"(?:source\s*ref|\burl\b|\b(?:source\s+)?link\b|来源引用|来源链接|网址|链接)",
     re.IGNORECASE,
 )
 _RESOURCE_PROVIDER_NAME = re.compile(
@@ -378,7 +378,7 @@ def _number_with_multiplier(raw: str, multiplier: str | None) -> int | None:
     elif (multiplier or "").casefold() == "k":
         value *= 1_000
     integral = value.to_integral_value()
-    return int(integral) if value == integral and value > 0 else None
+    return int(integral) if value == integral and value >= 0 else None
 
 
 def _explicit_spending_limit_cny(goal: UserGoalModel) -> int | None:
@@ -468,8 +468,6 @@ def _contains_hard_weekly_quota(text: str) -> bool:
 
 def _contains_unfounded_resource_reference_requirement(text: str) -> bool:
     for window in _critic_policy_text_windows(text):
-        if _SOURCE_OPTIONAL_LANGUAGE.search(window):
-            continue
         direct_reference = _DIRECT_SOURCE_REFERENCE.search(window)
         provider_name = _RESOURCE_PROVIDER_NAME.search(window)
         if not direct_reference and not provider_name:
@@ -477,6 +475,10 @@ def _contains_unfounded_resource_reference_requirement(text: str) -> bool:
         demand = _SOURCE_REQUIREMENT_LANGUAGE.search(window)
         absence = _SOURCE_ABSENCE_LANGUAGE.search(window)
         defect = _SOURCE_DEFECT_LANGUAGE.search(window)
+        if _SOURCE_OPTIONAL_LANGUAGE.search(window) and not (
+            direct_reference and absence and defect
+        ):
+            continue
         # A request to add sourceRef/URL is explicit by itself. Provider or
         # venue names are more ambiguous, so require the Critic to tie that
         # demand to absence/unverifiability before treating it as a policy
@@ -486,6 +488,48 @@ def _contains_unfounded_resource_reference_requirement(text: str) -> bool:
         if provider_name and absence and (demand or defect):
             return True
     return False
+
+
+_BUFFER_REFERENCE = re.compile(r"(?:\bbuffer\b|\bcatch[- ]?up\b|contingenc|slack)", re.IGNORECASE)
+_BUFFER_ALLOCATION_REQUIREMENT = re.compile(
+    r"(?:explicit.{0,24}task|listed.{0,24}task|formal.{0,24}task|"
+    r"sum.{0,40}(?:equal|match).{0,20}(?:capacity|available)|"
+    r"(?:unallocated|unused).{0,30}(?:issue|inconsisten|not actionable))",
+    re.IGNORECASE,
+)
+_BUFFER_AMOUNT = re.compile(r"buffer(?:\s+of)?\s+(\d+(?:\.\d+)?)\s*(?:minutes?|mins?)", re.IGNORECASE)
+_DEFICIT_AMOUNT = re.compile(r"deficit(?:\s+is|\s+of)?\s+(\d+(?:\.\d+)?)\s*(?:minutes?|mins?)", re.IGNORECASE)
+_BUFFER_INSUFFICIENT = re.compile(r"(?:buffer.{0,24}insufficient|insufficient.{0,24}buffer)", re.IGNORECASE)
+_INVENTED_EXPLICIT_BUDGET = re.compile(
+    r"(?:(?:goal|hard\s+constraints?).{0,80}(?:explicit.{0,24})?"
+    r"(?:spendingLimitCny|cny\s+spending\s+(?:cap|limit)|budget\s+(?:cap|limit))|"
+    r"explicit.{0,24}(?:goal|user).{0,40}(?:budget|spending\s+(?:cap|limit)))",
+    re.IGNORECASE,
+)
+_UNSOURCED_BUDGET_ENFORCEMENT = re.compile(
+    r"(?:spendingLimitCny|budgetSummary|zero\s+budget|budget\s+cap\s+(?:is|of)?\s*0)",
+    re.IGNORECASE,
+)
+_CAPACITY_EXCEEDED_CLAIM = re.compile(
+    r"(?:total.{0,48}(?:exceed|over).{0,32}(?:available|capacity|budget)|"
+    r"(?:plan|workload).{0,40}(?:exceed|over).{0,24}(?:capacity|time\s+budget))",
+    re.IGNORECASE,
+)
+
+
+def _requires_buffer_to_be_allocated_as_work(text: str) -> bool:
+    return bool(_BUFFER_REFERENCE.search(text) and _BUFFER_ALLOCATION_REQUIREMENT.search(text))
+
+
+def _contains_buffer_arithmetic_contradiction(text: str) -> bool:
+    buffer_match = _BUFFER_AMOUNT.search(text)
+    deficit_match = _DEFICIT_AMOUNT.search(text)
+    return bool(
+        buffer_match
+        and deficit_match
+        and _BUFFER_INSUFFICIENT.search(text)
+        and Decimal(buffer_match.group(1)) >= Decimal(deficit_match.group(1))
+    )
 
 
 def critic_policy_context(
@@ -501,6 +545,8 @@ def critic_policy_context(
     """
 
     weekly_capacity = _weekly_capacity_minutes(goal)
+    spending_limit = _explicit_spending_limit_cny(goal)
+    preflight = execution_preflight_context(execution, goal=goal)
     resources = [
         (task.id, index, resource)
         for task in execution.tasks
@@ -519,6 +565,19 @@ def critic_policy_context(
         "weeklyCapacity": {
             "explicitInGoal": weekly_capacity is not None,
             "minutes": weekly_capacity,
+            "isCeiling": True,
+            "unusedCapacityIsValidBuffer": True,
+        },
+        "spendingBudget": {
+            "explicitInGoal": spending_limit is not None,
+            "limitCny": spending_limit,
+            "executionBudgetDoesNotCreateGoalConstraint": True,
+        },
+        "numericExecutionFacts": {
+            "periodTotals": preflight["periodTotals"],
+            "periodSlack": preflight["periodSlack"],
+            "allocationIssues": preflight["allocationIssues"],
+            "taskFieldsAreAuthoritativeOverNarrative": True,
         },
         "halfTimeSimulation": {
             "isContingency": True,
@@ -551,6 +610,13 @@ def critic_policy_violations(
     """
 
     context = critic_policy_context(goal=goal, execution=execution)
+    preflight = execution_preflight_context(execution, goal=goal)
+    numeric_capacity_is_valid = bool(
+        preflight["weeklyCapacityMinutes"] is not None
+        and not preflight["allocationIssues"]
+        and preflight["periodSlack"]
+        and all(float(value) >= 0 for value in preflight["periodSlack"].values())
+    )
     violations: list[dict[str, Any]] = []
     high_impact_issues = [
         (index, issue)
@@ -621,6 +687,231 @@ def critic_policy_violations(
                 }
             )
 
+        if _requires_buffer_to_be_allocated_as_work(text):
+            violations.append(
+                {
+                    "code": "unused_capacity_incorrectly_required_as_task",
+                    "sourceKind": source_kind,
+                    "sourceIndex": source_index,
+                    "severity": severity,
+                    "message": (
+                        "The Critic required unused capacity to be allocated as a task, "
+                        "but capacity is a ceiling and explicit slack is a valid buffer."
+                    ),
+                }
+            )
+
+        if _contains_buffer_arithmetic_contradiction(text):
+            violations.append(
+                {
+                    "code": "critic_buffer_arithmetic_contradiction",
+                    "sourceKind": source_kind,
+                    "sourceIndex": source_index,
+                    "severity": severity,
+                    "message": "The stated buffer is not smaller than the stated deficit.",
+                }
+            )
+
+        if _explicit_spending_limit_cny(goal) is None and (
+            _INVENTED_EXPLICIT_BUDGET.search(text)
+            or _UNSOURCED_BUDGET_ENFORCEMENT.search(text)
+        ):
+            violations.append(
+                {
+                    "code": "critic_invented_explicit_budget_constraint",
+                    "sourceKind": source_kind,
+                    "sourceIndex": source_index,
+                    "severity": severity,
+                    "message": "The Critic attributed an explicit spending cap to a Goal that has none.",
+                }
+            )
+
+        if numeric_capacity_is_valid and _CAPACITY_EXCEEDED_CLAIM.search(text):
+            violations.append(
+                {
+                    "code": "critic_contradicts_valid_capacity_arithmetic",
+                    "sourceKind": source_kind,
+                    "sourceIndex": source_index,
+                    "severity": severity,
+                    "message": (
+                        "The current numeric task allocations are within every explicit weekly "
+                        "capacity ceiling; narrative wording cannot override those task fields."
+                    ),
+                }
+            )
+
+    return violations
+
+
+_TASK_REFERENCE = re.compile(r"(?:\btask|任务)\s*[-_:#]?\s*(\d+)", re.IGNORECASE)
+_MISSING_FACT = re.compile(
+    r"(?:\b(?:missing|lacks?|without|empty|does\s+not\s+(?:have|include)|not\s+provided)\b"
+    r"|缺少|没有|为空|未提供|未包含|不存在)",
+    re.IGNORECASE,
+)
+_COMPLETION_EVIDENCE_FACT = re.compile(
+    r"(?:completion\s*evidence|completionEvidence|完成证据|验收证据)", re.IGNORECASE
+)
+_DELIVERABLE_FACT = re.compile(r"(?:\bdeliverable\b|交付物|产出物)", re.IGNORECASE)
+_RESOURCE_ACTIONABILITY_FACT = re.compile(
+    r"(?:resource|资源).*(?:acquir|obtain|verify|verification|fallback|获取|验证|备用|回退)",
+    re.IGNORECASE,
+)
+_ACTIONABILITY_MARKER = re.compile(
+    r"(?:select|choose|acquir|obtain|verify|check|fallback|选择|获取|通过|验证|确认|备用|回退)",
+    re.IGNORECASE,
+)
+
+
+def _mentioned_task_ids(text: str, execution: ExecutionBlueprint) -> tuple[list[str], list[str]]:
+    known = {task.id.casefold(): task.id for task in execution.tasks}
+    mentioned: list[str] = []
+    unknown: list[str] = []
+    lowered = text.casefold()
+    for task in execution.tasks:
+        if task.id.casefold() in lowered or task.title.casefold() in lowered:
+            mentioned.append(task.id)
+    for number in _TASK_REFERENCE.findall(text):
+        candidates = (f"task{number}", f"task-{number}", f"task_{number}")
+        matched = next((known[item.casefold()] for item in candidates if item.casefold() in known), None)
+        if matched:
+            mentioned.append(matched)
+        else:
+            unknown.append(f"task{number}")
+    return list(dict.fromkeys(mentioned)), list(dict.fromkeys(unknown))
+
+
+def _critic_rule_id(text: str) -> str:
+    if _COMPLETION_EVIDENCE_FACT.search(text):
+        return "task_completion_evidence_presence"
+    if _DELIVERABLE_FACT.search(text):
+        return "task_deliverable_presence"
+    if _DIRECT_SOURCE_REFERENCE.search(text):
+        return "resource_source_ref_presence"
+    if _RESOURCE_ACTIONABILITY_FACT.search(text):
+        return "resource_actionability"
+    return "semantic_plan_review"
+
+
+def bind_critique_to_execution(
+    report: PlanCritiqueReport,
+    *,
+    execution: ExecutionBlueprint,
+    artifact_id: str,
+    artifact_version: int,
+    evidence_refs: Iterable[str] = (),
+) -> PlanCritiqueReport:
+    """Bind every model issue to the immutable Execution actually reviewed."""
+
+    refs = list(dict.fromkeys([artifact_id, *[str(item) for item in evidence_refs if item]]))
+    issues = []
+    for issue in report.issues:
+        text = f"{issue.description} {issue.evidence}"
+        targets, unknown = _mentioned_task_ids(text, execution)
+        target_id = targets[0] if targets else unknown[0] if unknown else "execution_blueprint"
+        issues.append(
+            issue.model_copy(
+                update={
+                    "artifact_id": artifact_id,
+                    "artifact_version": artifact_version,
+                    "target_id": target_id,
+                    "rule_id": _critic_rule_id(text),
+                    "evidence_refs": refs,
+                }
+            )
+        )
+    return report.model_copy(
+        update={
+            "issues": issues,
+            "evaluated_execution_artifact_id": artifact_id,
+            "evaluated_execution_artifact_version": artifact_version,
+        }
+    )
+
+
+def reviewer_consistency_violations(
+    report: PlanCritiqueReport,
+    *,
+    execution: ExecutionBlueprint,
+    artifact_id: str,
+    artifact_version: int,
+) -> list[dict[str, Any]]:
+    """Reject stale lineage and model claims contradicted by current structured facts."""
+
+    violations: list[dict[str, Any]] = []
+    tasks = {task.id: task for task in execution.tasks}
+    for index, issue in enumerate(report.issues):
+        if issue.severity not in {"major", "blocker"}:
+            continue
+        if issue.artifact_id != artifact_id or issue.artifact_version != artifact_version:
+            violations.append(
+                {
+                    "code": "stale_critic_issue_artifact",
+                    "sourceKind": "issue",
+                    "sourceIndex": index,
+                    "message": "The issue is not bound to the current Execution artifact version.",
+                }
+            )
+            continue
+        text = f"{issue.description} {issue.evidence}"
+        mentioned, unknown = _mentioned_task_ids(text, execution)
+        if unknown:
+            violations.append(
+                {
+                    "code": "critic_references_unknown_task",
+                    "sourceKind": "issue",
+                    "sourceIndex": index,
+                    "unknownTaskIds": unknown,
+                    "message": "The Critic references a task that does not exist in the current Execution.",
+                }
+            )
+            continue
+        if not _MISSING_FACT.search(text):
+            continue
+        referenced_tasks = [tasks[item] for item in mentioned if item in tasks]
+        if _COMPLETION_EVIDENCE_FACT.search(text) and referenced_tasks and all(
+            task.completion_evidence for task in referenced_tasks
+        ):
+            violations.append(
+                {
+                    "code": "critic_contradicts_completion_evidence",
+                    "sourceKind": "issue",
+                    "sourceIndex": index,
+                    "taskIds": mentioned,
+                    "message": "Current tasks already contain completionEvidence.",
+                }
+            )
+        elif _DELIVERABLE_FACT.search(text) and referenced_tasks and all(
+            str(task.deliverable or "").strip() for task in referenced_tasks
+        ):
+            violations.append(
+                {
+                    "code": "critic_contradicts_deliverable",
+                    "sourceKind": "issue",
+                    "sourceIndex": index,
+                    "taskIds": mentioned,
+                    "message": "Current tasks already contain deliverables.",
+                }
+            )
+        elif _RESOURCE_ACTIONABILITY_FACT.search(text) and referenced_tasks and all(
+            task.resources
+            and all(
+                str(resource.exact_usage or "").strip()
+                and _ACTIONABILITY_MARKER.search(str(resource.exact_usage or ""))
+                and str(resource.fallback_resource or "").strip()
+                for resource in task.resources
+            )
+            for task in referenced_tasks
+        ):
+            violations.append(
+                {
+                    "code": "critic_contradicts_resource_actionability",
+                    "sourceKind": "issue",
+                    "sourceIndex": index,
+                    "taskIds": mentioned,
+                    "message": "Current task resources already contain actionable usage and fallback fields.",
+                }
+            )
     return violations
 
 

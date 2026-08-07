@@ -15,6 +15,7 @@ from backend.app.services.model_provider import (
     ModelRouter,
     ModelUsage,
     classify_http_error,
+    merge_openai_compatible_extra_body,
     normalize_chat_completions_url,
     provider_default_base_url,
     provider_default_model,
@@ -111,6 +112,40 @@ def test_normalize_chat_completions_url_for_supported_providers():
 def test_kimi_defaults_use_current_official_endpoint_and_model():
     assert provider_default_base_url("kimi") == "https://api.moonshot.ai/v1"
     assert provider_default_model("kimi") == "kimi-k2.7-code"
+
+
+@pytest.mark.parametrize("provider", ("local", "custom"))
+def test_qwen_openai_compatible_requests_disable_thinking_by_default(provider):
+    payload = merge_openai_compatible_extra_body(
+        {},
+        _settings(provider=provider, model="Qwen3.5-4B"),
+    )
+
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_qwen_explicit_thinking_setting_overrides_default():
+    payload = merge_openai_compatible_extra_body(
+        {"chat_template_kwargs": {"enable_thinking": True, "custom_option": "kept"}},
+        _settings(provider="local", model="qwen3-8b"),
+    )
+
+    assert payload["chat_template_kwargs"] == {
+        "enable_thinking": True,
+        "custom_option": "kept",
+    }
+
+
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    (("openai", "gpt-4o-mini"), ("deepseek", "deepseek-v4-flash"), ("custom", "llama-3.1")),
+)
+def test_non_qwen_providers_keep_the_original_request(provider, model):
+    payload = {"model": model}
+
+    assert merge_openai_compatible_extra_body(payload, _settings(provider=provider, model=model)) == {
+        "model": model
+    }
 
 
 def test_usage_parser_accepts_openai_and_compatible_token_names():

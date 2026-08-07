@@ -42,16 +42,6 @@ function latest(messages: CommandThreadMessage[], kind: CommandThreadMessage['ki
   return messageData([...messages].reverse().find((message) => message.kind === kind));
 }
 
-function latestPayloadField(messages: CommandThreadMessage[], field: string): unknown {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const payload = messages[index].payload ?? {};
-    const data = record(payload.data);
-    if (payload[field] !== undefined) return payload[field];
-    if (data[field] !== undefined) return data[field];
-  }
-  return undefined;
-}
-
 function latestKindPayloadField(
   messages: CommandThreadMessage[],
   kind: CommandThreadMessage['kind'],
@@ -62,12 +52,6 @@ function latestKindPayloadField(
   const payload = message.payload ?? {};
   const data = record(payload.data);
   return payload[field] !== undefined ? payload[field] : data[field];
-}
-
-function goalCompletionData(messages: CommandThreadMessage[]): Record<string, unknown> {
-  const event = latest(messages, 'goal_completion_updated');
-  if (Object.keys(event).length) return event;
-  return record(latestPayloadField(messages, 'goalCompletion'));
 }
 
 function itemText(value: unknown): string {
@@ -163,40 +147,6 @@ function userUncertaintyLines(value: unknown, t: Translator): string[] {
     const rendered = [label, impact || description].filter(Boolean).join(' — ');
     return rendered ? [rendered] : [];
   });
-}
-
-function importantGoalUnknownLines(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((item) => text(record(item).priority) !== 'optional')
-    .map(itemText)
-    .filter(Boolean);
-}
-
-function hasCriticalGoalBlocker(value: unknown): boolean {
-  if (!Array.isArray(value)) return false;
-  return value.some((item) => {
-    const raw = record(item);
-    return text(raw.priority) === 'blocking' && ['safety', 'feasibility'].includes(text(raw.impact));
-  });
-}
-
-function firstQuestion(value: unknown): string {
-  if (!Array.isArray(value)) return '';
-  for (const item of value) {
-    const question = typeof item === 'string' ? item : text(record(item).question);
-    if (question) return question;
-  }
-  return '';
-}
-
-function firstAnswerOptions(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  for (const item of value) {
-    const options = listText(record(item).answerOptions);
-    if (options.length) return options.slice(0, 4);
-  }
-  return [];
 }
 
 function modelFailureAttemptLines(value: unknown, t: Translator): string[] {
@@ -318,25 +268,23 @@ export function PlanningOverviewCard({
   t
 }: PlanningOverviewCardProps) {
   const understanding = latest(messages, 'goal_understanding');
-  const completion = goalCompletionData(messages);
-  const goal = latest(messages, 'goal_model_updated');
-  const legacyGoal = latest(messages, 'user_need_contract');
-  const reality = latest(messages, 'reality_assessment_ready');
-  const strategy = latest(messages, 'strategy_portfolio_ready');
+  const planningPhase = text(latestKindPayloadField(messages, 'planning_session_status', 'planningPhase'));
+  const planningUnderstanding = record(latestKindPayloadField(messages, 'planning_session_status', 'understandingSnapshot'));
+  const planningPlan = record(latestKindPayloadField(messages, 'planning_session_status', 'planBlueprint'));
+  const planningPlanQuality = record(latestKindPayloadField(messages, 'planning_session_status', 'planQualityReport'));
+  const planningSchedule = record(latestKindPayloadField(messages, 'planning_session_status', 'scheduleBlueprint'));
+  const planningScheduleQuality = record(latestKindPayloadField(messages, 'planning_session_status', 'scheduleQualityReport'));
+  const planningCalendar = record(latestKindPayloadField(messages, 'planning_session_status', 'calendarProposal'));
   const businessStatus = text(latestKindPayloadField(messages, 'planning_session_status', 'businessStatus'));
   const runtimeStatus = text(latestKindPayloadField(messages, 'planning_session_status', 'runtimeStatus'));
   const modelFailure = record(latestKindPayloadField(messages, 'planning_session_status', 'modelFailure'));
   const pendingInput = record(latestKindPayloadField(messages, 'planning_session_status', 'pendingInput'));
-  const artifactState = text(latestPayloadField(messages, 'artifactState'));
-  const nextStage = text(completion.nextStage);
   const stableStatus = status && status !== 'MODEL_UNAVAILABLE' ? status : businessStatus;
-  const stage: PlanningStage = stableStatus
-    ? planningStageFromStatus(stableStatus, messages)
-    : nextStage === 'goal_clarification'
-      ? 'understand_goal'
-      : nextStage === 'evidence' || nextStage === 'strategy'
-        ? 'design_plan'
-        : planningStageFromStatus(status, messages);
+  const stage: PlanningStage = planningPhase === 'UNDERSTANDING'
+    ? 'understand_goal'
+    : planningPhase === 'FINAL_REVIEW'
+      ? 'waiting_confirmation'
+    : planningStageFromStatus(stableStatus || status, messages);
   const modelBlocked = Object.keys(modelFailure).length > 0
     || status === 'MODEL_UNAVAILABLE'
     || runtimeStatus === 'blocked_model'
@@ -346,46 +294,28 @@ export function PlanningOverviewCard({
   const understoodIntent = text(understanding.understoodIntent)
     || text(record(understanding.understoodIntent).summary)
     || text(record(understanding.understoodIntent).goal);
-  const goalStatement = text(goal.goalStatement)
+  const goalStatement = text(planningUnderstanding.goalSummary)
     || understoodIntent
-    || text(legacyGoal.interpretedGoal)
-    || text(reality.goalRestatement)
     || t('command.planningUnderstandingPending');
   const facts = Array.from(new Set([
-    ...(modelBlocked ? [] : userFactLines(understanding.knownFacts, t)),
-    ...semanticFactLines(goal.knownFacts, t),
-    ...listText(goal.currentKnowledge).map((item) => `${t('command.planningFactBackground')}: ${item}`),
-    ...listText(goal.hardConstraints).map((item) => `${t('command.planningFactConstraints')}: ${item}`),
-    ...factLines(legacyGoal.knownFacts)
+    ...semanticFactLines(planningUnderstanding.facts, t),
+    ...listText(planningUnderstanding.constraints).map((item) => `${t('command.planningFactConstraints')}: ${item}`),
+    ...listText(planningUnderstanding.preferences),
+    ...listText(planningUnderstanding.successSignals),
+    ...listText(planningUnderstanding.assumptions),
+    ...(modelBlocked ? [] : userFactLines(understanding.knownFacts, t))
   ]));
-  const warnings = Array.from(new Set([
-    ...listText(understanding.consistencyWarnings),
-    ...listText(goal.consistencyWarnings)
-  ]));
-  const completionAvailable = typeof completion.complete === 'boolean';
-  const blockingUnknowns = completionAvailable
-    ? listText(completion.blockingUnknowns)
-    : userUncertaintyLines(understanding.uncertainties, t).length
-      ? userUncertaintyLines(understanding.uncertainties, t)
-      : importantGoalUnknownLines(goal.decisionRelevantUnknowns);
-  const optionalUnknowns = completionAvailable ? listText(completion.optionalUnknowns) : [];
+  const warnings = listText(understanding.consistencyWarnings);
+  const blockingUnknowns = listText(planningUnderstanding.unknowns).length
+    ? listText(planningUnderstanding.unknowns)
+    : userUncertaintyLines(understanding.uncertainties, t);
   const pendingInputText = pendingInput.applied === false ? text(pendingInput.text) : '';
   const visibleBlockingUnknowns = modelBlocked
     ? [pendingInputText
         ? `${t('command.planningPendingModelInput')}: ${pendingInputText}`
         : t('command.planningPendingModelInputFallback')]
     : blockingUnknowns;
-  const criticalSkipBlocker = warnings.length > 0 || hasCriticalGoalBlocker(goal.decisionRelevantUnknowns);
-  const showSkipControl = !modelBlocked
-    && completionAvailable
-    && completion.complete === false
-    && stage === 'understand_goal';
-  const skipDisabled = !actionsEnabled || !onSend || sending || modelBlocked || criticalSkipBlocker;
-  const clarificationOptions = (
-    completionAvailable
-      ? firstAnswerOptions(completion.blockingUnknowns)
-      : listText(understanding.clarificationOptions)
-  ).slice(0, 4);
+  const clarificationOptions = listText(understanding.clarificationOptions).slice(0, 4);
   const showClarificationChoices = stage === 'understand_goal'
     && !modelBlocked
     && clarificationOptions.length >= 2;
@@ -399,18 +329,16 @@ export function PlanningOverviewCard({
   const showRetryControl = modelBlocked && modelRetryable && actionsEnabled;
   const retryDisabled = sending || !onSend;
 
-  const legacyNextQuestion = text(understanding.nextQuestion)
-    || firstQuestion(goal.questions)
-    || text(record(legacyGoal.pendingQuestion).questionText)
-    || firstQuestion(reality.importantQuestions)
-    || text(record(strategy.userDecision).question);
+  const nextQuestion = text(record(planningUnderstanding.nextQuestion).question)
+    || text(planningUnderstanding.nextQuestion)
+    || text(understanding.nextQuestion);
   const nextAction = modelBlocked
     ? modelFailureAction
-    : completionAvailable
-      ? completion.complete === true
-        ? t(nextActionKey(stage))
-        : firstQuestion(completion.blockingUnknowns) || blockingUnknowns[0] || legacyNextQuestion || t(nextActionKey(stage))
-      : legacyNextQuestion || blockingUnknowns[0] || t(nextActionKey(stage));
+    : status === 'waiting_understanding_confirmation'
+      ? t('command.confirmUnderstanding')
+      : status === 'waiting_final_review'
+        ? t('command.approveFinalPlan')
+        : nextQuestion || blockingUnknowns[0] || t(nextActionKey(stage));
 
   return (
     <div className="command-inline-card wide planning-overview-card">
@@ -420,11 +348,11 @@ export function PlanningOverviewCard({
         <strong>{t(planningStageTranslationKey(stage))}</strong>
       </header>
       <section>
-        <h3>{t('command.goalUnderstanding')}</h3>
+        <h3>{t(planningPhase === 'FINAL_REVIEW' ? 'command.confirmedGoal' : 'command.goalUnderstanding')}</h3>
         <p className="planning-overview-goal">{goalStatement}</p>
       </section>
       <section>
-        <h3>{t(modelBlocked || artifactState === 'last_confirmed'
+        <h3>{t(modelBlocked
           ? 'command.lastConfirmedKnownFacts'
           : 'command.knownFacts')}</h3>
         {facts.length
@@ -442,10 +370,58 @@ export function PlanningOverviewCard({
         {visibleBlockingUnknowns.length
           ? <ul>{visibleBlockingUnknowns.map((unknown, index) => <li key={`${unknown}-${index}`}>{unknown}</li>)}</ul>
           : <p>{t('command.noBlockingUnknowns')}</p>}
-        {!modelBlocked && optionalUnknowns.length
-          ? <p className="planning-optional-unknowns">{t('command.optionalUnknowns')}: {optionalUnknowns.join(' / ')}</p>
-          : null}
       </section>
+      {planningPhase === 'FINAL_REVIEW' ? (
+        <>
+          <section>
+            <h3>{t('command.planMilestonesAndTasks')}</h3>
+            {Array.isArray(planningPlan.tasks) && planningPlan.tasks.length ? (
+              <ul>{planningPlan.tasks.map((item, index) => {
+                const task = record(item);
+                const title = text(task.title) || text(task.id);
+                const deliverable = text(task.deliverable);
+                return <li key={`${text(task.id)}-${index}`}>{[title, deliverable].filter(Boolean).join(' — ')}</li>;
+              })}</ul>
+            ) : <p>{t('common.unknown')}</p>}
+          </section>
+          <section>
+            <h3>{t('command.schedulePreview')}</h3>
+            {Array.isArray(planningSchedule.sessions) && planningSchedule.sessions.length ? (
+              <ul>{planningSchedule.sessions.slice(0, 12).map((item, index) => {
+                const session = record(item);
+                return <li key={`${text(session.id)}-${index}`}>{text(session.start)} · {String(session.durationMinutes ?? '')} min</li>;
+              })}</ul>
+            ) : <p>{t('common.unknown')}</p>}
+          </section>
+          <section>
+            <h3>{t('command.planQuality')}</h3>
+            <p>{planningPlanQuality.hardRulesPassed === true && !listText(planningPlanQuality.issues).length
+              ? t('command.qualityPassed')
+              : t('command.qualityNeedsAttention')}</p>
+            {listText(planningPlanQuality.issues).length
+              ? <ul>{listText(planningPlanQuality.issues).map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}</ul>
+              : null}
+          </section>
+          <section>
+            <h3>{t('command.scheduleQuality')}</h3>
+            <p>{planningScheduleQuality.hardRulesPassed === true && !listText(planningScheduleQuality.issues).length
+              ? t('command.qualityPassed')
+              : t('command.qualityNeedsAttention')}</p>
+            {listText(planningScheduleQuality.issues).length
+              ? <ul>{listText(planningScheduleQuality.issues).map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}</ul>
+              : null}
+          </section>
+          <section>
+            <h3>{t('command.calendarPreview')}</h3>
+            {Array.isArray(planningCalendar.events) && planningCalendar.events.length ? (
+              <ul>{planningCalendar.events.slice(0, 12).map((item, index) => {
+                const event = record(item);
+                return <li key={`${text(event.sourceKey)}-${index}`}>{text(event.start)} · {text(event.title)}</li>;
+              })}</ul>
+            ) : <p>{t('common.unknown')}</p>}
+          </section>
+        </>
+      ) : null}
       <section className="planning-next-action">
         <h3>{t('command.nextAction')}</h3>
         {modelBlocked ? (
@@ -480,20 +456,6 @@ export function PlanningOverviewCard({
             </button>
           </div>
         ) : null}
-        {showSkipControl ? (
-          <div className="planning-skip-control">
-            <button
-              type="button"
-              disabled={skipDisabled}
-              onClick={() => onSend?.(t('command.skipCurrentStageMessage'))}
-            >
-              {t('command.skipCurrentStage')}
-            </button>
-            <small className={criticalSkipBlocker ? 'planning-skip-blocked' : undefined}>
-              {t(criticalSkipBlocker ? 'command.skipCurrentStageBlocked' : 'command.skipCurrentStageHint')}
-            </small>
-          </div>
-        ) : null}
       </section>
     </div>
   );
@@ -519,25 +481,6 @@ export function GoalUnderstandingDetailCard({ data, t }: { data?: unknown; t: Tr
       <small>{t('command.source')}: {text(raw.source) || t('common.unknown')} · {t('command.confidence')}: {typeof raw.confidence === 'number' ? `${Math.round(raw.confidence * 100)}%` : '-'}</small>
       {error ? <small>{t('command.errorType')}: {error}</small> : null}
       {raw.modelUsage ? <ModelUsageBadge usage={raw.modelUsage} t={t} /> : null}
-    </div>
-  );
-}
-
-export function GoalCompletionDetailCard({ data, t }: { data?: unknown; t: Translator }) {
-  const raw = record(data);
-  const blocking = listText(raw.blockingUnknowns);
-  const optional = listText(raw.optionalUnknowns);
-  return (
-    <div className="command-inline-card wide goal-completion-trace">
-      <div className="command-card-heading">
-        <strong>{t('command.goalCompletion')}</strong>
-        <span>{raw.complete === true ? t('command.goalComplete') : t('command.goalIncomplete')}</span>
-      </div>
-      {blocking.length ? <p>{t('command.importantUnknowns')}: {blocking.join(' / ')}</p> : null}
-      {optional.length ? <p>{t('command.optionalUnknowns')}: {optional.join(' / ')}</p> : null}
-      <small>{t('command.nextAction')}: {text(raw.nextStage) || t('common.unknown')}</small>
-      {text(raw.businessStatus) ? <small>{t('command.planningBusinessStatus')}: {text(raw.businessStatus)}</small> : null}
-      {text(raw.runtimeStatus) ? <small>{t('command.planningRuntimeStatus')}: {text(raw.runtimeStatus)}</small> : null}
     </div>
   );
 }

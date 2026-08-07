@@ -113,29 +113,9 @@ export type CommandChatEvent =
   | { type: 'note_write_preview'; actionId: string; operation: 'create' | 'update'; risk: 'write'; year: number; month: number; date: string; noteText: string; before?: string; after?: string }
   | { type: 'note_write_result'; actionId?: string; operation?: 'create' | 'update'; status: 'success' | 'failed'; year?: number; month?: number; date?: string; noteText?: string; before?: string; after?: string; updatedAt?: string; error?: string }
   | { type: 'planning_session_started'; sessionId: string; status: string }
-  | { type: 'user_need_contract'; sessionId: string; data: unknown }
-  | { type: 'memory_insight_brief'; sessionId: string; data: unknown }
-  | { type: 'resource_brief'; sessionId: string; data: unknown }
-  | { type: 'plan_design_proposal'; sessionId: string; data: unknown }
-  | { type: 'execution_plan_draft'; sessionId: string; data: unknown }
-  | { type: 'learning_update'; sessionId: string; data: unknown }
   | { type: 'agent_decision'; sessionId: string; data: unknown }
   | { type: 'agent_message'; sessionId: string; data: unknown }
   | ({ type: 'planning_session_status' } & PlanningSessionResponse)
-  | {
-      type: 'goal_completion_updated';
-      sessionId: string;
-      data: GoalCompletionResult;
-      businessStatus?: string;
-      runtimeStatus?: string;
-    }
-  | { type: 'goal_model_updated'; sessionId: string; data: PlanningArtifactSnapshot; artifactState?: PlanningArtifactState }
-  | { type: 'reality_assessment_ready'; sessionId: string; data: unknown }
-  | { type: 'evidence_pack_ready'; sessionId: string; data: unknown }
-  | { type: 'strategy_portfolio_ready'; sessionId: string; data: unknown }
-  | { type: 'execution_blueprint_ready'; sessionId: string; data: unknown }
-  | { type: 'critique_report_ready'; sessionId: string; data: unknown }
-  | { type: 'planning_learning_updated'; sessionId: string; data: unknown }
   | {
       type: 'goal_understanding';
       sessionId?: string;
@@ -157,20 +137,6 @@ export type CommandChatEvent =
   | { type: 'execution_result'; actionId?: string; status: 'success' | 'failed' | 'rejected'; text: string }
   | { type: 'done'; threadId: string }
   | { type: 'error'; error: string };
-
-export type GoalCompletionResult = {
-  complete: boolean;
-  blockingUnknowns: Array<{
-    question: string;
-    impact: string;
-    answerOptions?: string[];
-  }>;
-  optionalUnknowns: string[];
-  nextStage: 'goal_clarification' | 'evidence' | 'strategy';
-  artifactState?: PlanningArtifactState;
-};
-
-export type PlanningArtifactState = 'current' | 'last_confirmed';
 
 export type PlanningLocalizedText = string | {
   zh: string;
@@ -198,9 +164,7 @@ export type PlanningPendingInput = {
   applied: false;
 };
 
-export type PlanningArtifactSnapshot = Record<string, unknown> & {
-  artifactState?: PlanningArtifactState;
-};
+export type PlanningArtifactSnapshot = Record<string, unknown>;
 
 /** Shared shape used by live planning_session_status events and replayed snapshots. */
 export interface PlanningSessionResponse {
@@ -208,15 +172,37 @@ export interface PlanningSessionResponse {
   status: string;
   businessStatus?: string;
   runtimeStatus?: string;
-  goalCompletion?: GoalCompletionResult;
   modelFailure?: PlanningModelFailure | null;
   pendingInput?: PlanningPendingInput | null;
+  planningPhase?: 'UNDERSTANDING' | 'PLANNING' | 'SCHEDULING' | 'FINAL_REVIEW' | 'WRITING' | 'ACTIVE' | 'BLOCKED' | 'COMPLETED' | 'CANCELLED' | null;
+  planningStep?: string | null;
+  cognitiveMetadata?: { engineVersion?: string; [key: string]: unknown } | null;
+  understandingSnapshot?: PlanningArtifactSnapshot | null;
+  constraintSet?: PlanningArtifactSnapshot | null;
+  contextPack?: PlanningArtifactSnapshot | null;
+  planBlueprint?: PlanningArtifactSnapshot | null;
+  planQualityReport?: PlanningArtifactSnapshot | null;
+  scheduleBlueprint?: PlanningArtifactSnapshot | null;
+  scheduleQualityReport?: PlanningArtifactSnapshot | null;
+  calendarProposal?: PlanningArtifactSnapshot | null;
+  finalApprovalBundle?: PlanningArtifactSnapshot | null;
   data?: {
     businessStatus?: string;
     runtimeStatus?: string;
-    goalCompletion?: GoalCompletionResult;
     modelFailure?: PlanningModelFailure | null;
     pendingInput?: PlanningPendingInput | null;
+    planningPhase?: PlanningSessionResponse['planningPhase'];
+    planningStep?: string | null;
+    cognitiveMetadata?: PlanningSessionResponse['cognitiveMetadata'];
+    understandingSnapshot?: PlanningArtifactSnapshot | null;
+    constraintSet?: PlanningArtifactSnapshot | null;
+    contextPack?: PlanningArtifactSnapshot | null;
+    planBlueprint?: PlanningArtifactSnapshot | null;
+    planQualityReport?: PlanningArtifactSnapshot | null;
+    scheduleBlueprint?: PlanningArtifactSnapshot | null;
+    scheduleQualityReport?: PlanningArtifactSnapshot | null;
+    calendarProposal?: PlanningArtifactSnapshot | null;
+    finalApprovalBundle?: PlanningArtifactSnapshot | null;
   };
 }
 

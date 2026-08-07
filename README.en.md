@@ -59,7 +59,7 @@ The initial Execution normally produces the complete Blueprint, including its Na
 
 ## Agent Runtime Harness
 
-`backend/app/harness` is the control plane around the Cognitive Agents. LangGraph executes scheduling decisions but does not own product policy.
+`Backend/backend/app/harness` is the control plane around the Cognitive Agents. LangGraph executes scheduling decisions but does not own product policy.
 
 | Component | Responsibility |
 | --- | --- |
@@ -141,13 +141,14 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 Copy-Item .env.example .env
-python -m uvicorn backend.app.main:app --reload --env-file .env
+cd Backend
+..\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --env-file ..\.env --port 8003
 ```
 
-The API runs at `http://127.0.0.1:8000` by default. Verify it with:
+The API runs at `http://127.0.0.1:8003` by default. Verify it with:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/api/health
+Invoke-RestMethod http://127.0.0.1:8003/api/health
 ```
 
 ### Start the Web application
@@ -155,12 +156,12 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 Open another PowerShell window:
 
 ```powershell
-cd apps\web
+cd Frontend
 npm ci
 npm run dev
 ```
 
-Open `http://127.0.0.1:5173`. Vite proxies local `/api` requests to FastAPI.
+Open `http://127.0.0.1:5176`. Vite proxies local `/api` requests to FastAPI.
 
 ### Start desktop development
 
@@ -193,6 +194,8 @@ npm run dev
 
 Settings supports task-specific primary Providers and fallbacks. Formal Cognitive Planning Artifacts always depend on valid structured model output; local templates are never presented as model-generated results.
 
+Planix has one formal planning flow with two user-facing interaction phases: Understanding confirmation and Final Review. `CognitiveOSRuntime` runs the canonical graph directly, while Harness checkpoints, version-bound final approval, and the Calendar permission gate preserve recovery and write safety. Retired sessions are read-only and never resume an old runtime.
+
 ## Data and privacy
 
 - Following the quick start with `.env.example` uses `data/mynotes.db`; without `DATABASE_URL`, the backend code defaults to `data/planix.db`.
@@ -206,14 +209,15 @@ Settings supports task-specific primary Providers and fallbacks. Formal Cognitiv
 ### Backend
 
 ```powershell
-python -m compileall backend
-python -m pytest backend/tests
+cd Backend
+..\.venv\Scripts\python.exe -m compileall backend
+..\.venv\Scripts\python.exe -m pytest backend\tests
 ```
 
 ### Web
 
 ```powershell
-cd apps\web
+cd Frontend
 npx.cmd tsc -b
 npm.cmd run lint
 npm.cmd run test

@@ -1,3 +1,10 @@
-from .runtime import CognitiveOSRuntime, use_cognitive_os
+from .runtime import CognitiveOSRuntime
 
-__all__ = ["CognitiveOSRuntime", "use_cognitive_os"]
+
+def get_planning_orchestrator() -> CognitiveOSRuntime:
+    """Return the only production planning runtime."""
+
+    return CognitiveOSRuntime()
+
+
+__all__ = ["CognitiveOSRuntime", "get_planning_orchestrator"]
