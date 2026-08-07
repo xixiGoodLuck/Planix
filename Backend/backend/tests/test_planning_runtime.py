@@ -21,7 +21,7 @@ from app.services.cognitive_planning.contracts import (
     StrategyUserDecision,
     UserGoalModel,
 )
-from backend.tests.test_execution_single_pass import (
+from test_execution_single_pass import (
     _blueprint,
     _evidence,
     _goal,
