@@ -1,7 +1,6 @@
 from .artifacts import ArtifactContractViolation, HarnessArtifactStore
 from .controllers import (
     ConservativeMemoryEvaluator,
-    CriticController,
     HumanApprovalController,
     MemoryController,
 )
@@ -31,7 +30,6 @@ __all__ = [
     "AgentScheduler",
     "ArtifactContractViolation",
     "ConservativeMemoryEvaluator",
-    "CriticController",
     "HarnessRuntime",
     "HarnessArtifactStore",
     "HumanApprovalController",

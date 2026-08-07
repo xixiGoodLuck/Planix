@@ -22,12 +22,9 @@ ROUTABLE_TASK_TYPES = [
     "memory_write",
     "chat",
     "model_knowledge",
-    "planning_goal_model",
-    "planning_reality",
-    "planning_evidence",
-    "planning_strategy",
-    "planning_execution",
-    "planning_critique",
+    "planning_understanding",
+    "planning_plan",
+    "planning_review",
     "planning_learning",
 ]
 LEGACY_ROUTING_TASK_ALIASES = {
@@ -47,12 +44,9 @@ DEFAULT_TASK_STRATEGIES = {
     "memory_write": "classification",
     "chat": "balanced",
     "model_knowledge": "knowledge_reasoning",
-    "planning_goal_model": "knowledge_reasoning",
-    "planning_reality": "knowledge_reasoning",
-    "planning_evidence": "context_summary",
-    "planning_strategy": "knowledge_reasoning",
-    "planning_execution": "structured_stable",
-    "planning_critique": "strict_json",
+    "planning_understanding": "knowledge_reasoning",
+    "planning_plan": "structured_stable",
+    "planning_review": "strict_json",
     "planning_learning": "knowledge_reasoning",
 }
 AUTO_STRATEGY_SCORES = {

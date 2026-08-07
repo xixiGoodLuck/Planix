@@ -33,7 +33,7 @@ from ..schemas import (
     RefineTaskRequest,
 )
 from .command_decision import CommandDecisionResult, CommandDecisionService, local_fallback_usage, usage_from_llm_result
-from .cognitive_planning.control_intent import detect_planning_control_intent
+from ..cognitive_planning.control_intent import detect_planning_control_intent
 from .goal_understanding import GoalUnderstandingOutcome, GoalUnderstandingService
 from ..cognitive_planning import get_planning_orchestrator
 from .llm import LlmClient
@@ -1496,7 +1496,6 @@ class CommandAgentService:
         status: str | None = None,
         business_status: str | None = None,
         runtime_status: str | None = None,
-        goal_completion: dict[str, Any] | None = None,
         model_failure: dict[str, Any] | None = None,
         pending_input: dict[str, Any] | None = None,
         content: str = "",
@@ -1508,8 +1507,6 @@ class CommandAgentService:
             payload["businessStatus"] = business_status
         if runtime_status is not None:
             payload["runtimeStatus"] = runtime_status
-        if goal_completion is not None:
-            payload["goalCompletion"] = goal_completion
         if model_failure is not None:
             payload["modelFailure"] = model_failure
         if pending_input is not None:
@@ -1598,7 +1595,6 @@ class CommandAgentService:
             status=session.status,
             business_status=session.business_status,
             runtime_status=session.runtime_status,
-            goal_completion=session.goal_completion,
             model_failure=(
                 session.model_failure.model_dump(by_alias=True, exclude_none=True)
                 if session.model_failure
@@ -1682,9 +1678,9 @@ class CommandAgentService:
             return "answer_understanding", session
         if session.status == "MODEL_UNAVAILABLE":
             return (
-                "continue_current_stage"
-                if session.goal_completion and session.goal_completion.get("complete")
-                else "answer_understanding"
+                "answer_understanding"
+                if session.model_failure and session.model_failure.resume_node == "understanding"
+                else "continue_current_stage"
             ), session
         if session.status == "waiting_understanding_confirmation":
             if control_intent == "approve_current_stage" or _planning_approval_text(text):
@@ -1764,16 +1760,16 @@ class CommandAgentService:
             yield self._planning_event(thread_id, "planning_session_status", session.session_id, status=session.status, content=session.status)
             return
         if action == "final_revision_status":
-            critique = session.critique_report or {}
-            issues = critique.get("issues") if isinstance(critique, dict) else []
+            quality = session.plan_quality_report or {}
+            issues = quality.get("issues") if isinstance(quality, dict) else []
             descriptions = [str(item.get("description") or "") for item in issues or [] if isinstance(item, dict)]
-            summary = "The independent critic has not approved this execution plan. " + ("; ".join(filter(None, descriptions)) or "Please revise it before confirmation.")
+            summary = "The current plan has unresolved quality issues. " + ("; ".join(filter(None, descriptions)) or "Please revise it before confirmation.")
             yield self._planning_event(
                 thread_id,
                 "agent_decision",
                 session.session_id,
                 data={
-                    "agent": "Independent Critic & Learning Agent",
+                    "agent": "Plan Reviewer",
                     "decision": "block",
                     "reason": summary,
                     "confidence": 1,
@@ -1800,31 +1796,27 @@ class CommandAgentService:
     ) -> Iterator[str]:
         service = get_planning_orchestrator()
         updated = service.approve_final(session.session_id)
-        structured_plan = service.execution_to_structured_plan(updated)
-        execution_artifact = max(
-            (
-                item
-                for item in updated.artifacts
-                if item.artifact_type in {"execution_blueprint", "execution_plan_draft"}
-            ),
-            key=lambda item: (
-                1 if item.artifact_type == "execution_blueprint" else 0,
-                item.version,
-            ),
-            default=None,
-        )
-        if execution_artifact is None:
-            raise RuntimeError("Calendar preview requires a versioned Execution artifact")
-        execution_artifact_ref = {
-            "id": execution_artifact.id,
-            "sessionId": execution_artifact.session_id,
-            "kind": execution_artifact.artifact_type,
-            "version": execution_artifact.version,
-            "owner": execution_artifact.owner_agent,
-            "status": execution_artifact.status,
-        }
-        title = updated.user_need_contract.interpreted_goal if updated.user_need_contract else _plan_title(structured_plan, updated.user_input)
-        summary = updated.execution_draft.schedule_summary if updated.execution_draft else title
+        structured_plan = service.plan_to_structured_plan(updated)
+        refs: dict[str, dict[str, Any]] = {}
+        for kind in ("final_approval_bundle", "calendar_proposal"):
+            artifact = max(
+                (item for item in updated.artifacts if item.artifact_type == kind),
+                key=lambda item: item.version,
+                default=None,
+            )
+            if artifact is None:
+                raise RuntimeError(f"Calendar preview requires a versioned {kind} artifact")
+            refs[kind] = {
+                "id": artifact.id,
+                "sessionId": artifact.session_id,
+                "kind": artifact.artifact_type,
+                "version": artifact.version,
+                "owner": artifact.owner_agent,
+                "status": artifact.status,
+            }
+        plan = updated.plan_blueprint if isinstance(updated.plan_blueprint, dict) else {}
+        title = str(plan.get("goalSummary") or _plan_title(structured_plan, updated.user_input))
+        summary = title
         self._create_calendar_draft(
             thread_id=thread_id,
             title=title,
@@ -1833,18 +1825,17 @@ class CommandAgentService:
             payload={
                 "structuredPlan": structured_plan,
                 "planningSessionId": updated.session_id,
-                "executionArtifactRef": execution_artifact_ref,
-                "executionDraft": updated.execution_draft.model_dump(by_alias=True) if updated.execution_draft else {},
-                "designProposal": updated.design_proposal.model_dump(by_alias=True) if updated.design_proposal else {},
+                "finalApprovalRef": refs["final_approval_bundle"],
+                "calendarProposalRef": refs["calendar_proposal"],
                 "goal": updated.user_input,
                 "mode": "formal_planning_session",
-                "qualityReport": updated.execution_draft.quality_report.model_dump(by_alias=True) if updated.execution_draft and updated.execution_draft.quality_report else None,
-                "qualityStatus": updated.execution_draft.quality_status if updated.execution_draft else None,
+                "qualityReport": updated.plan_quality_report,
+                "qualityStatus": "passed" if (updated.plan_quality_report or {}).get("passed") else "needs_revision",
                 "sourceType": "local_context",
                 "summary": summary,
             },
         )
-        yield from self._stream_planning_session_snapshot(thread_id, updated, agents=[("Calendar Write Gate", "Execution draft approved; preparing Calendar preview.")])
+        yield from self._stream_planning_session_snapshot(thread_id, updated, agents=[("Calendar Write Gate", "Final approval recorded; preparing Calendar preview.")])
         yield from self._stream_calendar_write_impl(thread_id, payload)
 
     def _thread_context_summary(self, thread_id: str, exclude_message_id: str = "", limit: int = 8) -> str:
@@ -2359,23 +2350,25 @@ class CommandAgentService:
         action_payload = _json_object(action["payload_json"])
         planning_session_id = str(action_payload.get("planningSessionId") or "")
         if action["target"] == "calendar" and planning_session_id:
-            # Bind the human decision to the current Execution artifact. The
+            # Bind the human decision to the current Final Approval artifact. The
             # write path rechecks the same policy immediately before mutation.
             orchestrator = get_planning_orchestrator()
             approve_calendar = getattr(orchestrator, "approve_calendar_write", None)
-            execution_ref = action_payload.get("executionArtifactRef")
-            if not self._planning_execution_ref_is_current(
+            final_approval_ref = action_payload.get("finalApprovalRef")
+            proposal_ref = action_payload.get("calendarProposalRef")
+            if not self._planning_artifact_ref_is_current(
                 planning_session_id,
-                execution_ref,
+                final_approval_ref,
+                "final_approval_bundle",
+            ) or not self._planning_artifact_ref_is_current(
+                planning_session_id,
+                proposal_ref,
+                "calendar_proposal",
             ):
                 raise RuntimeError("planning Calendar approval requires a versioned Harness action")
-            if execution_ref.get("kind") == "execution_blueprint":
-                if not callable(approve_calendar):
-                    raise RuntimeError("canonical planning Calendar approval requires Harness policy")
-                approve_calendar(
-                    planning_session_id,
-                    execution_artifact_ref=execution_ref,
-                )
+            if not callable(approve_calendar):
+                raise RuntimeError("canonical planning Calendar approval requires Harness policy")
+            approve_calendar(planning_session_id, final_approval_ref=final_approval_ref)
 
         if action["target"] in {"notes", "memory"}:
             result = self._execute_memory_action(payload.action_id, action)
@@ -3396,7 +3389,8 @@ class CommandAgentService:
         payload = {"draftId": draft.id, "plans": items}
         if draft.payload.get("planningSessionId"):
             payload["planningSessionId"] = draft.payload.get("planningSessionId")
-            payload["executionArtifactRef"] = draft.payload.get("executionArtifactRef")
+            payload["finalApprovalRef"] = draft.payload.get("finalApprovalRef")
+            payload["calendarProposalRef"] = draft.payload.get("calendarProposalRef")
         with get_conn() as conn:
             conn.execute(
                 """
@@ -3643,15 +3637,16 @@ class CommandAgentService:
             ).fetchone()
         return bool(row and row["decision"] == "approve")
 
-    def _planning_execution_ref_is_current(
+    def _planning_artifact_ref_is_current(
         self,
         session_id: str,
         raw_ref: Any,
+        expected_kind: str,
     ) -> bool:
         if not _is_record(raw_ref):
             return False
         kind = str(raw_ref.get("kind") or "")
-        if kind not in {"execution_blueprint", "execution_plan_draft"}:
+        if kind != expected_kind:
             return False
         try:
             expected_version = int(raw_ref.get("version") or 0)
@@ -3855,19 +3850,21 @@ class CommandAgentService:
             # stale preview or stale human approval.
             orchestrator = get_planning_orchestrator()
             assert_calendar = getattr(orchestrator, "assert_calendar_write_allowed", None)
-            execution_ref = payload.get("executionArtifactRef")
-            if not self._planning_execution_ref_is_current(
+            final_approval_ref = payload.get("finalApprovalRef")
+            proposal_ref = payload.get("calendarProposalRef")
+            if not self._planning_artifact_ref_is_current(
                 planning_session_id,
-                execution_ref,
+                final_approval_ref,
+                "final_approval_bundle",
+            ) or not self._planning_artifact_ref_is_current(
+                planning_session_id,
+                proposal_ref,
+                "calendar_proposal",
             ):
                 raise RuntimeError("planning Calendar write requires a versioned Harness action")
-            if execution_ref.get("kind") == "execution_blueprint":
-                if not callable(assert_calendar):
-                    raise RuntimeError("canonical planning Calendar write requires Harness policy")
-                assert_calendar(
-                    planning_session_id,
-                    execution_artifact_ref=execution_ref,
-                )
+            if not callable(assert_calendar):
+                raise RuntimeError("canonical planning Calendar write requires Harness policy")
+            assert_calendar(planning_session_id, final_approval_ref=final_approval_ref)
         if action["operation"] in {"update", "delete"}:
             return self._execute_calendar_patch_action(action_id, action)
         self._update_action(action_id, status="running")
@@ -3910,14 +3907,11 @@ class CommandAgentService:
         }
         if failed == 0 and payload.get("planningSessionId"):
             orchestrator = get_planning_orchestrator()
-            execution_ref = payload.get("executionArtifactRef")
-            if _is_record(execution_ref) and execution_ref.get("kind") == "execution_blueprint":
-                orchestrator.mark_calendar_written(
-                    str(payload.get("planningSessionId")),
-                    execution_artifact_ref=execution_ref,
-                )
-            else:
-                orchestrator.mark_calendar_written(str(payload.get("planningSessionId")))
+            final_approval_ref = payload.get("finalApprovalRef")
+            orchestrator.mark_calendar_written(
+                str(payload.get("planningSessionId")),
+                final_approval_ref=final_approval_ref,
+            )
         self._update_action(action_id, status="success" if failed == 0 else "failed", result=result, error="; ".join(errors))
         return result
 

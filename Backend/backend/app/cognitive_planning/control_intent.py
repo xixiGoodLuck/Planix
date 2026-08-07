@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from ...schemas import PlanningControlIntent
+from ..schemas import PlanningControlIntent
 
 
 def detect_planning_control_intent(text: str) -> PlanningControlIntent:

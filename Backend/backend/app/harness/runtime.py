@@ -18,7 +18,6 @@ from .contracts import (
 )
 from .controllers import (
     ConservativeMemoryEvaluator,
-    CriticController,
     HumanApprovalController,
     MemoryController,
     MemoryEvaluator,
@@ -41,14 +40,18 @@ _RECOVERY_ACTION_RECORD = {
 }
 
 _NODE_BY_AGENT = {
-    "goal_intelligence": "goal_intelligence",
-    "goal_completion": "goal_completion",
-    "reality": "reality",
-    "evidence": "evidence",
-    "strategy": "strategy",
-    "execution": "execution",
-    "critic": "critic",
+    "understanding_agent": "understanding",
+    "plan_generator": "generate_plan",
+    "plan_reviewer": "semantic_review",
     "feedback_learning": "feedback_learning",
+}
+
+_AGENT_BY_NODE = {
+    "understanding": "understanding_agent",
+    "generate_plan": "plan_generator",
+    "semantic_review": "plan_reviewer",
+    "repair_plan": "plan_generator",
+    "record_learning": "feedback_learning",
 }
 
 _WAIT_BY_NODE = {
@@ -82,7 +85,6 @@ class HarnessRuntime:
         registry: AgentContractRegistry | None = None,
         artifact_runtime: Any | None = None,
         policy: PolicyEngine | None = None,
-        critic: CriticController | None = None,
         memory_evaluator: MemoryEvaluator | None = None,
     ) -> None:
         self.scheduler = scheduler or AgentScheduler()
@@ -91,12 +93,11 @@ class HarnessRuntime:
         self.observability = observability or HarnessObservability(self.repository)
         self.registry = registry or build_cognitive_agent_registry()
         self.policy = policy or PolicyEngine()
-        self.critic = critic or CriticController()
         self.memory_evaluator = memory_evaluator or ConservativeMemoryEvaluator()
         if artifact_runtime is None:
-            from ..services.planning_agent_runtime import PlanningAgentRuntime
+            from ..cognitive_planning.artifact_audit import PlanningArtifactAuditStore
 
-            artifact_runtime = PlanningAgentRuntime()
+            artifact_runtime = PlanningArtifactAuditStore()
         self.artifact_runtime = artifact_runtime
         self.artifact_store = HarnessArtifactStore(artifact_runtime)
         self._compiled_graph: CompiledHarnessGraph | None = None
@@ -299,27 +300,13 @@ class HarnessRuntime:
             )
 
         if decision.action == SchedulerAction.WAIT_USER:
-            completion = graph_state.get("goal_completion")
-            raw_unknowns = list(getattr(completion, "blocking_unknowns", []) or [])
-            blocking = tuple(
-                str(getattr(item, "question", None) or getattr(item, "description", None) or item)
-                for item in raw_unknowns
-            )
+            snapshot = graph_state.get("understanding_snapshot")
+            blocking = tuple(getattr(getattr(snapshot, "readiness", None), "blocking_reasons", ()) or ())
             if blocking:
                 policy = self.policy.decide_planning_progress(
                     session_id=persistent.session_id,
                     runtime_blocked=False,
                     blocking_unknowns=blocking,
-                )
-            elif decision.reason_code.startswith("critic_"):
-                policy = PolicyDecision(
-                    subject="critic_review",
-                    action="wait_user",
-                    allowed=False,
-                    reason=decision.reason_code,
-                    sessionId=persistent.session_id,
-                    requiredGates=("critic",),
-                    failedGates=("critic",),
                 )
             else:
                 policy = PolicyDecision(
@@ -331,12 +318,12 @@ class HarnessRuntime:
                 )
         elif decision.action == SchedulerAction.REPAIR:
             policy = PolicyDecision(
-                subject="critic_review",
+                subject="plan_review",
                 action="repair_artifact",
                 allowed=False,
                 reason=decision.reason_code,
                 sessionId=persistent.session_id,
-                failedGates=("critic",),
+                failedGates=("plan_quality",),
             )
         elif decision.action == SchedulerAction.COMPLETE:
             policy = self.policy.decide_planning_progress(
@@ -377,7 +364,7 @@ class HarnessRuntime:
         node_name: str,
         node: Callable[[dict[str, Any]], dict[str, Any]],
     ):
-        agent_id = _NODE_BY_AGENT[node_name]
+        agent_id = _AGENT_BY_NODE[node_name]
 
         def wrapped(state: dict[str, Any]) -> dict[str, Any]:
             persistent = self.bootstrap(state)
@@ -448,17 +435,11 @@ class HarnessRuntime:
                 if contract.output_artifact
                 else None
             )
-            finalized_critique = bool(
-                agent_id == "critic"
-                and output is not None
-                and state.get("finalized_critique_artifact_id") == output.id
-            )
             if contract.output_artifact and (
                 output is None
                 or (
                     previous_output
                     and output.same_version(previous_output)
-                    and not finalized_critique
                 )
             ):
                 return self._fail_missing_output(
@@ -550,14 +531,14 @@ class HarnessRuntime:
             result_state = node(state)
             synced = self.bootstrap(result_state)
             if node_name == "calendar_gate":
-                execution = synced.checkpoint.artifact_refs.get("execution_blueprint")
+                approval_bundle = synced.checkpoint.artifact_refs.get("final_approval_bundle")
                 approvals = synced.approvals
-                if execution:
+                if approval_bundle:
                     controller = HumanApprovalController(synced.approvals)
                     controller.request(
                         session_id=synced.session_id,
                         gate="calendar",
-                        artifact=execution,
+                        artifact=approval_bundle,
                     )
                     approvals = controller.records
                 policy = self.policy.decide_planning_progress(
@@ -582,7 +563,7 @@ class HarnessRuntime:
         if gate != "calendar":
             raise ValueError("only the final Calendar approval gate is supported")
         persistent = self.bootstrap({"session_id": session_id})
-        artifact_kind = "execution_blueprint"
+        artifact_kind = "final_approval_bundle"
         artifact = persistent.checkpoint.artifact_refs.get(artifact_kind)
         if artifact is None:
             raise ValueError(f"cannot approve {gate}: {artifact_kind} artifact is missing")
@@ -599,7 +580,7 @@ class HarnessRuntime:
             allowed=True,
             reason=f"Human approval is bound to {artifact.kind} v{artifact.version}.",
             sessionId=session_id,
-            requiredGates=("calendar_approval",),
+            requiredGates=("calendar_permission",),
         )
         self.observability.typed_policy_decision(
             updated,
@@ -610,9 +591,9 @@ class HarnessRuntime:
 
     def consume_calendar_approval(self, session_id: str) -> None:
         persistent = self.bootstrap({"session_id": session_id})
-        execution = persistent.checkpoint.artifact_refs.get("execution_blueprint")
-        if not execution:
-            raise ValueError("cannot consume Calendar approval without an Execution artifact")
+        final_approval = persistent.checkpoint.artifact_refs.get("final_approval_bundle")
+        if not final_approval:
+            raise ValueError("cannot consume Calendar permission without a Final Approval artifact")
         controller = HumanApprovalController(persistent.approvals)
         approval = next(
             (
@@ -621,13 +602,13 @@ class HarnessRuntime:
                 if item.approves(
                     session_id=session_id,
                     gate="calendar",
-                    artifact=execution,
+                    artifact=final_approval,
                 )
             ),
             None,
         )
         if not approval:
-            raise ValueError("current Execution artifact has no Calendar approval")
+            raise ValueError("current Final Approval artifact has no Calendar permission")
         controller.consume(approval.id)
         updated = persistent.model_copy(update={"approvals": controller.records})
         self.observability.policy_decision(
@@ -635,7 +616,7 @@ class HarnessRuntime:
             policy="calendar_approval",
             allowed=True,
             reason="Calendar approval was consumed after a successful write.",
-            context={"artifactId": execution.id, "artifactVersion": execution.version},
+            context={"artifactId": final_approval.id, "artifactVersion": final_approval.version},
         )
 
     def calendar_write_policy(
@@ -643,45 +624,28 @@ class HarnessRuntime:
         session_id: str,
         *,
         planning_mode: str,
-        critique_report: Any,
+        plan_quality_passed: bool,
+        schedule_quality_passed: bool,
     ) -> PolicyDecision:
         persistent = self.bootstrap({"session_id": session_id})
         refs = persistent.checkpoint.artifact_refs
-        execution = refs.get("execution_blueprint")
-        critique = refs.get("critique_report")
-        critic_gate = None
-        if execution and critique:
-            try:
-                critique_body = self.artifact_store.load(critique)
-            except Exception:
-                critique_body = None
-        else:
-            critique_body = None
-        if execution and critique and critique_body is not None:
-            evaluated = self._critic_evaluated_execution(
-                session_id,
-                execution=execution,
-                critique=critique,
-            )
-            critic_gate = self.critic.assess(
-                report=critique_body,
-                critique_artifact=critique,
-                execution_artifact=execution,
-                evaluated_execution_artifact=evaluated,
-            )
+        final_approval = refs.get("final_approval_bundle")
+        calendar_proposal = refs.get("calendar_proposal")
         decision = self.policy.authorize_calendar_write(
             session_id=session_id,
             planning_mode=planning_mode,
-            execution_artifact=execution,
-            critic=critic_gate,
+            final_approval=final_approval,
+            calendar_proposal=calendar_proposal,
+            plan_quality_passed=plan_quality_passed,
+            schedule_quality_passed=schedule_quality_passed,
             approvals=persistent.approvals,
         )
         self.observability.typed_policy_decision(
             persistent,
             decision,
             context={
-                "executionVersion": execution.version if execution else None,
-                "critiqueVersion": critique.version if critique else None,
+                "finalApprovalVersion": final_approval.version if final_approval else None,
+                "calendarProposalVersion": calendar_proposal.version if calendar_proposal else None,
             },
         )
         return decision
@@ -707,141 +671,33 @@ class HarnessRuntime:
             raise ValueError(f"{kind} changed after this action was prepared")
         return current
 
-    def critic_policy(
-        self,
-        session_id: str,
-        *,
-        critique_report: Any,
-    ) -> PolicyDecision:
-        persistent = self.bootstrap({"session_id": session_id})
-        execution = persistent.checkpoint.artifact_refs.get("execution_blueprint")
-        critique = persistent.checkpoint.artifact_refs.get("critique_report")
-        try:
-            critique_body = self.artifact_store.load(critique) if critique else None
-        except Exception:
-            critique_body = None
-        if not execution or not critique or critique_body is None:
-            decision = PolicyDecision(
-                subject="critic_review",
-                action="deny",
-                allowed=False,
-                reason="Current Execution and Critique artifacts are required.",
-                sessionId=session_id,
-                requiredGates=("critic",),
-                failedGates=("critic",),
-            )
-        else:
-            evaluated = self._critic_evaluated_execution(
-                session_id,
-                execution=execution,
-                critique=critique,
-            )
-            gate = self.critic.assess(
-                report=critique_body,
-                critique_artifact=critique,
-                execution_artifact=execution,
-                evaluated_execution_artifact=evaluated,
-            )
-            decision = self.critic.policy_decision(gate)
-        self.observability.typed_policy_decision(
-            persistent,
-            decision,
-            agent_id="critic",
-        )
-        return decision
-
-    def _critic_evaluated_execution(
-        self,
-        session_id: str,
-        *,
-        execution: ArtifactRef,
-        critique: ArtifactRef,
-    ) -> ArtifactRef:
-        events = self.repository.events(session_id, limit=5000)
-        for event in reversed(events):
-            if (
-                event.event_type != "agent_invocation"
-                or event.agent_id != "critic"
-                or event.decision != "succeeded"
-            ):
-                continue
-            output = event.payload.get("outputArtifact")
-            inputs = event.payload.get("inputArtifacts")
-            if not isinstance(output, Mapping) or not isinstance(inputs, Mapping):
-                continue
-            if str(output.get("id") or "") != critique.id:
-                continue
-            try:
-                version = int(inputs.get("execution_blueprint") or 0)
-            except (TypeError, ValueError):
-                version = 0
-            if version == execution.version:
-                return execution
-            return ArtifactRef(
-                id=f"stale-execution-v{version}",
-                sessionId=session_id,
-                kind="execution_blueprint",
-                version=max(1, version),
-                owner=execution.owner,
-                status="superseded",
-            )
-        # Compatibility adapter for pre-Harness cognitive sessions. Their
-        # immutable AgentDecision lineage still identifies the exact Execution
-        # and Critique artifact IDs even though no harness invocation event
-        # existed yet.
-        for decision in reversed(self.artifact_runtime.list_decisions(session_id)):
-            if decision.agent not in {
-                "Critic Agent",
-                "Independent Critic & Learning Agent",
-            }:
-                continue
-            if critique.id not in decision.output_artifact_ids:
-                continue
-            if execution.id in decision.input_artifact_ids:
-                return execution
-            break
-        return ArtifactRef(
-            id="unbound-critic-execution",
-            sessionId=session_id,
-            kind="execution_blueprint",
-            version=execution.version,
-            owner=execution.owner,
-            status="superseded",
-        )
-
     def evaluate_memory_candidate(
         self,
         session_id: str,
         *,
-        learning_update: Any,
+        learning_observation: Any,
         memory_repository: Any,
     ) -> MemoryControllerResult | None:
         persistent = self.bootstrap({"session_id": session_id})
-        source = persistent.checkpoint.artifact_refs.get("planning_learning_update")
+        source = persistent.checkpoint.artifact_refs.get("learning_observation")
         if not source:
             return None
         try:
-            from ..services.cognitive_planning.contracts import PlanningLearningUpdate
+            from ..cognitive_planning.contracts import LearningObservation
 
-            bound_update = PlanningLearningUpdate.model_validate(
-                self.artifact_store.load(source)
-            )
+            observation = LearningObservation.model_validate(self.artifact_store.load(source))
         except Exception:
-            return None
-        hypothesis = bound_update.user_model_hypothesis
-        if not bound_update.should_persist or hypothesis is None:
             return None
         candidate = MemoryCandidate(
             id=f"memory-candidate:{source.id}",
             sessionId=session_id,
             sourceArtifact=source,
-            category=getattr(hypothesis, "category", "planning_hypothesis"),
-            statement=str(getattr(hypothesis, "rule", "") or ""),
-            evidence=str(getattr(hypothesis, "evidence", "") or ""),
-            domainScope=list(getattr(hypothesis, "domain_scope", []) or []),
-            confidence=float(getattr(hypothesis, "confidence", 0) or 0),
-            evidencePolarity=getattr(hypothesis, "evidence_polarity", "positive"),
-            expiresAt=getattr(hypothesis, "expires_at", None),
+            category="planning_hypothesis",
+            statement=observation.statement,
+            evidence="; ".join(observation.source_refs),
+            domainScope=[],
+            confidence=0.6,
+            evidencePolarity="positive",
         )
         invocation_id = str(uuid4())
         running = persistent.model_copy(
@@ -858,7 +714,7 @@ class HarnessRuntime:
             status="running",
             invocation_id=invocation_id,
             stage="memory_evaluation",
-            input_artifacts={"planning_learning_update": source.version},
+            input_artifacts={"learning_observation": source.version},
         )
         controller = MemoryController(
             evaluator=self.memory_evaluator,
@@ -885,7 +741,7 @@ class HarnessRuntime:
                 status="failed",
                 invocation_id=invocation_id,
                 stage="memory_evaluation",
-                input_artifacts={"planning_learning_update": source.version},
+                input_artifacts={"learning_observation": source.version},
                 error=harness_error.model_dump(by_alias=True),
             )
             self.observability.recovery_action(
@@ -940,7 +796,7 @@ class HarnessRuntime:
                 status="failed",
                 invocation_id=invocation_id,
                 stage="memory_evaluation",
-                input_artifacts={"planning_learning_update": source.version},
+                input_artifacts={"learning_observation": source.version},
                 error=harness_error.model_dump(by_alias=True),
             )
             self.observability.recovery_action(
@@ -967,7 +823,7 @@ class HarnessRuntime:
             status="succeeded",
             invocation_id=invocation_id,
             stage="memory_evaluation",
-            input_artifacts={"planning_learning_update": source.version},
+            input_artifacts={"learning_observation": source.version},
             output_artifact=evaluation_ref.model_dump(by_alias=True),
         )
         result = controller.persist_evaluated(candidate, evaluation)

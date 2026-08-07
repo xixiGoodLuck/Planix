@@ -7,23 +7,14 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
-    from ..services.cognitive_planning.contracts import SafePlanningError
+    from ..cognitive_planning.contracts import SafePlanningError
 
 
 RESUME_NODE_BY_STAGE: dict[str, str] = {
-    "goal_modeling": "goal_intelligence",
-    "goal_intelligence": "goal_intelligence",
-    "goal_completion": "goal_completion",
-    "reality_assessment": "reality",
-    "context_evidence": "evidence",
-    "evidence_synthesis": "evidence",
-    "strategy_architecture": "strategy",
-    "strategy_design": "strategy",
-    "execution_narrative": "execution",
-    "execution_design": "execution",
-    "independent_critique": "critic",
-    "critic_review": "critic",
-    "plan_critique": "critic",
+    "understanding": "understanding",
+    "generate_plan": "generate_plan",
+    "semantic_review": "semantic_review",
+    "repair_plan": "repair_plan",
     "feedback_learning": "feedback_learning",
 }
 
@@ -143,13 +134,10 @@ class RecoveryManager:
     """Classify failures and preserve the exact failed lifecycle stage."""
 
     def business_status_for_stage(self, stage: str, state: Mapping[str, Any]) -> str:
-        if stage in {"goal_intelligence", "goal_modeling", "goal_completion"}:
-            completion = state.get("goal_completion")
-            return "goal_understood" if completion and getattr(completion, "complete", False) else "goal_clarification"
-        if stage in {"reality_assessment", "context_evidence", "evidence_synthesis"}:
-            return "planning"
-        if stage in {"strategy_architecture", "strategy_design"}:
-            return "planning"
+        if stage == "understanding":
+            snapshot = state.get("understanding_snapshot")
+            ready = bool(snapshot and getattr(getattr(snapshot, "readiness", None), "ready_for_confirmation", False))
+            return "goal_understood" if ready else "goal_clarification"
         return "planning"
 
     def decide_model_failure(
@@ -168,17 +156,16 @@ class RecoveryManager:
             action = RecoveryAction.RETRY_STAGE
         else:
             action = RecoveryAction.GRACEFUL_DEGRADATION
-        degraded = action == RecoveryAction.GRACEFUL_DEGRADATION
         return RecoveryDecision(
             action=action,
-            resume_node=RESUME_NODE_BY_STAGE.get(str(error.stage or ""), "goal_intelligence"),
+            resume_node=RESUME_NODE_BY_STAGE.get(str(error.stage or ""), "understanding"),
             business_status=self.business_status_for_stage(str(error.stage or ""), state),
-            runtime_status="retry_required" if degraded else "blocked_model",
-            planning_mode="degraded_read_only" if degraded else "blocked_model_unavailable",
+            runtime_status="blocked_model",
+            planning_mode="blocked_model_unavailable",
         )
 
     def resume_checkpoint(self, state: Mapping[str, Any]) -> RecoveryDecision:
-        resume_node = str(state.get("resume_node") or "goal_intelligence")
+        resume_node = str(state.get("resume_node") or "understanding")
         return RecoveryDecision(
             action=RecoveryAction.RESUME_CHECKPOINT,
             resume_node=resume_node,

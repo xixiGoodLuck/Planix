@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from ....db import get_conn
-from ..contracts import ConversationTurn
+from ..db import get_conn
+from .contracts import ConversationTurn
 
 
 def now_iso() -> str:
@@ -35,26 +35,8 @@ def dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-class CognitivePlanningPersistence:
-    JSON_COLUMNS = {
-        "cognitive_metadata": "cognitive_metadata_json",
-        "goal_model": "goal_model_json",
-        "goal_completion": "goal_completion_json",
-        "reality_assessment": "reality_assessment_json",
-        "evidence_pack": "evidence_pack_json",
-        "strategy_portfolio": "strategy_portfolio_json",
-        "execution_blueprint": "execution_blueprint_json",
-        "critique_report": "critique_report_json",
-        "planning_learning_update": "planning_learning_update_json",
-        "user_need_contract": "user_need_contract_json",
-        "memory_insight": "memory_insight_json",
-        "resource_brief": "resource_brief_json",
-        "design_proposal": "design_proposal_json",
-        "execution_draft": "execution_draft_json",
-        "learning_patch": "latest_learning_patch_json",
-        "request_context": "request_context_json",
-    }
-    SCALAR_COLUMNS = {"approved_strategy_id": "approved_strategy_id"}
+class PlanningPersistence:
+    """Lifecycle persistence; planning artifacts live only in planning_artifacts."""
 
     def create(self, *, thread_id: str, user_input: str, context: dict[str, Any] | None = None) -> str:
         session_id = str(uuid4())
@@ -64,10 +46,11 @@ class CognitivePlanningPersistence:
             conn.execute(
                 """
                 INSERT INTO planning_sessions(
-                  id, thread_id, entry_point, status, user_input,
-                  conversation_history_json, request_context_json,
-                  cognitive_metadata_json, version, created_at, updated_at
-                ) VALUES (?, ?, 'p_mode', 'needs_goal_clarification', ?, ?, ?, '{}', 1, ?, ?)
+                  id, thread_id, entry_point, status, business_status, runtime_status,
+                  user_input, conversation_history_json, request_context_json,
+                  cognitive_metadata_json, repair_count, version, created_at, updated_at
+                ) VALUES (?, ?, 'p_mode', 'needs_goal_clarification', 'goal_clarification',
+                          'running', ?, ?, ?, '{}', 0, 1, ?, ?)
                 """,
                 (session_id, thread_id, user_input, dump(history), dump(context or {}), now, now),
             )
@@ -90,11 +73,7 @@ class CognitivePlanningPersistence:
         }
         with get_conn() as conn:
             row = conn.execute(
-                """
-                SELECT * FROM planning_sessions
-                WHERE thread_id = ?
-                ORDER BY updated_at DESC LIMIT 1
-                """,
+                "SELECT * FROM planning_sessions WHERE thread_id = ? ORDER BY updated_at DESC LIMIT 1",
                 (thread_id,),
             ).fetchone()
         return row if row and row["status"] in active else None
@@ -122,11 +101,7 @@ class CognitivePlanningPersistence:
         combined = "\n".join(turn.content for turn in history if turn.role == "user")
         with get_conn() as conn:
             conn.execute(
-                """
-                UPDATE planning_sessions
-                SET user_input = ?, conversation_history_json = ?, version = version + 1, updated_at = ?
-                WHERE id = ?
-                """,
+                "UPDATE planning_sessions SET user_input = ?, conversation_history_json = ?, version = version + 1, updated_at = ? WHERE id = ?",
                 (combined, dump([item.model_dump(by_alias=True) for item in history]), now_iso(), session_id),
             )
         return history
@@ -141,11 +116,7 @@ class CognitivePlanningPersistence:
         history.append(ConversationTurn(role="assistant", content=text))
         with get_conn() as conn:
             conn.execute(
-                """
-                UPDATE planning_sessions
-                SET conversation_history_json = ?, version = version + 1, updated_at = ?
-                WHERE id = ?
-                """,
+                "UPDATE planning_sessions SET conversation_history_json = ?, version = version + 1, updated_at = ? WHERE id = ?",
                 (dump([item.model_dump(by_alias=True) for item in history]), now_iso(), session_id),
             )
         return history
@@ -158,58 +129,34 @@ class CognitivePlanningPersistence:
         business_status: str | None = None,
         runtime_status: str | None = None,
         repair_count: int | None = None,
-        approved_strategy_id: str | None = None,
-        clear: tuple[str, ...] = (),
-        **values: Any,
+        cognitive_metadata: Any | None = None,
     ) -> None:
         assignments: list[str] = []
         params: list[Any] = []
-        if status:
-            assignments.append("status = ?")
-            params.append(status)
-        if business_status is not None:
-            assignments.append("business_status = ?")
-            params.append(business_status)
-        if runtime_status is not None:
-            assignments.append("runtime_status = ?")
-            params.append(runtime_status)
+        for column, value in (
+            ("status", status),
+            ("business_status", business_status),
+            ("runtime_status", runtime_status),
+        ):
+            if value is not None:
+                assignments.append(f"{column} = ?")
+                params.append(value)
         if repair_count is not None:
             assignments.append("repair_count = ?")
             params.append(max(0, min(int(repair_count), 2)))
-        if approved_strategy_id is not None:
-            assignments.append("approved_strategy_id = ?")
-            params.append(approved_strategy_id)
-        for key in clear:
-            column = self.JSON_COLUMNS.get(key)
-            if column:
-                assignments.append(f"{column} = '{{}}'")
-                continue
-            column = self.SCALAR_COLUMNS.get(key)
-            if column:
-                assignments.append(f"{column} = ''")
-        for key, value in values.items():
-            column = self.JSON_COLUMNS.get(key)
-            if not column:
-                continue
-            assignments.append(f"{column} = ?")
-            params.append(dump(value) if value is not None else "{}")
+        if cognitive_metadata is not None:
+            assignments.append("cognitive_metadata_json = ?")
+            params.append(dump(cognitive_metadata))
         assignments.extend(["version = version + 1", "updated_at = ?"])
         params.extend([now_iso(), session_id])
         with get_conn() as conn:
             conn.execute(f"UPDATE planning_sessions SET {', '.join(assignments)} WHERE id = ?", params)
 
     def mark_written(self, session_id: str) -> None:
-        self.update(
-            session_id,
-            status="written_to_calendar",
-            business_status="completed",
-            runtime_status="idle",
-        )
+        self.update(session_id, status="written_to_calendar", business_status="completed", runtime_status="idle")
 
     def mark_cancelled(self, session_id: str) -> None:
-        self.update(
-            session_id,
-            status="cancelled",
-            business_status="cancelled",
-            runtime_status="idle",
-        )
+        self.update(session_id, status="cancelled", business_status="cancelled", runtime_status="idle")
+
+
+__all__ = ["PlanningPersistence", "dump", "json_list", "json_object", "now_iso"]

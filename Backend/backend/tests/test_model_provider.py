@@ -278,7 +278,7 @@ def test_openai_compatible_provider_posts_expected_payload(monkeypatch):
     assert "max_completion_tokens" not in calls[0]["json"]
 
 
-def test_deepseek_v4_execution_generation_requests_disable_thinking(monkeypatch):
+def test_deepseek_v4_native_plan_requests_disable_thinking(monkeypatch):
     calls = []
 
     class FakeResponse:
@@ -308,17 +308,13 @@ def test_deepseek_v4_execution_generation_requests_disable_thinking(monkeypatch)
     router = ModelRouter(_settings(provider="deepseek", model="deepseek-v4-flash"), routing_enabled=False)
 
     for feature in (
-        "cognitive_execution_narrative",
-        "cognitive_execution_narrative_fallback",
-        "cognitive_execution_blueprint_fallback",
-        "cognitive_execution_single_pass",
-        "cognitive_os_execution_single_pass",
-        "cognitive_execution_preflight_repair",
+        "planning_plan_generation",
+        "planning_plan_repair",
     ):
         result, error = router.complete(
             _request(
                 response_format_json=True,
-                task_type="planning_execution",
+                task_type="planning_plan",
                 feature=feature,
             )
         )
@@ -330,8 +326,8 @@ def test_deepseek_v4_execution_generation_requests_disable_thinking(monkeypatch)
     result, error = router.complete(
         _request(
             response_format_json=True,
-            task_type="planning_execution",
-            feature="cognitive_execution_blueprint",
+            task_type="planning_plan",
+            feature="planning_semantic_review",
         )
     )
     assert error is None
@@ -341,8 +337,8 @@ def test_deepseek_v4_execution_generation_requests_disable_thinking(monkeypatch)
     result, error = router.complete(
         _request(
             response_format_json=True,
-            task_type="planning_strategy",
-            feature="cognitive_execution_single_pass",
+            task_type="planning_review",
+            feature="planning_plan_generation",
         )
     )
     assert error is None
@@ -626,12 +622,9 @@ def test_model_router_primary_success_does_not_use_fallback(monkeypatch):
 @pytest.mark.parametrize(
     ("task_type", "initial_budget", "hard_cap"),
     [
-        ("planning_goal_model", 5400, 10800),
-        ("planning_reality", 5400, 10800),
-        ("planning_evidence", 6600, 13200),
-        ("planning_strategy", 7200, 14400),
-        ("planning_execution", 12000, 24000),
-        ("planning_critique", 6600, 13200),
+        ("planning_understanding", 5400, 10800),
+        ("planning_plan", 12000, 24000),
+        ("planning_review", 6600, 13200),
         ("planning_learning", 5400, 10800),
     ],
 )
@@ -729,7 +722,7 @@ def test_direct_planning_truncation_retries_same_provider_once(monkeypatch):
         routing_enabled=False,
     ).complete(
         _request(
-            task_type="planning_evidence",
+            task_type="planning_review",
             response_format_json=True,
             max_tokens=6600,
             max_token_cap=13200,
@@ -781,7 +774,7 @@ def test_planning_stage_uses_only_one_automatic_retry_then_continues_fallback(mo
 
     result, error = ModelRouter(_settings(provider="kimi", base_url="https://api.moonshot.ai/v1", model="kimi-k2.7-code")).complete(
         _request(
-            task_type="planning_evidence",
+            task_type="planning_review",
             response_format_json=True,
             max_tokens=6600,
             max_token_cap=13200,
@@ -896,7 +889,7 @@ def test_planning_retry_requires_json_truncation(monkeypatch, response_format_js
         _settings(provider="kimi", base_url="https://api.moonshot.ai/v1", model="kimi-k2.7-code")
     ).complete(
         _request(
-            task_type="planning_evidence",
+            task_type="planning_review",
             response_format_json=response_format_json,
             max_tokens=6600,
             max_token_cap=13200,

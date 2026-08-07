@@ -6,7 +6,6 @@ from .contracts import (
     ApprovalGate,
     ApprovalRecord,
     ArtifactRef,
-    CriticGateResult,
     MemoryCandidate,
     MemoryEvaluation,
     PolicyDecision,
@@ -15,7 +14,7 @@ from .contracts import (
 
 
 _APPROVAL_POLICY_GATES: dict[ApprovalGate, PolicyGate] = {
-    "calendar": "calendar_approval",
+    "calendar": "calendar_permission",
 }
 
 
@@ -61,8 +60,8 @@ class PolicyEngine:
                 allowed=False,
                 reason="Decision-blocking user information is still missing.",
                 sessionId=session_id,
-                requiredGates=("goal_completion",),
-                failedGates=("goal_completion",),
+                requiredGates=("understanding_confirmation",),
+                failedGates=("understanding_confirmation",),
             )
         if approval_gate:
             policy_gate = _APPROVAL_POLICY_GATES[approval_gate]
@@ -98,65 +97,64 @@ class PolicyEngine:
         *,
         session_id: str,
         planning_mode: str,
-        execution_artifact: ArtifactRef | None,
-        critic: CriticGateResult | None,
+        final_approval: ArtifactRef | None,
+        calendar_proposal: ArtifactRef | None,
+        plan_quality_passed: bool,
+        schedule_quality_passed: bool,
         approvals: Sequence[ApprovalRecord],
     ) -> PolicyDecision:
         required: tuple[PolicyGate, ...] = (
-            "critic",
-            "calendar_approval",
+            "plan_quality",
+            "schedule_quality",
+            "final_approval",
+            "calendar_permission",
         )
         failed: list[PolicyGate] = []
         if planning_mode != "model_backed":
             failed.append("runtime")
 
-        critic_passed = bool(
-            critic
-            and critic.passed
-            and execution_artifact
-            and critic.execution_artifact.same_version(execution_artifact)
-            and critic.evaluated_execution_artifact.same_version(execution_artifact)
-            and critic.critique_artifact.kind == "critique_report"
-            and critic.critique_artifact.session_id == session_id
-        )
-        if not critic_passed:
-            failed.append("critic")
+        if not plan_quality_passed:
+            failed.append("plan_quality")
+        if not schedule_quality_passed:
+            failed.append("schedule_quality")
+        if not final_approval or final_approval.session_id != session_id or final_approval.kind != "final_approval_bundle":
+            failed.append("final_approval")
+        if not calendar_proposal or calendar_proposal.session_id != session_id or calendar_proposal.kind != "calendar_proposal":
+            failed.append("final_approval")
 
         calendar_approved = bool(
-            execution_artifact
-            and execution_artifact.session_id == session_id
-            and execution_artifact.kind == "execution_blueprint"
+            final_approval
             and _has_approval(
                 approvals,
                 session_id=session_id,
                 gate="calendar",
-                artifact=execution_artifact,
+                artifact=final_approval,
             )
         )
         if not calendar_approved:
-            failed.append("calendar_approval")
+            failed.append("calendar_permission")
 
         if not failed:
             return PolicyDecision(
                 subject="calendar_write",
                 action="allow",
                 allowed=True,
-                reason="The independent review and Calendar approval gates passed for the current artifact versions.",
+                reason="Plan quality, schedule quality, final approval, and Calendar permission passed for the current versions.",
                 sessionId=session_id,
                 requiredGates=required,
             )
 
         approval_order: tuple[tuple[PolicyGate, ApprovalGate], ...] = (
-            ("calendar_approval", "calendar"),
+            ("calendar_permission", "calendar"),
         )
         required_approval = next((gate for policy_gate, gate in approval_order if policy_gate in failed), None)
-        hard_failure = "runtime" in failed or "critic" in failed
+        hard_failure = any(gate in failed for gate in ("runtime", "plan_quality", "schedule_quality", "final_approval"))
         return PolicyDecision(
             subject="calendar_write",
             action="deny" if hard_failure else "wait_approval",
             allowed=False,
             reason=(
-                "Calendar write is blocked because the runtime or independent Critic gate failed."
+                "Calendar write is blocked because a runtime, quality, or final-approval gate failed."
                 if hard_failure
                 else f"Calendar write is waiting for {required_approval} approval bound to the current artifact version."
             ),
@@ -190,8 +188,8 @@ class PolicyEngine:
                 failures.append("evaluation contains no durable rule")
             if not (evaluation.evidence or "").strip():
                 failures.append("evaluation contains no evidence")
-        if candidate.source_artifact.kind != "planning_learning_update":
-            failures.append("candidate source is not a Planning Learning artifact")
+        if candidate.source_artifact.kind != "learning_observation":
+            failures.append("candidate source is not a Learning Observation artifact")
         if candidate.source_artifact.session_id != candidate.session_id:
             failures.append("candidate source artifact belongs to another session")
 

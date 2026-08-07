@@ -25,13 +25,10 @@ class SchedulerDecision:
 
 
 AGENT_BY_NODE: dict[str, str] = {
-    "understanding": "goal_intelligence",
-    "understanding_readiness": "goal_completion",
-    "assess_context": "reality",
-    "synthesize_context": "evidence",
-    "design_approach": "strategy",
-    "generate_plan": "execution",
-    "semantic_review": "critic",
+    "understanding": "understanding_agent",
+    "generate_plan": "plan_generator",
+    "semantic_review": "plan_reviewer",
+    "repair_plan": "plan_generator",
     "record_learning": "feedback_learning",
 }
 
@@ -41,7 +38,7 @@ class AgentScheduler:
 
     The single formal graph owns its explicit transition table; the Harness
     validates and records each typed ``SchedulerDecision`` without a second,
-    competing V1 routing table.
+    competing routing table.
     """
 
 

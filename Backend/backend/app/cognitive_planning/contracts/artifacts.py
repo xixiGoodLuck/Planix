@@ -4,25 +4,8 @@ from typing import Literal
 
 from pydantic import Field
 
-from ...services.cognitive_planning.contracts import (
-    EvidencePack,
-    ExecutionBlueprint,
-    GoalModelingInput,
-    GoalQuestion,
-    PlanCritiqueReport,
-    PlanningLearningUpdate,
-    RealityAssessment,
-    RealityAssessmentInput,
-    StrategyPortfolio,
-    UserGoalModel,
-)
-from ...services.cognitive_planning.contracts.base import CognitiveContract
+from .base import CognitiveContract
 
-
-GoalUnderstandingArtifact = UserGoalModel
-StrategyProposal = StrategyPortfolio
-ExecutionPlanArtifact = ExecutionBlueprint
-CriticReport = PlanCritiqueReport
 
 UserModelCategory = Literal[
     "fact",
@@ -60,17 +43,4 @@ class UserModelMemory(CognitiveContract):
     expires_at: str | None = None
 
 
-__all__ = [
-    "CriticReport",
-    "EvidencePack",
-    "ExecutionPlanArtifact",
-    "GoalModelingInput",
-    "GoalQuestion",
-    "GoalUnderstandingArtifact",
-    "PlanningLearningUpdate",
-    "RealityAssessment",
-    "RealityAssessmentInput",
-    "StrategyProposal",
-    "UserModelMemory",
-    "UserModelMemoryDraft",
-]
+__all__ = ["UserModelMemory", "UserModelMemoryDraft"]

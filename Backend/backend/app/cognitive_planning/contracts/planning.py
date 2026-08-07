@@ -6,9 +6,9 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import Field, model_validator
+from pydantic import Field, computed_field, model_validator
 
-from ...services.cognitive_planning.contracts.base import CognitiveContract
+from .base import CognitiveContract
 
 
 def new_artifact_id(prefix: str) -> str:
@@ -289,12 +289,21 @@ class QualityReport(CognitiveContract):
     remaining_risks: list[str] = Field(default_factory=list)
     repair_round: int = Field(default=0, ge=0, le=2)
 
+    @computed_field
     @property
     def passed(self) -> bool:
         return bool(
             self.hard_rules_passed
             and not any(issue.severity in {"blocker", "major"} for issue in self.issues)
         )
+
+
+class SemanticReviewResult(CognitiveContract):
+    target_artifact_id: str
+    target_version: int = Field(ge=1)
+    issues: list[QualityIssue] = Field(default_factory=list)
+    score: float | None = Field(default=None, ge=0, le=100)
+    remaining_risks: list[str] = Field(default_factory=list)
 
 
 RepairOperationType = Literal[
@@ -424,6 +433,7 @@ class FinalApprovalBundle(CognitiveContract):
     plan_version: int
     quality_report_version: int
     schedule_version: int
+    schedule_quality_report_version: int
     calendar_proposal_version: int
     calendar_snapshot_version: int
     checkpoint_version: int

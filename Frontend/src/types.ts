@@ -583,12 +583,9 @@ export type ModelRoutingTaskType =
   | 'note_write'
   | 'chat'
   | 'model_knowledge'
-  | 'planning_goal_model'
-  | 'planning_reality'
-  | 'planning_evidence'
-  | 'planning_strategy'
-  | 'planning_execution'
-  | 'planning_critique'
+  | 'planning_understanding'
+  | 'planning_plan'
+  | 'planning_review'
   | 'planning_learning';
 
 export interface ModelRouteAttempt {

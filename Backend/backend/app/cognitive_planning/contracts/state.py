@@ -5,16 +5,23 @@ from typing import Any, Literal, TypedDict
 from pydantic import Field
 
 from .base import CognitiveContract
-from .critique import PlanCritiqueReport
-from .evidence import EvidencePack
-from .execution import ExecutionBlueprint
-from .goal_model import ConversationTurn, UserGoalModel
-from .goal_completion import GoalCompletionResult
-from .learning import PlanningLearningUpdate
-from .strategy import StrategyPortfolio
+from .planning import (
+    CalendarProposal,
+    ConstraintSet,
+    ContextPack,
+    ExecutionOutcome,
+    FeedbackRoute,
+    FinalApprovalBundle,
+    LearningObservation,
+    PlanBlueprint,
+    QualityReport,
+    ReplanProposal,
+    ScheduleBlueprint,
+    UnderstandingSnapshot,
+)
 
 
-PlanningMode = Literal["model_backed", "degraded_read_only", "blocked_model_unavailable"]
+PlanningMode = Literal["model_backed", "blocked_model_unavailable"]
 CognitivePlanningStatus = Literal[
     "needs_goal_clarification",
     "waiting_understanding_confirmation",
@@ -30,6 +37,11 @@ CognitivePlanningStatus = Literal[
 ]
 
 
+class ConversationTurn(CognitiveContract):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class SafePlanningError(CognitiveContract):
     stage: str
     error_type: str
@@ -39,7 +51,7 @@ class SafePlanningError(CognitiveContract):
 
 
 class CognitivePlanningMetadata(CognitiveContract):
-    engine_version: Literal["planning-engine-2", "cognitive-v2", "cognitive-os-v1", "cognitive-os-v2"] = "planning-engine-2"
+    engine_version: Literal["planning-engine-2"] = "planning-engine-2"
     planning_mode: PlanningMode
     current_stage: str
     agent_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -61,23 +73,11 @@ UserAction = Literal[
 
 
 class CognitivePlanningState(TypedDict, total=False):
-    planning_flow_version: str
     session_id: str
     thread_id: str
     user_input: str
     conversation_history: list[ConversationTurn]
     request_context: dict[str, Any]
-    goal_model: UserGoalModel
-    goal_completion: GoalCompletionResult
-    evidence_pack: EvidencePack
-    legacy_evidence_pack: EvidencePack
-    evidence_requires_authority_refresh: bool
-    reality_assessment: Any
-    strategy_portfolio: StrategyPortfolio
-    approved_strategy_id: str
-    execution_blueprint: ExecutionBlueprint
-    critique_report: PlanCritiqueReport
-    learning_update: PlanningLearningUpdate | None
     user_action: UserAction
     status: CognitivePlanningStatus
     business_status: str
@@ -86,20 +86,31 @@ class CognitivePlanningState(TypedDict, total=False):
     planning_mode: PlanningMode
     repair_count: int
     schedule_repair_count: int
-    repair_loop: bool
-    repair_instructions: list[dict[str, Any]]
-    finalized_critique_artifact_id: str
     next_node: str
-    understanding_snapshot: Any
+    understanding_snapshot: UnderstandingSnapshot
     understanding_updated: bool
-    constraint_set: Any
-    context_pack: Any
-    plan_blueprint: Any
-    plan_quality_report: Any
-    schedule_blueprint: Any
-    schedule_quality_report: Any
-    calendar_proposal: Any
-    feedback_route: Any
-    final_approval_bundle: Any
+    constraint_set: ConstraintSet
+    context_pack: ContextPack
+    plan_blueprint: PlanBlueprint
+    plan_quality_report: QualityReport
+    schedule_blueprint: ScheduleBlueprint
+    schedule_quality_report: QualityReport
+    calendar_proposal: CalendarProposal
+    feedback_route: FeedbackRoute
+    final_approval_bundle: FinalApprovalBundle
+    execution_outcomes: list[ExecutionOutcome]
+    replan_proposal: ReplanProposal
+    learning_observations: list[LearningObservation]
     errors: list[SafePlanningError]
     response: Any
+
+
+__all__ = [
+    "CognitivePlanningMetadata",
+    "CognitivePlanningState",
+    "CognitivePlanningStatus",
+    "ConversationTurn",
+    "PlanningMode",
+    "SafePlanningError",
+    "UserAction",
+]

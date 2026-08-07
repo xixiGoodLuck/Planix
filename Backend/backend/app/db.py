@@ -231,26 +231,9 @@ def init_db(conn: sqlite3.Connection) -> None:
           business_status TEXT NOT NULL DEFAULT 'goal_clarification',
           runtime_status TEXT NOT NULL DEFAULT 'idle',
           user_input TEXT NOT NULL,
-          user_need_contract_json TEXT NOT NULL DEFAULT '{}',
-          slot_state_json TEXT NOT NULL DEFAULT '{}',
-          pending_question_json TEXT NOT NULL DEFAULT '{}',
-          memory_insight_json TEXT NOT NULL DEFAULT '{}',
-          resource_brief_json TEXT NOT NULL DEFAULT '{}',
-          design_proposal_json TEXT NOT NULL DEFAULT '{}',
-          execution_draft_json TEXT NOT NULL DEFAULT '{}',
-          latest_learning_patch_json TEXT NOT NULL DEFAULT '{}',
           cognitive_metadata_json TEXT NOT NULL DEFAULT '{}',
-          goal_model_json TEXT NOT NULL DEFAULT '{}',
-          goal_completion_json TEXT NOT NULL DEFAULT '{}',
-          reality_assessment_json TEXT NOT NULL DEFAULT '{}',
-          evidence_pack_json TEXT NOT NULL DEFAULT '{}',
-          strategy_portfolio_json TEXT NOT NULL DEFAULT '{}',
-          execution_blueprint_json TEXT NOT NULL DEFAULT '{}',
-          critique_report_json TEXT NOT NULL DEFAULT '{}',
-          planning_learning_update_json TEXT NOT NULL DEFAULT '{}',
           conversation_history_json TEXT NOT NULL DEFAULT '[]',
           request_context_json TEXT NOT NULL DEFAULT '{}',
-          approved_strategy_id TEXT NOT NULL DEFAULT '',
           repair_count INTEGER NOT NULL DEFAULT 0,
           version INTEGER NOT NULL DEFAULT 1,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -449,14 +432,6 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_user_model_memories_category_status
           ON user_model_memories(category, status, last_validated_at);
 
-        CREATE TABLE IF NOT EXISTS planning_shadow_runs (
-          id TEXT PRIMARY KEY,
-          legacy_session_id TEXT NOT NULL,
-          cognitive_session_id TEXT NOT NULL,
-          comparison_json TEXT NOT NULL DEFAULT '{}',
-          created_at TEXT NOT NULL
-        );
-
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
           USING fts5(memory_id, kind, title, content, summary, tags);
 
@@ -610,11 +585,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "command_actions", "draft_id", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "command_actions", "error_message", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "command_approvals", "decision", "TEXT NOT NULL DEFAULT 'pending'")
-    ensure_column(conn, "planning_sessions", "slot_state_json", "TEXT NOT NULL DEFAULT '{}'")
-    ensure_column(conn, "planning_sessions", "pending_question_json", "TEXT NOT NULL DEFAULT '{}'")
     ensure_column(conn, "planning_sessions", "cognitive_metadata_json", "TEXT NOT NULL DEFAULT '{}'")
-    ensure_column(conn, "planning_sessions", "goal_model_json", "TEXT NOT NULL DEFAULT '{}'")
-    ensure_column(conn, "planning_sessions", "goal_completion_json", "TEXT NOT NULL DEFAULT '{}'")
     business_status_added = ensure_column(
         conn,
         "planning_sessions",
@@ -627,15 +598,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         "runtime_status",
         "TEXT NOT NULL DEFAULT 'idle'",
     )
-    ensure_column(conn, "planning_sessions", "reality_assessment_json", "TEXT NOT NULL DEFAULT '{}'")
-    ensure_column(conn, "planning_sessions", "evidence_pack_json", "TEXT NOT NULL DEFAULT '{}'")
-    ensure_column(conn, "planning_sessions", "strategy_portfolio_json", "TEXT NOT NULL DEFAULT '{}'")
-    ensure_column(conn, "planning_sessions", "execution_blueprint_json", "TEXT NOT NULL DEFAULT '{}'")
-    ensure_column(conn, "planning_sessions", "critique_report_json", "TEXT NOT NULL DEFAULT '{}'")
-    ensure_column(conn, "planning_sessions", "planning_learning_update_json", "TEXT NOT NULL DEFAULT '{}'")
     ensure_column(conn, "planning_sessions", "conversation_history_json", "TEXT NOT NULL DEFAULT '[]'")
     ensure_column(conn, "planning_sessions", "request_context_json", "TEXT NOT NULL DEFAULT '{}'")
-    ensure_column(conn, "planning_sessions", "approved_strategy_id", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "planning_sessions", "repair_count", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(conn, "harness_states", "approvals_json", "TEXT NOT NULL DEFAULT '[]'")
     ensure_column(conn, "harness_states", "last_policy_decision_json", "TEXT NOT NULL DEFAULT '{}'")

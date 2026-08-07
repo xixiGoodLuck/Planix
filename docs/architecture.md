@@ -33,7 +33,7 @@ flowchart LR
 
 ## Data Flow
 
-The frontend is API-first for plans, month notes, and AI settings. When the backend is available, data is stored in SQLite through FastAPI. When the backend or AI provider is unavailable, the UI still works through localStorage and mock fallback.
+The frontend is API-first for plans, month notes, and AI settings. When the backend is available, data is stored in SQLite through FastAPI. Independent demo features may use their existing local fallback, but formal Planning fails closed at its current native node when the selected model is unavailable.
 
 ## Desktop Flow
 
@@ -52,7 +52,9 @@ Development mode points the Tauri window to `http://127.0.0.1:5176`, while produ
 
 ## Planning Loop
 
-The production planning path has one entry point: `get_planning_orchestrator()` returns `CognitiveOSRuntime`, which executes the canonical Harness-owned graph. The path is Understanding -> confirmation -> constraints/context -> plan generation and validation -> schedule generation and validation -> deterministic Calendar proposal -> Final Review -> version-bound final approval -> Calendar permission gate -> execution feedback and learning. Strategy, Execution, and Critique artifacts are internal model-generation inputs and never create separate user approval stages. Retired sessions remain read-only and cannot enter an executable legacy graph.
+The production planning path has one entry point: `get_planning_orchestrator()` returns `CognitiveOSRuntime`, which executes the canonical Harness-owned graph. The path is Understanding -> confirmation -> constraints/context -> direct Plan generation -> deterministic and semantic validation -> issue-scoped repair when required -> Schedule generation and validation -> deterministic Calendar proposal -> Final Review -> version-bound final approval -> Calendar permission gate -> outcome feedback and learning. No intermediate planning pipeline or alternate formal graph exists. Retired sessions remain read-only and cannot enter an executable graph.
+
+## Independent Goal Utilities
 
 1. `POST /api/planning/goal-plan` retrieves matching knowledge-base chunks, turns a long-term goal into phases and today tasks, then stores the result in `planning_goals`.
 2. The frontend can apply generated tasks into the current day's `plans`.

@@ -8,7 +8,7 @@ Planix has one production planning runtime and one formal planning graph. There 
 | 2 | Dynamic Understanding and explicit confirmation | formal Understanding contracts, readiness gate, and `wait_for_understanding` | understanding and runtime tests |
 | 3 | Confirmed facts are frozen before planning | versioned `UnderstandingSnapshot` and stale-value guards | understanding tests |
 | 4 | Constraint and Context compilation | formal planning services and graph nodes | plan/runtime tests |
-| 5 | Plan validation, semantic review, and bounded repair | `PlanQualityReport`, repair budget, and formal repair nodes | plan and repair tests |
+| 5 | Plan validation, semantic review, and bounded repair | `QualityReport`, repair budget, and formal repair nodes | plan and repair tests |
 | 6 | Schedule validation and repair | `ScheduleBlueprint` and schedule quality gate | schedule tests |
 | 7 | Final Review binds the complete proposal | `FinalApprovalBundle` binds all upstream versions and checkpoint | runtime tests |
 | 8 | Calendar remains permission-gated and idempotent | Harness policy, Calendar approval, and Command PermissionGate | harness/runtime/command tests |

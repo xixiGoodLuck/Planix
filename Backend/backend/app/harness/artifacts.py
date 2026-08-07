@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from ..db import get_conn
-from ..services.planning_agent_runtime import PlanningAgentRuntime
+from ..cognitive_planning.artifact_audit import PlanningArtifactAuditStore
 from .contracts import AgentContract, ArtifactKind, ArtifactRef, ArtifactStatus
 from .state import HarnessCheckpoint
 
@@ -27,11 +27,11 @@ class HarnessArtifactStore:
 
     The Harness keeps only :class:`ArtifactRef` values in checkpoints. Artifact
     bodies remain in ``planning_artifacts`` and are loaded only for an Agent
-    invocation or a compatibility projection.
+    invocation or the public Session projection.
     """
 
-    def __init__(self, runtime: PlanningAgentRuntime | None = None):
-        self.runtime = runtime or PlanningAgentRuntime()
+    def __init__(self, runtime: PlanningArtifactAuditStore | None = None):
+        self.runtime = runtime or PlanningArtifactAuditStore()
 
     def heads(self, session_id: str) -> dict[ArtifactKind, ArtifactRef]:
         with get_conn() as conn:
@@ -52,7 +52,7 @@ class HarnessArtifactStore:
             try:
                 ref = self._ref(row)
             except Exception:
-                # Legacy-only artifacts are outside the cognitive Harness.
+                # Retired artifact rows remain historical data and stay outside the Harness.
                 continue
             result[ref.kind] = ref
         return result

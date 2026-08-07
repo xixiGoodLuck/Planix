@@ -6,14 +6,6 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import Iterable, Mapping, Sequence
 
-from ..services.cognitive_planning.contracts import (
-    EvidencePack,
-    ExecutionBlueprint,
-    PlanCritiqueReport,
-    RealityAssessment,
-    StrategyPortfolio,
-    UserGoalModel,
-)
 from .contracts.planning import (
     CalendarEventProposal,
     CalendarProposal,
@@ -53,161 +45,11 @@ from .contracts.planning import (
 )
 
 
-QUESTION_BUDGET = {"quick": 1, "standard": 2, "complex": 4}
+QUESTION_BUDGET = {"quick": 1, "standard": 2, "complex": 3}
 EXTERNAL_FACT_PATTERNS = (
     re.compile(r"https?://", re.I),
     re.compile(r"(?:price|policy|version|deadline|价格|政策|版本|截止日期)", re.I),
 )
-
-
-def _item(
-    *,
-    key: str,
-    statement: str,
-    source_ref: str,
-    source_type: str = "user_confirmed",
-    confidence: float = 1,
-    mutation_policy: str = "user_confirmation_required",
-) -> SemanticItem:
-    return SemanticItem(
-        id=f"semantic-{key}",
-        key=key,
-        statement=statement,
-        sourceType=source_type,
-        sourceRef=source_ref,
-        confidence=confidence,
-        mutationPolicy=mutation_policy,
-    )
-
-
-class UnderstandingAdapter:
-    """Build the formal understanding snapshot from the model-owned goal artifact."""
-
-    @staticmethod
-    def from_goal_model(
-        goal: UserGoalModel,
-        *,
-        previous: UnderstandingSnapshot | None = None,
-        source_ref: str = "current-user-turn",
-        question_rounds_used: int = 0,
-        confirmed: bool = False,
-    ) -> UnderstandingSnapshot:
-        version = (previous.version + 1) if previous else 1
-        facts = [
-            _item(
-                key=fact.key,
-                statement=fact.statement,
-                source_ref=fact.source_text or source_ref,
-                confidence=fact.confidence,
-            )
-            for fact in goal.known_facts
-        ]
-        constraints = [
-            _item(
-                key=f"constraint:{index}",
-                statement=value.statement,
-                source_ref=value.source_text or source_ref,
-                mutation_policy="immutable",
-            )
-            for index, value in enumerate(goal.hard_constraints, start=1)
-        ]
-        preferences = [
-            _item(
-                key=f"preference:{index}",
-                statement=value.statement,
-                source_ref=value.source_text or source_ref,
-                confidence=value.confidence,
-                mutation_policy="auto_adjust",
-            )
-            for index, value in enumerate(goal.soft_preferences, start=1)
-        ]
-        success_signals = [
-            _item(
-                key=f"success:{index}",
-                statement=value,
-                source_ref=source_ref,
-                mutation_policy="immutable" if confirmed else "user_confirmation_required",
-            )
-            for index, value in enumerate(goal.success_model.measurable_signals, start=1)
-        ]
-        assumptions = [
-            _item(
-                key=f"assumption:{index}",
-                statement=value.statement,
-                source_ref=f"{source_ref}:assumption",
-                source_type="model_assumption",
-                confidence=value.confidence,
-                mutation_policy="user_confirmation_required",
-            )
-            for index, value in enumerate(goal.assumptions, start=1)
-        ]
-        unknowns = [
-            _item(
-                key=value.key,
-                statement=value.description,
-                source_ref=f"{source_ref}:unknown",
-                source_type="model_assumption",
-                confidence=0.5,
-            )
-            for value in goal.decision_relevant_unknowns
-        ]
-        conflicts = [
-            _item(
-                key=f"conflict:{index}",
-                statement=value,
-                source_ref=source_ref,
-                confidence=1,
-                mutation_policy="immutable",
-            )
-            for index, value in enumerate(goal.consistency_warnings, start=1)
-        ]
-        question = goal.questions[0] if goal.questions else None
-        next_question = (
-            UnderstandingQuestion(
-                question=question.question,
-                whyThisQuestionMatters=question.why_this_question_matters,
-                expectedDecisionImpact=question.expected_decision_impact,
-                priority=(
-                    next(
-                        (
-                            item.priority
-                            for item in goal.decision_relevant_unknowns
-                            if item.key == (unknowns[0].key if unknowns else "")
-                        ),
-                        "important",
-                    )
-                ),
-                answerOptions=question.answer_options,
-            )
-            if question
-            else None
-        )
-        complexity = UnderstandingReadinessService.classify_complexity(goal)
-        return UnderstandingSnapshot(
-            version=version,
-            goalSummary=goal.goal_statement,
-            facts=facts,
-            constraints=constraints,
-            preferences=preferences,
-            successSignals=success_signals,
-            assumptions=assumptions,
-            unknowns=unknowns,
-            conflicts=conflicts,
-            nextQuestion=next_question,
-            readiness=UnderstandingReadiness(
-                confirmed=confirmed,
-                questionRoundsUsed=question_rounds_used,
-                questionBudget=QUESTION_BUDGET[complexity],
-                complexity=complexity,
-            ),
-            sourceRefs=sorted(
-                {
-                    item.source_ref
-                    for section in (facts, constraints, preferences, success_signals)
-                    for item in section
-                }
-            ),
-        )
 
 
 class SemanticMergeService:
@@ -295,9 +137,13 @@ class SemanticMergeService:
 
 class UnderstandingReadinessService:
     @staticmethod
-    def classify_complexity(goal: UserGoalModel) -> str:
-        count = len(goal.hard_constraints) + len(goal.known_facts) + len(goal.decision_relevant_unknowns)
-        if any(item.impact in {"safety", "feasibility"} for item in goal.decision_relevant_unknowns):
+    def classify_complexity(snapshot: UnderstandingSnapshot) -> str:
+        count = len(snapshot.constraints) + len(snapshot.facts) + len(snapshot.unknowns)
+        if any(
+            token in item.key.casefold() or token in item.statement.casefold()
+            for item in snapshot.unknowns
+            for token in ("safety", "feasibility", "安全", "可行")
+        ):
             return "complex"
         if count <= 2:
             return "quick"
@@ -432,114 +278,18 @@ class ContextBuilder:
         snapshot: UnderstandingSnapshot,
         constraints: ConstraintSet,
         *,
-        reality: RealityAssessment | None = None,
-        evidence: EvidencePack | None = None,
+        claims: Sequence[ContextClaim] = (),
+        memory_refs: Sequence[str] = (),
         tool_run_refs: Sequence[str] = (),
         calendar_snapshot_ref: str | None = None,
     ) -> ContextPack:
-        claims: list[ContextClaim] = []
-        if reality:
-            claims.append(
-                ContextClaim(
-                    id="reality-summary",
-                    claim=reality.feasibility_summary,
-                    sourceType="model_assumption",
-                    sourceRef="reality-assessment",
-                    verificationStatus="inference",
-                    credibility=reality.confidence,
-                )
-            )
-        if evidence:
-            sources = [*evidence.domain_evidence, *evidence.resource_candidates]
-            for index, source in enumerate(sources):
-                source_ref = str(source.source_ref or "").strip()
-                claim = getattr(source, "claim", None) or getattr(source, "title", "")
-                claims.append(
-                    ContextClaim(
-                        id=f"evidence:{index}",
-                        claim=claim,
-                        sourceType="tool_verified" if source_ref else "model_assumption",
-                        sourceRef=source_ref or f"evidence-inference:{index}",
-                        verificationStatus="verified" if source_ref else "inference",
-                        credibility=source.credibility,
-                    )
-                )
         return ContextPack(
             understandingRef=snapshot.artifact_id,
             constraintRef=constraints.artifact_id,
-            claims=claims,
+            claims=list(claims),
+            memoryRefs=list(memory_refs),
             toolRunRefs=list(tool_run_refs),
             calendarSnapshotRef=calendar_snapshot_ref,
-        )
-
-
-class PlanCompatibilityAdapter:
-    def from_artifacts(
-        self,
-        *,
-        snapshot: UnderstandingSnapshot,
-        constraints: ConstraintSet,
-        context: ContextPack,
-        strategy: StrategyPortfolio,
-        execution: ExecutionBlueprint,
-    ) -> PlanBlueprint:
-        strategy_option = next(
-            item for item in strategy.strategies if item.id == strategy.recommended_strategy_id
-        )
-        verified_resource_refs = {
-            claim.source_ref for claim in context.claims if claim.verification_status == "verified"
-        }
-        milestone_id = f"milestone-{strategy_option.id}"
-        milestones = [
-            PlanMilestone(
-                id=milestone_id,
-                title=strategy_option.name,
-                purpose=strategy_option.rationale.why_it_fits_user,
-                successSignalRefs=[item.id for item in snapshot.success_signals],
-            )
-        ]
-        tasks: list[PlanTask] = []
-        for raw in execution.tasks:
-            expected = raw.estimated_minutes
-            tasks.append(
-                PlanTask(
-                    id=raw.id,
-                    milestoneId=milestone_id,
-                    title=raw.title,
-                    purpose=raw.purpose,
-                    whyNow=raw.why_now,
-                    actionSteps=raw.action_steps,
-                    dependencies=raw.dependencies,
-                    effortEstimate=EffortEstimate(
-                        minMinutes=max(1, int(expected * 0.75)),
-                        expectedMinutes=expected,
-                        maxMinutes=max(expected, int(expected * 1.35)),
-                        confidence=0.65,
-                        estimationBasis="Execution Agent estimate converted to an explicit range.",
-                    ),
-                    priority="high" if raw.difficulty == "high" else "low" if raw.difficulty == "low" else "medium",
-                    optionality=raw.optionality,
-                    deliverable=raw.deliverable,
-                    completionEvidence=raw.completion_evidence,
-                    resourceRefs=[
-                        value.source_ref
-                        for value in raw.resources
-                        if value.source_ref in verified_resource_refs
-                    ],
-                    risks=raw.risks,
-                    fallback=raw.fallback_action,
-                    sourceGoalRefs=[item.id for item in snapshot.success_signals],
-                    sourceConstraintRefs=[item.stable_id for item in constraints.semantic],
-                )
-            )
-        return PlanBlueprint(
-            goalSummary=snapshot.goal_summary,
-            understandingRef=snapshot.artifact_id,
-            constraintRef=constraints.artifact_id,
-            contextRef=context.artifact_id,
-            milestones=milestones,
-            tasks=tasks,
-            assumptions=[item.statement for item in snapshot.assumptions],
         )
 
 
@@ -1103,6 +853,7 @@ class FinalApprovalService:
         plan_version: int,
         quality_report_version: int,
         schedule_version: int,
+        schedule_quality_report_version: int,
         calendar_proposal_version: int,
         calendar_snapshot_version: int,
         checkpoint_version: int,
@@ -1115,6 +866,7 @@ class FinalApprovalService:
             planVersion=plan_version,
             qualityReportVersion=quality_report_version,
             scheduleVersion=schedule_version,
+            scheduleQualityReportVersion=schedule_quality_report_version,
             calendarProposalVersion=calendar_proposal_version,
             calendarSnapshotVersion=calendar_snapshot_version,
             checkpointVersion=checkpoint_version,
@@ -1128,6 +880,7 @@ class FinalApprovalService:
             "plan": approval.plan_version,
             "quality_report": approval.quality_report_version,
             "schedule": approval.schedule_version,
+            "schedule_quality": approval.schedule_quality_report_version,
             "calendar_proposal": approval.calendar_proposal_version,
             "calendar_snapshot": approval.calendar_snapshot_version,
             "checkpoint": approval.checkpoint_version,
@@ -1137,34 +890,6 @@ class FinalApprovalService:
             raise ValueError(f"final approval is stale: {', '.join(stale)}")
         if approval.consumed:
             raise ValueError("final approval has already been consumed")
-
-
-def quality_from_review(report: PlanCritiqueReport, plan: PlanBlueprint) -> QualityReport:
-    issues = [
-        QualityIssue(
-            issueId=f"critic:{index}",
-            category="content",
-            severity=item.severity,
-            ruleId="semantic_reviewer",
-            targetType="plan",
-            targetId=plan.artifact_id,
-            description=item.description,
-            evidenceRefs=[item.evidence] if item.evidence else [],
-            allowedOperations=["update_task", "add_task", "replace_resource"],
-            repairBasis="isolated_semantic_reviewer",
-        )
-        for index, item in enumerate(report.issues, start=1)
-    ]
-    return QualityReport(
-        targetArtifactId=plan.artifact_id,
-        targetVersion=plan.version,
-        hardRulesPassed=True,
-        semanticReviewRequired=True,
-        semanticReviewCompleted=True,
-        issues=issues,
-        score=report.score,
-        remainingRisks=report.remaining_risks,
-    )
 
 
 class MemoryGateway:

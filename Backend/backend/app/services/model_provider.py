@@ -54,12 +54,9 @@ STANDARD_ERROR_TYPES = {
 }
 DIRECT_ROUTING_TASK_TYPES = {"settings_test"}
 TRUNCATION_RETRY_TASK_TYPES = {
-    "planning_goal_model",
-    "planning_reality",
-    "planning_evidence",
-    "planning_strategy",
-    "planning_execution",
-    "planning_critique",
+    "planning_understanding",
+    "planning_plan",
+    "planning_review",
     "planning_learning",
 }
 
@@ -383,23 +380,19 @@ class OpenAICompatibleProvider:
             payload["max_tokens"] = token_limit
         if request.response_format_json:
             payload["response_format"] = {"type": "json_object"}
-            # DeepSeek V4 defaults to thinking mode.  Execution design is the
-            # longest structured stage and already receives an
+            # DeepSeek V4 defaults to thinking mode. The native plan stage is
+            # the longest structured stage and already receives an
             # explicit JSON Schema plus local validation.  Disable hidden
             # reasoning only there so large blueprints finish within the
-            # synchronous connection budget; Goal/Evidence/Strategy keep their
-            # reasoning quality.
+            # synchronous connection budget.
             if (
                 self.provider == "deepseek"
                 and self.settings.model.startswith("deepseek-v4-")
-                and request.task_type == "planning_execution"
+                and request.task_type == "planning_plan"
                 and request.feature.endswith(
                     (
-                        "execution_narrative",
-                        "execution_narrative_fallback",
-                        "execution_blueprint_fallback",
-                        "execution_single_pass",
-                        "execution_preflight_repair",
+                        "planning_plan_generation",
+                        "planning_plan_repair",
                     )
                 )
             ):

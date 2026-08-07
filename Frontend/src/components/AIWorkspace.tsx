@@ -127,12 +127,9 @@ const routingTaskTypes: ModelRoutingTaskType[] = [
   'memory_write',
   'model_knowledge',
   'chat',
-  'planning_goal_model',
-  'planning_reality',
-  'planning_evidence',
-  'planning_strategy',
-  'planning_execution',
-  'planning_critique',
+  'planning_understanding',
+  'planning_plan',
+  'planning_review',
   'planning_learning'
 ];
 const defaultTaskStrategies: Record<ModelRoutingTaskType, AutoModelStrategy> = {
@@ -147,12 +144,9 @@ const defaultTaskStrategies: Record<ModelRoutingTaskType, AutoModelStrategy> = {
   note_write: 'classification',
   model_knowledge: 'knowledge_reasoning',
   chat: 'balanced',
-  planning_goal_model: 'knowledge_reasoning',
-  planning_reality: 'knowledge_reasoning',
-  planning_evidence: 'context_summary',
-  planning_strategy: 'knowledge_reasoning',
-  planning_execution: 'structured_stable',
-  planning_critique: 'strict_json',
+  planning_understanding: 'knowledge_reasoning',
+  planning_plan: 'structured_stable',
+  planning_review: 'strict_json',
   planning_learning: 'knowledge_reasoning'
 };
 const autoStrategyScores: Record<AutoModelStrategy, Record<RoutedProvider, number>> = {
@@ -204,12 +198,9 @@ function routingTaskLabel(taskType: ModelRoutingTaskType, t: (key: string) => st
     note_write: t('legacy.routingTaskMemoryWrite'),
     model_knowledge: t('legacy.routingTaskModelKnowledge'),
     chat: t('legacy.routingTaskChat'),
-    planning_goal_model: t('legacy.routingTaskPlanningGoal'),
-    planning_reality: t('legacy.routingTaskPlanningReality'),
-    planning_evidence: t('legacy.routingTaskPlanningEvidence'),
-    planning_strategy: t('legacy.routingTaskPlanningStrategy'),
-    planning_execution: t('legacy.routingTaskPlanningExecution'),
-    planning_critique: t('legacy.routingTaskPlanningCritique'),
+    planning_understanding: t('legacy.routingTaskPlanningGoal'),
+    planning_plan: t('legacy.routingTaskPlanningExecution'),
+    planning_review: t('legacy.routingTaskPlanningCritique'),
     planning_learning: t('legacy.routingTaskPlanningLearning')
   };
   return labels[taskType] || taskType;
@@ -228,12 +219,9 @@ function routingTaskDescription(taskType: ModelRoutingTaskType, t: (key: string)
     note_write: t('legacy.routingTaskMemoryWriteDesc'),
     model_knowledge: t('legacy.routingTaskModelKnowledgeDesc'),
     chat: t('legacy.routingTaskChatDesc'),
-    planning_goal_model: t('legacy.routingTaskPlanningGoalDesc'),
-    planning_reality: t('legacy.routingTaskPlanningRealityDesc'),
-    planning_evidence: t('legacy.routingTaskPlanningEvidenceDesc'),
-    planning_strategy: t('legacy.routingTaskPlanningStrategyDesc'),
-    planning_execution: t('legacy.routingTaskPlanningExecutionDesc'),
-    planning_critique: t('legacy.routingTaskPlanningCritiqueDesc'),
+    planning_understanding: t('legacy.routingTaskPlanningGoalDesc'),
+    planning_plan: t('legacy.routingTaskPlanningExecutionDesc'),
+    planning_review: t('legacy.routingTaskPlanningCritiqueDesc'),
     planning_learning: t('legacy.routingTaskPlanningLearningDesc')
   };
   return descriptions[taskType] || '';

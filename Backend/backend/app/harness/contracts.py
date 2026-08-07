@@ -6,14 +6,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 ArtifactKind = Literal[
-    "user_goal_model",
-    "goal_completion",
-    "reality_assessment",
-    "evidence_pack",
-    "strategy_portfolio",
-    "execution_blueprint",
-    "critique_report",
-    "planning_learning_update",
     "memory_evaluation",
     "understanding_snapshot",
     "constraint_set",
@@ -42,9 +34,8 @@ AgentPermission = Literal[
     "read_artifact",
     "write_artifact",
     "request_user_input",
-    "propose_strategy",
-    "propose_execution",
-    "evaluate_execution",
+    "review_plan",
+    "propose_repair",
     "propose_memory",
     "evaluate_memory",
     "request_calendar_write",
@@ -90,7 +81,7 @@ PolicySubject = Literal[
     "user_question",
     "calendar_write",
     "memory_persistence",
-    "critic_review",
+    "plan_review",
 ]
 PolicyAction = Literal[
     "allow",
@@ -104,9 +95,11 @@ PolicyAction = Literal[
 ]
 PolicyGate = Literal[
     "runtime",
-    "goal_completion",
-    "critic",
-    "calendar_approval",
+    "understanding_confirmation",
+    "plan_quality",
+    "schedule_quality",
+    "final_approval",
+    "calendar_permission",
     "memory_evaluation",
 ]
 MemoryCategory = Literal[
@@ -249,15 +242,6 @@ class MemoryEvaluation(HarnessModel):
     confidence: float = Field(default=0, ge=0, le=1)
 
 
-class CriticGateResult(HarnessModel):
-    passed: bool
-    reason: str
-    critique_artifact: ArtifactRef = Field(alias="critiqueArtifact")
-    execution_artifact: ArtifactRef = Field(alias="executionArtifact")
-    evaluated_execution_artifact: ArtifactRef = Field(alias="evaluatedExecutionArtifact")
-    repair_target: ArtifactKind | None = Field(default=None, alias="repairTarget")
-
-
 class MemoryControllerResult(HarnessModel):
     persisted: bool = False
     evaluation: MemoryEvaluation | None = None
@@ -275,7 +259,6 @@ __all__ = [
     "ArtifactRef",
     "ArtifactKind",
     "ArtifactStatus",
-    "CriticGateResult",
     "FailureCondition",
     "HarnessDecision",
     "HarnessDirective",

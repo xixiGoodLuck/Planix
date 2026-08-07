@@ -23,24 +23,6 @@ AutoModelStrategy = Literal[
 MemoryKind = Literal["note", "material", "planning_history", "preference", "review"]
 MemorySource = Literal["user", "ai", "system"]
 PlanningAgentName = Literal[
-    "User Advocate Agent",
-    "Memory Insight Agent",
-    "Resource Intelligence Agent",
-    "Plan Co-Designer Agent",
-    "Execution Planner Agent",
-    "Feedback Evolution Agent",
-    "Goal Modeling Agent",
-    "Context & Evidence Agent",
-    "Strategy Architect Agent",
-    "Execution Designer Agent",
-    "Independent Critic & Learning Agent",
-    "Goal Intelligence Agent",
-    "Goal Completion Judge",
-    "Reality Agent",
-    "Evidence Agent",
-    "Strategy Agent",
-    "Execution Agent",
-    "Critic Agent",
     "Memory Evaluation Agent",
     "Understanding Agent",
     "Constraint Compiler",
@@ -55,20 +37,6 @@ PlanningAgentName = Literal[
     "Learning Observer",
 ]
 PlanningArtifactType = Literal[
-    "user_need_contract",
-    "memory_insight_brief",
-    "resource_brief",
-    "plan_design_proposal",
-    "execution_plan_draft",
-    "learning_patch",
-    "user_goal_model",
-    "goal_completion",
-    "reality_assessment",
-    "evidence_pack",
-    "strategy_portfolio",
-    "execution_blueprint",
-    "critique_report",
-    "planning_learning_update",
     "memory_evaluation",
     "understanding_snapshot",
     "understanding_patch",
@@ -101,14 +69,6 @@ PlanningAgentMessageType = Literal["handoff", "revision_request", "block", "appr
 ModelUsageMode = Literal["llm", "local_fallback", "model_unavailable"]
 ModelUsageTaskType = Literal[
     "goal_understanding",
-    "goal_completion_updated",
-    "goal_model_updated",
-    "reality_assessment_ready",
-    "evidence_pack_ready",
-    "strategy_portfolio_ready",
-    "execution_blueprint_ready",
-    "critique_report_ready",
-    "planning_learning_updated",
     "command_decision",
     "plan_generation",
     "task_refinement",
@@ -120,12 +80,9 @@ ModelUsageTaskType = Literal[
     "chat",
     "model_knowledge",
     "settings_test",
-    "planning_goal_model",
-    "planning_reality",
-    "planning_evidence",
-    "planning_strategy",
-    "planning_execution",
-    "planning_critique",
+    "planning_understanding",
+    "planning_plan",
+    "planning_review",
     "planning_learning",
 ]
 ModelRoutingTaskType = Literal[
@@ -140,12 +97,9 @@ ModelRoutingTaskType = Literal[
     "note_write",
     "chat",
     "model_knowledge",
-    "planning_goal_model",
-    "planning_reality",
-    "planning_evidence",
-    "planning_strategy",
-    "planning_execution",
-    "planning_critique",
+    "planning_understanding",
+    "planning_plan",
+    "planning_review",
     "planning_learning",
 ]
 ModelRouteAttemptStatus = Literal["success", "error", "skipped"]
@@ -1511,7 +1465,7 @@ PlanningMode = Literal["model_backed", "degraded_read_only", "blocked_model_unav
 
 
 class CognitivePlanningMetadata(BaseModel):
-    engine_version: Literal["planning-engine-2", "cognitive-v2", "cognitive-os-v1", "cognitive-os-v2"] = Field(default="planning-engine-2", alias="engineVersion")
+    engine_version: Literal["planning-engine-2"] = Field(default="planning-engine-2", alias="engineVersion")
     planning_mode: PlanningMode = Field(alias="planningMode")
     current_stage: str = Field(alias="currentStage")
     agent_confidence: float | None = Field(default=None, alias="agentConfidence", ge=0, le=1)
@@ -1559,23 +1513,8 @@ class PlanningSessionResponse(BaseModel):
     business_status: PlanningBusinessStatus = Field(default="goal_clarification", alias="businessStatus")
     runtime_status: PlanningRuntimeStatus = Field(default="idle", alias="runtimeStatus")
     user_input: str = Field(alias="userInput")
-    user_need_contract: UserNeedContract | None = Field(default=None, alias="userNeedContract")
-    slot_state: PlanningSlotState | None = Field(default=None, alias="slotState")
     pending_question: PendingPlanningQuestion | None = Field(default=None, alias="pendingQuestion")
-    memory_insight: MemoryInsightBrief | None = Field(default=None, alias="memoryInsight")
-    resource_brief: ResourceBrief | None = Field(default=None, alias="resourceBrief")
-    design_proposal: PlanDesignProposal | None = Field(default=None, alias="designProposal")
-    execution_draft: ExecutionPlanDraft | None = Field(default=None, alias="executionDraft")
-    learning_patch: LearningPatch | None = Field(default=None, alias="learningPatch")
     cognitive_metadata: CognitivePlanningMetadata | None = Field(default=None, alias="cognitiveMetadata")
-    goal_model: dict[str, Any] | None = Field(default=None, alias="goalModel")
-    goal_completion: dict[str, Any] | None = Field(default=None, alias="goalCompletion")
-    reality_assessment: dict[str, Any] | None = Field(default=None, alias="realityAssessment")
-    evidence_pack: dict[str, Any] | None = Field(default=None, alias="evidencePack")
-    strategy_portfolio: dict[str, Any] | None = Field(default=None, alias="strategyPortfolio")
-    execution_blueprint: dict[str, Any] | None = Field(default=None, alias="executionBlueprint")
-    critique_report: dict[str, Any] | None = Field(default=None, alias="critiqueReport")
-    planning_learning_update: dict[str, Any] | None = Field(default=None, alias="planningLearningUpdate")
     planning_phase: str | None = Field(default=None, alias="planningPhase")
     planning_step: str | None = Field(default=None, alias="planningStep")
     understanding_snapshot: dict[str, Any] | None = Field(default=None, alias="understandingSnapshot")
@@ -1587,7 +1526,6 @@ class PlanningSessionResponse(BaseModel):
     schedule_quality_report: dict[str, Any] | None = Field(default=None, alias="scheduleQualityReport")
     calendar_proposal: dict[str, Any] | None = Field(default=None, alias="calendarProposal")
     final_approval_bundle: dict[str, Any] | None = Field(default=None, alias="finalApprovalBundle")
-    approved_strategy_id: str | None = Field(default=None, alias="approvedStrategyId")
     model_failure: PlanningModelFailure | None = Field(default=None, alias="modelFailure")
     pending_input: PendingPlanningInput | None = Field(default=None, alias="pendingInput")
     artifacts: list[PlanningArtifact] = Field(default_factory=list)
