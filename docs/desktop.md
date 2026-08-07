@@ -9,7 +9,7 @@ The portfolio-facing documentation version is `v3.0.0`. It is a presentation lab
 ```mermaid
 flowchart LR
   T["Tauri window"] --> W["apps/desktop/src-tauri/resources/index.html"]
-  W --> A["http://127.0.0.1:8000/api"]
+  W --> A["http://127.0.0.1:8003/api"]
   T --> S["planix-api sidecar"]
   S --> F["FastAPI backend"]
   F --> D["%APPDATA%/Planix/planix.db"]
@@ -65,7 +65,7 @@ If a user sees `asset not found: index.html`, the installer was built incorrectl
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `PLANIX_ENV` | unset | Set to `desktop` for packaged desktop mode |
-| `PLANIX_API_PORT` | `8000` | Port used by the FastAPI sidecar |
+| `PLANIX_API_PORT` | `8003` | Port used by the FastAPI sidecar |
 | `PLANIX_DB_PATH` | unset | Optional explicit SQLite path |
 
 When `PLANIX_ENV=desktop`, the backend resolves SQLite to:
@@ -106,14 +106,15 @@ npm run dev
 Development mode loads:
 
 ```text
-http://127.0.0.1:5173
+http://127.0.0.1:5176
 ```
 
 The web app can still run without Tauri:
 
 ```powershell
-uvicorn backend.app.main:app --reload
-cd apps\web
+cd Backend
+..\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --env-file ..\.env --port 8003
+cd ..\Frontend
 npm run dev
 ```
 
@@ -140,7 +141,7 @@ apps/desktop/src-tauri/resources/binaries/planix-api.exe
 Poll the sidecar health endpoint:
 
 ```powershell
-.\scripts\wait-api-health.ps1 -Url http://127.0.0.1:8000/api/health
+.\scripts\wait-api-health.ps1 -Url http://127.0.0.1:8003/api/health
 ```
 
 Run the static desktop check:
@@ -188,7 +189,7 @@ Run the installed-app smoke test:
 .\scripts\smoke-test-installed.ps1
 ```
 
-The smoke test starts the installed app and checks `http://127.0.0.1:8000/api/health`. If it fails, check `%APPDATA%\Planix\logs\desktop.log`.
+The smoke test starts the installed app and checks `http://127.0.0.1:8003/api/health`. If it fails, check `%APPDATA%\Planix\logs\desktop.log`.
 
 ## Common Failures
 
@@ -200,8 +201,8 @@ The smoke test starts the installed app and checks `http://127.0.0.1:8000/api/he
 | `gh.ps1` blocked | Use official `gh.exe`, or publish through GitHub Actions |
 | Setup.exe missing | Check `apps/desktop/src-tauri/target/release/bundle/nsis` and rerun the release build |
 | MSI missing | Check `apps/desktop/src-tauri/target/release/bundle/msi` and rerun the release build |
-| `asset not found: index.html` | Rebuild with `.\scripts\build-release.ps1 -Version 3.0.0`; `apps/web/dist/index.html` must exist |
-| App opens but API is unavailable | Check port `8000`, sidecar file, and `%APPDATA%\Planix\logs\desktop.log` |
+| `asset not found: index.html` | Rebuild with `.\scripts\build-release.ps1 -Version 3.0.0`; `Frontend/dist/index.html` must exist |
+| App opens but API is unavailable | Check port `8003`, sidecar file, and `%APPDATA%\Planix\logs\desktop.log` |
 
 ## Historical Notes
 

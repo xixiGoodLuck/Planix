@@ -1,8 +1,7 @@
-import type { AppData, DayRecord, Language } from '../types';
+import type { AppData, DayRecord } from '../types';
 
 const DATA_KEY = 'planix_data_v2';
 const LEGACY_DATA_KEY = 'planix_data';
-const LANG_KEY = 'planix_lang';
 const PREFERENCE_KEY = 'planix_preferences';
 const ADVANCED_AGENT_TRACE_KEY = 'planix_advanced_agent_trace';
 
@@ -45,16 +44,6 @@ export function loadMonthNote(key: string): string {
 
 export function saveMonthNote(key: string, value: string): void {
   localStorage.setItem(`note_${key}`, value);
-}
-
-export function loadLang(): Language {
-  const value = localStorage.getItem(LANG_KEY);
-  if (value === 'en' || value === 'en-US') return 'en-US';
-  return 'zh-CN';
-}
-
-export function saveLang(lang: Language): void {
-  localStorage.setItem(LANG_KEY, lang);
 }
 
 export function loadPreferences(): string {

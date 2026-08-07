@@ -42,6 +42,17 @@ PlanningAgentName = Literal[
     "Execution Agent",
     "Critic Agent",
     "Memory Evaluation Agent",
+    "Understanding Agent",
+    "Constraint Compiler",
+    "Context Builder",
+    "Plan Generator",
+    "Plan Quality Reviewer",
+    "Schedule Agent",
+    "Schedule Quality Reviewer",
+    "Calendar Materializer",
+    "Final Review Controller",
+    "Execution Feedback Evaluator",
+    "Learning Observer",
 ]
 PlanningArtifactType = Literal[
     "user_need_contract",
@@ -59,6 +70,20 @@ PlanningArtifactType = Literal[
     "critique_report",
     "planning_learning_update",
     "memory_evaluation",
+    "understanding_snapshot",
+    "understanding_patch",
+    "constraint_set",
+    "context_pack",
+    "plan_blueprint",
+    "plan_quality_report",
+    "schedule_blueprint",
+    "schedule_quality_report",
+    "calendar_proposal",
+    "final_approval_bundle",
+    "execution_outcome",
+    "replan_proposal",
+    "learning_observation",
+    "promotion_audit",
 ]
 PlanningArtifactStatus = Literal["draft", "approved", "blocked", "needs_revision"]
 PlanningAgentDecisionType = Literal[
@@ -376,25 +401,24 @@ PlanningResourceSourceType = Literal[
 ]
 PlanningSessionStatus = Literal[
     "needs_goal_clarification",
-    "waiting_design_approval",
-    "design_revision",
-    "waiting_execution_approval",
-    "execution_revision",
-    "ready_to_write_calendar",
+    "waiting_understanding_confirmation",
+    "planning",
+    "final_revision",
+    "waiting_final_review",
     "waiting_calendar_write_approval",
     "written_to_calendar",
     "learning_from_feedback",
     "MODEL_UNAVAILABLE",
+    "ARCHIVED",
     "cancelled",
 ]
 PlanningBusinessStatus = Literal[
     "goal_clarification",
     "goal_understood",
-    "evidence_pending",
-    "strategy_pending",
-    "execution_pending",
+    "planning",
     "calendar_pending",
     "completed",
+    "blocked",
     "cancelled",
 ]
 PlanningRuntimeStatus = Literal[
@@ -1409,6 +1433,25 @@ class PlanningSessionTextRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class PlanningExecutionFeedbackRequest(BaseModel):
+    task_id: str = Field(alias="taskId", min_length=1)
+    status: Literal["not_started", "in_progress", "blocked", "completed", "skipped", "rescheduled", "failed"]
+    actual_minutes: int | None = Field(default=None, alias="actualMinutes", ge=0)
+    completion_evidence: list[str] = Field(default_factory=list, alias="completionEvidence")
+    blocker_reason: str | None = Field(default=None, alias="blockerReason")
+    failure_reason: str | None = Field(default=None, alias="failureReason")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class PlanningExecutionFeedbackResponse(BaseModel):
+    outcome: dict[str, Any]
+    replan_proposal: dict[str, Any] | None = Field(default=None, alias="replanProposal")
+    learning_observation: dict[str, Any] = Field(alias="learningObservation")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class PlanningArtifact(BaseModel):
     id: str
     session_id: str = Field(alias="sessionId")
@@ -1468,7 +1511,7 @@ PlanningMode = Literal["model_backed", "degraded_read_only", "blocked_model_unav
 
 
 class CognitivePlanningMetadata(BaseModel):
-    engine_version: Literal["cognitive-v2", "cognitive-os-v1"] = Field(default="cognitive-v2", alias="engineVersion")
+    engine_version: Literal["planning-engine-2", "cognitive-v2", "cognitive-os-v1", "cognitive-os-v2"] = Field(default="planning-engine-2", alias="engineVersion")
     planning_mode: PlanningMode = Field(alias="planningMode")
     current_stage: str = Field(alias="currentStage")
     agent_confidence: float | None = Field(default=None, alias="agentConfidence", ge=0, le=1)
@@ -1533,6 +1576,17 @@ class PlanningSessionResponse(BaseModel):
     execution_blueprint: dict[str, Any] | None = Field(default=None, alias="executionBlueprint")
     critique_report: dict[str, Any] | None = Field(default=None, alias="critiqueReport")
     planning_learning_update: dict[str, Any] | None = Field(default=None, alias="planningLearningUpdate")
+    planning_phase: str | None = Field(default=None, alias="planningPhase")
+    planning_step: str | None = Field(default=None, alias="planningStep")
+    understanding_snapshot: dict[str, Any] | None = Field(default=None, alias="understandingSnapshot")
+    constraint_set: dict[str, Any] | None = Field(default=None, alias="constraintSet")
+    context_pack: dict[str, Any] | None = Field(default=None, alias="contextPack")
+    plan_blueprint: dict[str, Any] | None = Field(default=None, alias="planBlueprint")
+    plan_quality_report: dict[str, Any] | None = Field(default=None, alias="planQualityReport")
+    schedule_blueprint: dict[str, Any] | None = Field(default=None, alias="scheduleBlueprint")
+    schedule_quality_report: dict[str, Any] | None = Field(default=None, alias="scheduleQualityReport")
+    calendar_proposal: dict[str, Any] | None = Field(default=None, alias="calendarProposal")
+    final_approval_bundle: dict[str, Any] | None = Field(default=None, alias="finalApprovalBundle")
     approved_strategy_id: str | None = Field(default=None, alias="approvedStrategyId")
     model_failure: PlanningModelFailure | None = Field(default=None, alias="modelFailure")
     pending_input: PendingPlanningInput | None = Field(default=None, alias="pendingInput")

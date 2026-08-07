@@ -147,10 +147,10 @@ class RecoveryManager:
             completion = state.get("goal_completion")
             return "goal_understood" if completion and getattr(completion, "complete", False) else "goal_clarification"
         if stage in {"reality_assessment", "context_evidence", "evidence_synthesis"}:
-            return "evidence_pending"
+            return "planning"
         if stage in {"strategy_architecture", "strategy_design"}:
-            return "strategy_pending"
-        return "execution_pending"
+            return "planning"
+        return "planning"
 
     def decide_model_failure(
         self,

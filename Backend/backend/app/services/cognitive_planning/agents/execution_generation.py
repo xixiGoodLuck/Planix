@@ -264,7 +264,11 @@ def generate_execution_blueprint(
                     single_pass_system
                     + "\nThe previous complete blueprint failed deterministic preflight. Return one complete "
                     "replacement blueprint that corrects every supplied preflight issue without changing "
-                    "unrelated user facts, approved strategy choices, or hard constraints."
+                    "unrelated user facts, approved strategy choices, or hard constraints. Capacity is checked "
+                    "from the numeric task fields, not from narrative claims: never claim that buffer reduces a "
+                    "period total unless the actual estimatedMinutes/weeklyMinutes allocations are reduced or "
+                    "moved. Recompute every affected period from the replacement task fields and require each "
+                    "periodTotal <= weeklyCapacityMinutes before returning."
                 ),
                 payload={
                     **common_payload,
@@ -274,6 +278,12 @@ def generate_execution_blueprint(
                         blueprint,
                         goal=goal,
                     ),
+                    "preflightRepairRules": [
+                        "Preserve the explicit weeklyCapacityMinutes ceiling exactly.",
+                        "A narrative buffer claim does not change numeric task allocation.",
+                        "Move work or set per-period weeklyMinutes whose sum equals estimatedMinutes.",
+                        "Recompute all period totals from task fields and keep every total within capacity.",
+                    ],
                 },
                 contract_type=ExecutionBlueprint,
                 temperature=0.2,

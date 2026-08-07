@@ -33,10 +33,9 @@ from ..schemas import (
     RefineTaskRequest,
 )
 from .command_decision import CommandDecisionResult, CommandDecisionService, local_fallback_usage, usage_from_llm_result
-from .cognitive_planning.compatibility import cognitive_events
 from .cognitive_planning.control_intent import detect_planning_control_intent
 from .goal_understanding import GoalUnderstandingOutcome, GoalUnderstandingService
-from .langgraph_planning import get_deep_planning_orchestrator
+from ..cognitive_planning import get_planning_orchestrator
 from .llm import LlmClient
 from .memory_agent import MemoryAgentService, detect_query_kinds
 from .memory_store import MemoryService
@@ -1565,10 +1564,6 @@ class CommandAgentService:
                 content=f"Planning session {session.status}",
             )
         _ = agents
-        cognitive_os = bool(
-            session.cognitive_metadata
-            and session.cognitive_metadata.engine_version == "cognitive-os-v1"
-        )
         seen_trace_ids = self._seen_planning_trace_ids(thread_id, session.session_id)
         for decision in session.decisions:
             trace_key = ("agent_decision", decision.id)
@@ -1596,42 +1591,6 @@ class CommandAgentService:
                 content=message.reason or message.message_type,
             )
             seen_trace_ids.add(trace_key)
-        for event_type, data in cognitive_events(session):
-            data = dict(data)
-            if event_type in {"goal_model_updated", "goal_completion_updated"}:
-                data["artifactState"] = (
-                    "last_confirmed" if session.status == "MODEL_UNAVAILABLE" else "current"
-                )
-            summary_keys = {
-                "goal_model_updated": "goalStatement",
-                "goal_completion_updated": "nextStage",
-                "reality_assessment_ready": "feasibilitySummary",
-                "evidence_pack_ready": "synthesis",
-                "strategy_portfolio_ready": "recommendationReason",
-                "execution_blueprint_ready": "resourceCoverage",
-                "critique_report_ready": "simulationSummary",
-                "planning_learning_updated": "originalFeedback",
-            }
-            content = str(data.get(summary_keys[event_type]) or event_type)
-            yield self._planning_event(thread_id, event_type, session.session_id, data=data, content=content)
-        if session.user_need_contract and not cognitive_os:
-            data = session.user_need_contract.model_dump(by_alias=True)
-            yield self._planning_event(thread_id, "user_need_contract", session.session_id, data=data, content=session.user_need_contract.interpreted_goal)
-        if session.memory_insight and not cognitive_os:
-            data = session.memory_insight.model_dump(by_alias=True)
-            yield self._planning_event(thread_id, "memory_insight_brief", session.session_id, data=data, content="Memory Insight Agent")
-        if session.resource_brief and not cognitive_os:
-            data = session.resource_brief.model_dump(by_alias=True)
-            yield self._planning_event(thread_id, "resource_brief", session.session_id, data=data, content="Resource Intelligence Agent")
-        if session.design_proposal and not cognitive_os:
-            data = session.design_proposal.model_dump(by_alias=True)
-            yield self._planning_event(thread_id, "plan_design_proposal", session.session_id, data=data, content=session.design_proposal.strategy_name)
-        if session.execution_draft and not cognitive_os:
-            data = session.execution_draft.model_dump(by_alias=True)
-            yield self._planning_event(thread_id, "execution_plan_draft", session.session_id, data=data, content=session.execution_draft.schedule_summary)
-        if session.learning_patch and not cognitive_os:
-            data = session.learning_patch.model_dump(by_alias=True)
-            yield self._planning_event(thread_id, "learning_update", session.session_id, data=data, content=session.learning_patch.insight)
         yield self._planning_event(
             thread_id,
             "planning_session_status",
@@ -1650,17 +1609,35 @@ class CommandAgentService:
                 if session.pending_input
                 else None
             ),
+            data={
+                "planningPhase": session.planning_phase,
+                "planningStep": session.planning_step,
+                "cognitiveMetadata": (
+                    session.cognitive_metadata.model_dump(by_alias=True, exclude_none=True)
+                    if session.cognitive_metadata
+                    else None
+                ),
+                "understandingSnapshot": session.understanding_snapshot,
+                "constraintSet": session.constraint_set,
+                "contextPack": session.context_pack,
+                "planBlueprint": session.plan_blueprint,
+                "planQualityReport": session.plan_quality_report,
+                "scheduleBlueprint": session.schedule_blueprint,
+                "scheduleQualityReport": session.schedule_quality_report,
+                "calendarProposal": session.calendar_proposal,
+                "finalApprovalBundle": session.final_approval_bundle,
+            },
             content=session.status,
         )
 
-    def _stream_deep_planning_start(
+    def _stream_planning_start(
         self,
         thread_id: str,
         payload: CommandChatRequest,
         *,
         goal_understanding: GoalUnderstandingResult | None = None,
     ) -> Iterator[str]:
-        service = get_deep_planning_orchestrator()
+        service = get_planning_orchestrator()
         request_context = dict(payload.context) if isinstance(payload.context, dict) else {}
         if goal_understanding:
             request_context["goalUnderstanding"] = goal_understanding.model_dump(
@@ -1675,15 +1652,7 @@ class CommandAgentService:
                 context=request_context,
             )
         )
-        agents = [("User Advocate Agent", "Protected the user goal and checked whether planning can start.")]
-        if session.status != "needs_goal_clarification":
-            agents.extend(
-                [
-                    ("Memory Insight Agent", "Read memories and translated them into planning constraints."),
-                    ("Resource Intelligence Agent", "Selected learning resources and coverage warnings."),
-                    ("Plan Co-Designer Agent", "Created a design proposal and stopped for user approval."),
-                ]
-            )
+        agents = [("Understanding Agent", "Built the typed understanding and checked whether it is ready for confirmation.")]
         yield from self._stream_planning_session_snapshot(thread_id, session, include_start=True, agents=agents)
 
     def _planning_session_followup_action(
@@ -1692,7 +1661,7 @@ class CommandAgentService:
         payload: CommandChatRequest,
         intent: CommandIntent | None = None,
     ) -> tuple[str, PlanningSessionResponse] | None:
-        session = get_deep_planning_orchestrator().latest_for_thread(thread_id)
+        session = get_planning_orchestrator().latest_for_thread(thread_id)
         if not session:
             return None
         text = payload.message
@@ -1710,45 +1679,41 @@ class CommandAgentService:
         if control_intent == "modify_current_stage":
             return "modify_current_stage", session
         if session.status == "needs_goal_clarification":
-            return "clarify", session
+            return "answer_understanding", session
         if session.status == "MODEL_UNAVAILABLE":
             return (
                 "continue_current_stage"
                 if session.goal_completion and session.goal_completion.get("complete")
-                else "clarify"
+                else "answer_understanding"
             ), session
-        if session.status in {"waiting_design_approval", "design_revision"}:
+        if session.status == "waiting_understanding_confirmation":
             if control_intent == "approve_current_stage" or _planning_approval_text(text):
-                return "approve_design", session
-            return "revise_design", session
-        if session.status == "waiting_execution_approval":
-            if control_intent == "approve_current_stage" or _planning_approval_text(text):
-                return "approve_execution", session
-            return "revise_execution", session
-        if session.status == "execution_revision":
+                return "confirm_understanding", session
+            return "revise_understanding", session
+        if session.status == "final_revision":
             if _planning_approval_text(text):
-                return "execution_revision_status", session
-            return "revise_execution", session
-        if session.status == "ready_to_write_calendar":
+                return "final_revision_status", session
+            return "revise_final", session
+        if session.status == "waiting_final_review":
             if _planning_calendar_write_text(text):
-                return "prepare_calendar_write", session
+                return "approve_final", session
             if _planning_approval_text(text):
-                return "ready_to_write_status", session
-            return "revise_execution", session
+                return "final_review_status", session
+            return "revise_final", session
         if session.status == "waiting_calendar_write_approval":
-            return "revise_execution", session
+            return "revise_final", session
         if session.status == "learning_from_feedback":
             return "feedback", session
         return None
 
-    def _stream_deep_planning_followup(
+    def _stream_planning_followup(
         self,
         thread_id: str,
         payload: CommandChatRequest,
         action: str,
         session: PlanningSessionResponse,
     ) -> Iterator[str]:
-        service = get_deep_planning_orchestrator()
+        service = get_planning_orchestrator()
         request = PlanningSessionTextRequest(text=payload.message)
         if action == "skip_current_stage":
             skip = getattr(service, "skip_current_stage", None)
@@ -1774,41 +1739,31 @@ class CommandAgentService:
             if callable(cancel):
                 cancel(session.session_id)
             restart_payload = payload.model_copy(update={"message": session.user_input})
-            yield from self._stream_deep_planning_start(thread_id, restart_payload)
+            yield from self._stream_planning_start(thread_id, restart_payload)
             return
         if action == "restart":
             cancel = getattr(service, "cancel", None)
             if callable(cancel):
                 cancel(session.session_id)
-            yield from self._stream_deep_planning_start(thread_id, payload)
+            yield from self._stream_planning_start(thread_id, payload)
             return
-        if action == "clarify":
-            updated = service.clarify(session.session_id, request)
-            agents = [("User Advocate Agent", "Merged the clarification and checked whether the goal is now clear.")]
-            if updated.status != "needs_goal_clarification":
-                agents.extend([
-                    ("Memory Insight Agent", "Read memories after clarification."),
-                    ("Resource Intelligence Agent", "Selected resources after clarification."),
-                    ("Plan Co-Designer Agent", "Created a design proposal after clarification."),
-                ])
+        if action == "answer_understanding":
+            updated = service.answer_understanding(session.session_id, request)
+            agents = [("Understanding Agent", "Merged the answer and rebuilt the typed understanding.")]
             yield from self._stream_planning_session_snapshot(thread_id, updated, agents=agents)
             return
-        if action == "approve_design":
-            updated = service.approve_design(session.session_id)
+        if action == "confirm_understanding":
+            updated = service.confirm_understanding(session.session_id)
             yield from self._stream_planning_session_snapshot(thread_id, updated)
             return
-        if action == "revise_design":
-            updated = service.revise_design(session.session_id, request)
+        if action == "revise_understanding":
+            updated = service.revise_understanding(session.session_id, request)
             yield from self._stream_planning_session_snapshot(thread_id, updated)
             return
-        if action == "approve_execution":
-            updated = service.approve_execution(session.session_id)
-            yield from self._stream_planning_session_snapshot(thread_id, updated)
-            return
-        if action == "ready_to_write_status":
+        if action == "final_review_status":
             yield self._planning_event(thread_id, "planning_session_status", session.session_id, status=session.status, content=session.status)
             return
-        if action == "execution_revision_status":
+        if action == "final_revision_status":
             critique = session.critique_report or {}
             issues = critique.get("issues") if isinstance(critique, dict) else []
             descriptions = [str(item.get("description") or "") for item in issues or [] if isinstance(item, dict)]
@@ -1830,21 +1785,21 @@ class CommandAgentService:
             )
             yield self._planning_event(thread_id, "planning_session_status", session.session_id, status=session.status, content=session.status)
             return
-        if action in {"revise_execution", "feedback"}:
-            updated = service.revise_execution(session.session_id, request)
+        if action in {"revise_final", "feedback"}:
+            updated = service.revise_final(session.session_id, request)
             yield from self._stream_planning_session_snapshot(thread_id, updated)
             return
-        if action == "prepare_calendar_write":
-            yield from self._stream_deep_planning_calendar_write(thread_id, payload, session)
+        if action == "approve_final":
+            yield from self._stream_planning_calendar_write(thread_id, payload, session)
 
-    def _stream_deep_planning_calendar_write(
+    def _stream_planning_calendar_write(
         self,
         thread_id: str,
         payload: CommandChatRequest,
         session: PlanningSessionResponse,
     ) -> Iterator[str]:
-        service = get_deep_planning_orchestrator()
-        updated = service.prepare_calendar_write(session.session_id)
+        service = get_planning_orchestrator()
+        updated = service.approve_final(session.session_id)
         structured_plan = service.execution_to_structured_plan(updated)
         execution_artifact = max(
             (
@@ -1882,7 +1837,7 @@ class CommandAgentService:
                 "executionDraft": updated.execution_draft.model_dump(by_alias=True) if updated.execution_draft else {},
                 "designProposal": updated.design_proposal.model_dump(by_alias=True) if updated.design_proposal else {},
                 "goal": updated.user_input,
-                "mode": "deep_planning_session",
+                "mode": "formal_planning_session",
                 "qualityReport": updated.execution_draft.quality_report.model_dump(by_alias=True) if updated.execution_draft and updated.execution_draft.quality_report else None,
                 "qualityStatus": updated.execution_draft.quality_status if updated.execution_draft else None,
                 "sourceType": "local_context",
@@ -2225,9 +2180,7 @@ class CommandAgentService:
                 self.add_message(thread_id, "card", "", kind="model_usage", payload=diagnostic)
                 yield _ndjson({"type": "model_usage", **diagnostic})
 
-        from ..cognitive_planning import use_cognitive_os
-
-        if payload.mode == "auto" and decision and (intent != "planning_request" or not use_cognitive_os()):
+        if payload.mode == "auto" and decision and intent != "planning_request":
             decision_card = _decision_payload(decision, decision_source or "local_fallback", decision_error)
             self.add_message(
                 thread_id,
@@ -2257,7 +2210,7 @@ class CommandAgentService:
             session_followup = self._planning_session_followup_action(thread_id, payload, intent)
             if session_followup:
                 followup_action, session = session_followup
-                yield from self._stream_deep_planning_followup(thread_id, payload, followup_action, session)
+                yield from self._stream_planning_followup(thread_id, payload, followup_action, session)
                 yield _ndjson({"type": "done", "threadId": thread_id})
                 return
 
@@ -2267,7 +2220,7 @@ class CommandAgentService:
             return
 
         if payload.mode == "auto" and intent == "planning_request":
-            yield from self._stream_deep_planning_start(
+            yield from self._stream_planning_start(
                 thread_id,
                 payload,
                 goal_understanding=(
@@ -2408,7 +2361,7 @@ class CommandAgentService:
         if action["target"] == "calendar" and planning_session_id:
             # Bind the human decision to the current Execution artifact. The
             # write path rechecks the same policy immediately before mutation.
-            orchestrator = get_deep_planning_orchestrator()
+            orchestrator = get_planning_orchestrator()
             approve_calendar = getattr(orchestrator, "approve_calendar_write", None)
             execution_ref = action_payload.get("executionArtifactRef")
             if not self._planning_execution_ref_is_current(
@@ -3900,7 +3853,7 @@ class CommandAgentService:
         if planning_session_id:
             # Fail closed at execution time so a repaired plan cannot reuse a
             # stale preview or stale human approval.
-            orchestrator = get_deep_planning_orchestrator()
+            orchestrator = get_planning_orchestrator()
             assert_calendar = getattr(orchestrator, "assert_calendar_write_allowed", None)
             execution_ref = payload.get("executionArtifactRef")
             if not self._planning_execution_ref_is_current(
@@ -3956,7 +3909,7 @@ class CommandAgentService:
             "plans": written_plans,
         }
         if failed == 0 and payload.get("planningSessionId"):
-            orchestrator = get_deep_planning_orchestrator()
+            orchestrator = get_planning_orchestrator()
             execution_ref = payload.get("executionArtifactRef")
             if _is_record(execution_ref) and execution_ref.get("kind") == "execution_blueprint":
                 orchestrator.mark_calendar_written(
@@ -3983,7 +3936,7 @@ class CommandAgentService:
             row = None
             if source_key:
                 row = conn.execute("SELECT * FROM plans WHERE source_key = ? LIMIT 1", (source_key,)).fetchone()
-            if not row:
+            if not row and not source_key:
                 row = conn.execute(
                     """
                     SELECT * FROM plans

@@ -35,6 +35,7 @@ class ExecutionBlueprintTask(CognitiveContract):
     action_steps: list[str] = Field(min_length=1)
     estimated_minutes: int = Field(ge=1, le=10080)
     difficulty: Literal["low", "medium", "high"]
+    optionality: Literal["required", "optional"] = "required"
     scheduled_date: str | None = None
     schedule_window: str | None = None
     completion_evidence: list[str] = Field(min_length=1)
@@ -73,7 +74,7 @@ class ExecutionBudgetAllocation(CognitiveContract):
 
 
 class ExecutionBudgetSummary(CognitiveContract):
-    spending_limit_cny: int = Field(ge=1)
+    spending_limit_cny: int = Field(ge=0)
     allocations: list[ExecutionBudgetAllocation] = Field(min_length=1)
 
     @model_validator(mode="after")

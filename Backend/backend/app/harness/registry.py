@@ -16,6 +16,18 @@ ARTIFACT_STATE_KEYS: dict[ArtifactKind, str] = {
     "critique_report": "critique_report",
     "planning_learning_update": "learning_update",
     "memory_evaluation": "memory_evaluation",
+    "understanding_snapshot": "v2_understanding",
+    "constraint_set": "v2_constraints",
+    "context_pack": "v2_context",
+    "plan_blueprint": "v2_plan",
+    "plan_quality_report": "v2_plan_quality",
+    "schedule_blueprint": "v2_schedule",
+    "schedule_quality_report": "v2_schedule_quality",
+    "calendar_proposal": "v2_calendar_proposal",
+    "final_approval_bundle": "v2_final_approval",
+    "execution_outcome": "v2_execution_outcome",
+    "replan_proposal": "v2_replan_proposal",
+    "learning_observation": "v2_learning_observation",
 }
 
 

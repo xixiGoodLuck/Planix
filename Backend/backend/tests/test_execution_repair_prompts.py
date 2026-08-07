@@ -4,7 +4,10 @@ from typing import Any
 
 import pytest
 
-from app.cognitive_planning.agents.critic_agent import CRITIC_SYSTEM as OS_CRITIC_SYSTEM
+from app.cognitive_planning.agents.critic_agent import (
+    CRITIC_SYSTEM as OS_CRITIC_SYSTEM,
+    CriticAgent,
+)
 from app.cognitive_planning.agents.execution_agent import (
     BLUEPRINT_SYSTEM as OS_BLUEPRINT_SYSTEM,
     NARRATIVE_SYSTEM as OS_NARRATIVE_SYSTEM,
@@ -21,6 +24,7 @@ from app.services.cognitive_planning.agents.execution_designer_agent import (
 )
 from app.services.cognitive_planning.contracts import (
     EVIDENCE_AUTHORITY_POLICY_VERSION,
+    CritiqueDimensions,
     EvidencePack,
     ExecutionBlueprint,
     ExecutionBlueprintTask,
@@ -137,6 +141,26 @@ class _CaptureModel:
             return AgentResult(self.blueprint.narrative, usage)
         if contract_type is ExecutionBlueprint:
             return AgentResult(self.blueprint, usage)
+        if contract_type is PlanCritiqueReport:
+            return AgentResult(
+                PlanCritiqueReport(
+                    status="passed",
+                    score=95,
+                    dimensions=CritiqueDimensions(
+                        userFit=95,
+                        goalAlignment=95,
+                        domainCorrectness=95,
+                        feasibility=95,
+                        safety=95,
+                        taskSpecificity=95,
+                        resourceActionability=95,
+                        scheduleFit=95,
+                        adaptability=95,
+                    ),
+                    calendarWritable=True,
+                ),
+                usage,
+            )
         raise AssertionError(f"Unexpected contract: {contract_type}")
 
 
@@ -247,3 +271,69 @@ def test_critic_prompt_uses_evidence_authority_and_forbids_numeric_oscillation(
     assert "official current source" in normalized_prompt
     assert "reverse a repaired Execution" in normalized_prompt
     assert "lower-authority Strategy estimate" in normalized_prompt
+    assert "quote the exact current field" in normalized_prompt
+    assert "treat that finding as resolved" in normalized_prompt
+
+
+def test_critic_separates_current_context_from_superseded_history() -> None:
+    execution = _blueprint()
+    model = _CaptureModel(execution)
+    prior = PlanCritiqueReport.model_validate(
+        {
+            "status": "needs_repair",
+            "score": 75,
+            "dimensions": {key: 75 for key in (
+                "userFit",
+                "goalAlignment",
+                "domainCorrectness",
+                "feasibility",
+                "safety",
+                "taskSpecificity",
+                "resourceActionability",
+                "scheduleFit",
+                "adaptability",
+            )},
+            "issues": [{
+                "severity": "major",
+                "description": "The previous version lacked evidence.",
+                "evidence": "superseded task-1",
+                "responsibleAgent": "execution_designer",
+            }],
+            "repairRequests": [{
+                "targetAgent": "execution_designer",
+                "instruction": "Add evidence.",
+                "expectedChange": "Evidence exists.",
+            }],
+            "calendarWritable": False,
+        }
+    )
+
+    class StrategyStub:
+        status = "approved"
+        recommended_strategy_id = "approved"
+        approved_strategy_id = "approved"
+
+        @staticmethod
+        def model_dump(**_kwargs):
+            return {"status": "approved", "approvedStrategyId": "approved"}
+
+    CriticAgent(model=model).critique(
+        _goal(),
+        _evidence(),
+        StrategyStub(),
+        execution,
+        previous_critique=prior,
+        repair_history=[{"critiqueArtifactVersion": 1}],
+        critic_policy={
+            "currentReviewContext": {
+                "currentExecutionArtifact": {"id": "execution-current", "version": 2},
+                "supersededArtifactsIncluded": False,
+            }
+        },
+    )
+
+    payload = model.calls[-1]["payload"]
+    assert payload["currentReviewContext"]["currentExecutionArtifact"]["version"] == 2
+    assert "previousCritiqueReport" not in payload
+    assert "repairHistory" not in payload
+    assert payload["supersededReviewHistory"]["authority"] == "audit_only"

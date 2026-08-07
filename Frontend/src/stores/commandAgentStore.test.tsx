@@ -148,116 +148,19 @@ describe('commandAgentStore workbench mode', () => {
     expect(html).toContain('model_usage');
   });
 
-  it('stores deep planning session events from the stream for replay', async () => {
+  it('preserves formal planning snapshots and recoverable model failure fields', async () => {
     apiMocks.runCommandChat.mockImplementationOnce(async (_payload, handlers) => {
-      handlers.onEvent({ type: 'planning_session_started', sessionId: 'session-1', status: 'waiting_design_approval' });
-      handlers.onEvent({
-        type: 'goal_understanding',
-        sessionId: 'session-1',
-        intentState: 'clear_goal',
-        understoodIntent: 'Learn Python',
-        possibleDomains: ['learning'],
-        knownFacts: { subject: 'Python' },
-        uncertainties: [],
-        consistencyWarnings: [],
-        nextQuestion: '',
-        confidence: 0.9,
-        source: 'llm'
-      });
-      handlers.onEvent({
-        type: 'goal_completion_updated',
-        sessionId: 'session-1',
-        businessStatus: 'strategy_pending',
-        runtimeStatus: 'running',
-        data: {
-          complete: true,
-          blockingUnknowns: [],
-          optionalUnknowns: ['Preferred framework'],
-          nextStage: 'strategy'
-        }
-      });
-      handlers.onEvent({
-        type: 'user_need_contract',
-        sessionId: 'session-1',
-        data: { interpretedGoal: 'Python plan', canMoveToDesign: true }
-      });
-      handlers.onEvent({
-        type: 'memory_insight_brief',
-        sessionId: 'session-1',
-        data: { memoryHits: {}, planningInsights: {}, confidence: 0.5 }
-      });
-      handlers.onEvent({
-        type: 'resource_brief',
-        sessionId: 'session-1',
-        data: { coverage: { status: 'partial', explanation: 'Some resources found.' }, resourceCandidates: [] }
-      });
-      handlers.onEvent({
-        type: 'plan_design_proposal',
-        sessionId: 'session-1',
-        data: { strategyName: 'Project-driven', phases: [], status: 'waiting_user_approval' }
-      });
-      handlers.onEvent({
-        type: 'execution_plan_draft',
-        sessionId: 'session-1',
-        data: { tasks: [], status: 'waiting_user_approval' }
-      });
-      handlers.onEvent({
-        type: 'learning_update',
-        sessionId: 'session-1',
-        data: { feedbackType: 'resource_feedback', insight: 'Replace resource' }
-      });
-      handlers.onEvent({ type: 'planning_session_status', sessionId: 'session-1', status: 'waiting_execution_approval' });
-      handlers.onEvent({ type: 'done', threadId: 'thread-planning' });
-    });
-    apiMocks.listCommandThreads.mockResolvedValue([]);
-
-    commandAgentActions.newThread();
-    await commandAgentActions.sendCommand('Plan Python', (key) => key);
-
-    const html = renderMessageKinds();
-    expect(html).toContain('planning_session_started');
-    expect(html).toContain('goal_understanding');
-    expect(html).toContain('goal_completion_updated');
-    expect(html).toContain('user_need_contract');
-    expect(html).toContain('memory_insight_brief');
-    expect(html).toContain('resource_brief');
-    expect(html).toContain('plan_design_proposal');
-    expect(html).toContain('execution_plan_draft');
-    expect(html).toContain('learning_update');
-    expect(html).toContain('planning_session_status');
-  });
-
-  it('preserves recoverable planning failure and artifact state fields', async () => {
-    apiMocks.runCommandChat.mockImplementationOnce(async (_payload, handlers) => {
-      handlers.onEvent({
-        type: 'goal_model_updated',
-        sessionId: 'session-failure',
-        data: {
-          goalStatement: 'Learn Python',
-          artifactState: 'last_confirmed'
-        }
-      });
-      handlers.onEvent({
-        type: 'goal_completion_updated',
-        sessionId: 'session-failure',
-        data: {
-          complete: false,
-          blockingUnknowns: [],
-          optionalUnknowns: [],
-          nextStage: 'goal_clarification',
-          artifactState: 'last_confirmed'
-        }
-      });
       handlers.onEvent({
         type: 'planning_session_status',
         sessionId: 'session-failure',
         status: 'MODEL_UNAVAILABLE',
         businessStatus: 'goal_clarification',
         runtimeStatus: 'blocked_model',
+        understandingSnapshot: { goalSummary: 'Learn Python', facts: [] },
         pendingInput: { text: 'web开发', applied: false },
         modelFailure: {
-          stage: 'goal_intelligence',
-          resumeNode: 'goal_intelligence',
+          stage: 'generate_plan',
+          resumeNode: 'generate_plan',
           retryable: true,
           automaticRetryAttempted: true,
           attempts: [{ provider: 'DeepSeek', status: 'error', errorType: 'model_output_truncated' }],
@@ -273,9 +176,9 @@ describe('commandAgentStore workbench mode', () => {
     await commandAgentActions.sendCommand('web开发', (key) => key);
 
     const html = renderToStaticMarkup(<MessagePayloadsProbe />);
-    expect(html).toContain('last_confirmed');
+    expect(html).toContain('Learn Python');
     expect(html).toContain('web开发');
-    expect(html).toContain('goal_intelligence');
+    expect(html).toContain('generate_plan');
     expect(html).toContain('model_output_truncated');
     expect(html).toContain('automaticRetryAttempted');
   });
@@ -393,10 +296,10 @@ describe('commandAgentStore workbench mode', () => {
           id: 'status-replay',
           role: 'card',
           kind: 'planning_session_status',
-          content: 'waiting_execution_approval',
+          content: 'waiting_final_review',
           payload: {
-            status: 'waiting_execution_approval',
-            businessStatus: 'execution_pending',
+            status: 'waiting_final_review',
+            businessStatus: 'planning',
             runtimeStatus: 'idle'
           },
           createdAt: '2026-07-14T00:10:00Z'
@@ -409,7 +312,7 @@ describe('commandAgentStore workbench mode', () => {
     const html = renderWorkspaces();
     expect(html).toContain('thread-replay');
     expect(html).toContain('Replay me');
-    expect(html).toContain('data-status="accepted"');
+    expect(html).toContain('data-status="waiting_confirmation"');
   });
 
   it('restores model-blocked state from modelFailure when older replay lacks runtimeStatus', async () => {
@@ -423,9 +326,9 @@ describe('commandAgentStore workbench mode', () => {
         id: 'status-blocked-replay',
         role: 'card',
         kind: 'planning_session_status',
-        content: 'strategy_pending',
+        content: 'MODEL_UNAVAILABLE',
         payload: {
-          status: 'strategy_pending',
+          status: 'MODEL_UNAVAILABLE',
           modelFailure: {
             stage: 'strategy',
             resumeNode: 'strategy',
@@ -499,7 +402,7 @@ describe('commandAgentStore workbench mode', () => {
         type: 'planning_session_status',
         sessionId: 'session-rate-limit',
         status: 'MODEL_UNAVAILABLE',
-        businessStatus: 'strategy_pending',
+        businessStatus: 'planning',
         runtimeStatus: 'blocked_model',
         modelFailure: {
           stage: 'strategy',

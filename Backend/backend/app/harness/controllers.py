@@ -26,8 +26,6 @@ def _now() -> str:
 
 
 _APPROVAL_ARTIFACTS: dict[ApprovalGate, ArtifactKind] = {
-    "strategy": "strategy_portfolio",
-    "execution": "execution_blueprint",
     "calendar": "execution_blueprint",
 }
 
@@ -131,11 +129,17 @@ class HumanApprovalController:
             "reality_assessment",
             "evidence_pack",
             "strategy_portfolio",
+            "execution_blueprint",
+            "critique_report",
+            "understanding_snapshot",
+            "constraint_set",
+            "context_pack",
+            "plan_blueprint",
+            "plan_quality_report",
+            "schedule_blueprint",
+            "schedule_quality_report",
+            "calendar_proposal",
         }:
-            return {"strategy", "execution", "calendar"}
-        if repaired_artifact == "execution_blueprint":
-            return {"execution", "calendar"}
-        if repaired_artifact == "critique_report":
             return {"calendar"}
         return set()
 

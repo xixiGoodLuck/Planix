@@ -16,12 +16,12 @@ npm run dev
 The desktop dev window loads:
 
 ```text
-http://127.0.0.1:5173
+http://127.0.0.1:5176
 ```
 
 ## Release Strategy
 
-1. `scripts/build-web.ps1` builds `apps/web/dist` and syncs it into `apps/desktop/src-tauri/resources`.
+1. `scripts/build-web.ps1` builds `Frontend/dist` and syncs it into `apps/desktop/src-tauri/resources`.
 2. `scripts/build-backend.ps1` packages the FastAPI backend as `planix-api`.
 3. Tauri bundles the web dist and launches the backend through the `planix-api` sidecar.
 4. The sidecar receives `PLANIX_ENV=desktop` and stores SQLite data in the user data directory unless `PLANIX_DB_PATH` is set.

@@ -34,6 +34,13 @@ class CritiqueIssue(CognitiveContract):
         "execution_designer",
         "execution",
     ]
+    # Runtime-owned review lineage. Model output is overwritten with the
+    # immutable artifact/version actually reviewed before policy evaluation.
+    artifact_id: str | None = None
+    artifact_version: int | None = Field(default=None, ge=1)
+    target_id: str | None = None
+    rule_id: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
 
 
 class CriticRepairRequest(CognitiveContract):

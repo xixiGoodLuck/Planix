@@ -133,14 +133,6 @@ def test_harness_checkpoint_is_compare_and_swap_and_rolls_back_invalid_event(har
 def test_version_bound_approvals_and_policy_decision_survive_create_update_and_recovery(
     harness_session: str,
 ) -> None:
-    strategy = ArtifactRef(
-        id="strategy-v3",
-        sessionId=harness_session,
-        kind="strategy_portfolio",
-        version=3,
-        owner="strategy",
-        status="approved",
-    )
     execution = ArtifactRef(
         id="execution-v2",
         sessionId=harness_session,
@@ -149,34 +141,32 @@ def test_version_bound_approvals_and_policy_decision_survive_create_update_and_r
         owner="execution",
         status="approved",
     )
-    strategy_approval = ApprovalRecord(
-        id="approval-strategy-v3",
+    calendar_approval = ApprovalRecord(
+        id="approval-calendar-v2",
         sessionId=harness_session,
-        gate="strategy",
-        artifact=strategy,
+        gate="calendar",
+        artifact=execution,
         status="approved",
         createdAt="2026-07-11T10:00:00Z",
         decidedAt="2026-07-11T10:01:00Z",
     )
-    waiting_execution = PolicyDecision(
-        subject="planning_progress",
-        action="wait_approval",
-        allowed=False,
-        reason="Execution approval is required.",
+    allow_calendar = PolicyDecision(
+        subject="calendar_write",
+        action="allow",
+        allowed=True,
+        reason="Final review and the bound Calendar approval passed.",
         sessionId=harness_session,
-        requiredApproval="execution",
-        requiredGates=("execution_approval",),
-        failedGates=("execution_approval",),
+        requiredGates=("critic", "calendar_approval"),
     )
     repository = HarnessStateRepository()
     created = repository.create_or_load(
         harness_session,
         PersistentCognitiveState(
             sessionId=harness_session,
-            currentStage="execution",
-            artifactVersions={"strategy_portfolio": 3, "execution_blueprint": 2},
-            approvals=[strategy_approval],
-            lastPolicyDecision=waiting_execution,
+            currentStage="calendar_gate",
+            artifactVersions={"execution_blueprint": 2},
+            approvals=[calendar_approval],
+            lastPolicyDecision=allow_calendar,
         ),
     )
 
@@ -185,54 +175,44 @@ def test_version_bound_approvals_and_policy_decision_survive_create_update_and_r
     approval_controller = HumanApprovalController(restored_after_create.approvals)
     assert approval_controller.is_approved(
         session_id=harness_session,
-        gate="strategy",
-        artifact=strategy,
+        gate="calendar",
+        artifact=execution,
     )
     assert not approval_controller.is_approved(
         session_id=harness_session,
-        gate="strategy",
-        artifact=strategy.model_copy(update={"id": "strategy-v4", "version": 4}),
+        gate="calendar",
+        artifact=execution.model_copy(update={"id": "execution-v3", "version": 3}),
     )
-    assert restored_after_create.last_policy_decision == waiting_execution
+    assert restored_after_create.last_policy_decision == allow_calendar
 
-    execution_approval = ApprovalRecord(
-        id="approval-execution-v2",
-        sessionId=harness_session,
-        gate="execution",
-        artifact=execution,
-        status="approved",
-        createdAt="2026-07-11T10:02:00Z",
-        decidedAt="2026-07-11T10:03:00Z",
-    )
-    allow_critic = PolicyDecision(
-        subject="planning_progress",
-        action="invoke_agent",
+    consumed = calendar_approval.model_copy(update={"status": "consumed"})
+    completed = PolicyDecision(
+        subject="calendar_write",
+        action="allow",
         allowed=True,
-        reason="Current execution version is approved; invoke Critic.",
+        reason="The idempotent Calendar write completed.",
         sessionId=harness_session,
-        nextAgent="critic",
+        requiredGates=("critic", "calendar_approval"),
     )
     updated = repository.checkpoint(
         restored_after_create.model_copy(
             update={
-                "approvals": [*restored_after_create.approvals, execution_approval],
-                "last_policy_decision": allow_critic,
+                "approvals": [consumed],
+                "last_policy_decision": completed,
             }
         ),
         event_type="policy_decision",
-        agent_id="critic",
-        decision="invoke_agent",
-        payload=allow_critic.model_dump(by_alias=True),
+        agent_id="calendar_gate",
+        decision="allow",
+        payload=completed.model_dump(by_alias=True),
     )
 
     restored_after_update = HarnessStateRepository().recover(harness_session)
     assert restored_after_update == updated.state
-    assert [record.id for record in restored_after_update.approvals] == [
-        "approval-strategy-v3",
-        "approval-execution-v2",
-    ]
-    assert restored_after_update.approvals[1].artifact.same_version(execution)
-    assert restored_after_update.last_policy_decision == allow_critic
+    assert [record.id for record in restored_after_update.approvals] == ["approval-calendar-v2"]
+    assert restored_after_update.approvals[0].artifact.same_version(execution)
+    assert restored_after_update.approvals[0].status == "consumed"
+    assert restored_after_update.last_policy_decision == completed
 
 
 def test_observability_updates_versions_progress_and_redacts_secrets(harness_session: str) -> None:

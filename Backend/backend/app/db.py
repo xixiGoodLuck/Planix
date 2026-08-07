@@ -646,30 +646,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             SET business_status = CASE
               WHEN status = 'written_to_calendar' THEN 'completed'
               WHEN status = 'cancelled' THEN 'cancelled'
-              WHEN status IN ('ready_to_write_calendar', 'waiting_calendar_write_approval') THEN 'calendar_pending'
-              WHEN status IN ('waiting_execution_approval', 'execution_revision', 'learning_from_feedback') THEN 'execution_pending'
-              WHEN status IN ('waiting_design_approval', 'design_revision') THEN 'strategy_pending'
-              WHEN status = 'MODEL_UNAVAILABLE' AND (
-                cognitive_metadata_json LIKE '%goal_intelligence%'
-                OR cognitive_metadata_json LIKE '%goal_modeling%'
-                OR cognitive_metadata_json LIKE '%goal_completion%'
-              ) THEN 'goal_clarification'
-              WHEN status = 'MODEL_UNAVAILABLE' AND (
-                cognitive_metadata_json LIKE '%reality_assessment%'
-                OR cognitive_metadata_json LIKE '%context_evidence%'
-                OR cognitive_metadata_json LIKE '%evidence_synthesis%'
-              ) THEN 'evidence_pending'
-              WHEN status = 'MODEL_UNAVAILABLE' AND (
-                cognitive_metadata_json LIKE '%strategy_architecture%'
-                OR cognitive_metadata_json LIKE '%strategy_design%'
-              ) THEN 'strategy_pending'
-              WHEN status = 'MODEL_UNAVAILABLE' AND TRIM(execution_blueprint_json) NOT IN ('', '{}', 'null') THEN 'execution_pending'
-              WHEN status = 'MODEL_UNAVAILABLE' AND approved_strategy_id != '' THEN 'execution_pending'
-              WHEN status = 'MODEL_UNAVAILABLE' AND (
-                TRIM(strategy_portfolio_json) NOT IN ('', '{}', 'null')
-                OR TRIM(evidence_pack_json) NOT IN ('', '{}', 'null')
-              ) THEN 'strategy_pending'
-              WHEN status = 'MODEL_UNAVAILABLE' AND TRIM(goal_model_json) NOT IN ('', '{}', 'null') THEN 'evidence_pending'
+              WHEN status = 'waiting_calendar_write_approval' THEN 'calendar_pending'
+              WHEN status IN ('planning', 'final_revision', 'waiting_final_review', 'learning_from_feedback') THEN 'planning'
+              WHEN status = 'ARCHIVED' THEN 'blocked'
               ELSE 'goal_clarification'
             END
             """
@@ -681,30 +660,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             SET business_status = CASE
               WHEN status = 'written_to_calendar' THEN 'completed'
               WHEN status = 'cancelled' THEN 'cancelled'
-              WHEN status IN ('ready_to_write_calendar', 'waiting_calendar_write_approval') THEN 'calendar_pending'
-              WHEN status IN ('waiting_execution_approval', 'execution_revision', 'learning_from_feedback') THEN 'execution_pending'
-              WHEN status IN ('waiting_design_approval', 'design_revision') THEN 'strategy_pending'
-              WHEN status = 'MODEL_UNAVAILABLE' AND (
-                cognitive_metadata_json LIKE '%goal_intelligence%'
-                OR cognitive_metadata_json LIKE '%goal_modeling%'
-                OR cognitive_metadata_json LIKE '%goal_completion%'
-              ) THEN 'goal_clarification'
-              WHEN status = 'MODEL_UNAVAILABLE' AND (
-                cognitive_metadata_json LIKE '%reality_assessment%'
-                OR cognitive_metadata_json LIKE '%context_evidence%'
-                OR cognitive_metadata_json LIKE '%evidence_synthesis%'
-              ) THEN 'evidence_pending'
-              WHEN status = 'MODEL_UNAVAILABLE' AND (
-                cognitive_metadata_json LIKE '%strategy_architecture%'
-                OR cognitive_metadata_json LIKE '%strategy_design%'
-              ) THEN 'strategy_pending'
-              WHEN status = 'MODEL_UNAVAILABLE' AND TRIM(execution_blueprint_json) NOT IN ('', '{}', 'null') THEN 'execution_pending'
-              WHEN status = 'MODEL_UNAVAILABLE' AND approved_strategy_id != '' THEN 'execution_pending'
-              WHEN status = 'MODEL_UNAVAILABLE' AND (
-                TRIM(strategy_portfolio_json) NOT IN ('', '{}', 'null')
-                OR TRIM(evidence_pack_json) NOT IN ('', '{}', 'null')
-              ) THEN 'strategy_pending'
-              WHEN status = 'MODEL_UNAVAILABLE' AND TRIM(goal_model_json) NOT IN ('', '{}', 'null') THEN 'evidence_pending'
+              WHEN status = 'waiting_calendar_write_approval' THEN 'calendar_pending'
+              WHEN status IN ('planning', 'final_revision', 'waiting_final_review', 'learning_from_feedback') THEN 'planning'
+              WHEN status = 'ARCHIVED' THEN 'blocked'
               ELSE 'goal_clarification'
             END
             WHERE business_status IS NULL
@@ -713,23 +671,9 @@ def init_db(conn: sqlite3.Connection) -> None:
                  business_status = 'goal_clarification'
                  AND (
                    status IN (
-                     'written_to_calendar', 'cancelled', 'ready_to_write_calendar',
-                     'waiting_calendar_write_approval', 'waiting_execution_approval',
-                     'execution_revision', 'learning_from_feedback',
-                     'waiting_design_approval', 'design_revision'
-                   )
-                   OR (
-                     status = 'MODEL_UNAVAILABLE'
-                     AND cognitive_metadata_json NOT LIKE '%goal_intelligence%'
-                     AND cognitive_metadata_json NOT LIKE '%goal_modeling%'
-                     AND cognitive_metadata_json NOT LIKE '%goal_completion%'
-                     AND (
-                       TRIM(execution_blueprint_json) NOT IN ('', '{}', 'null')
-                       OR approved_strategy_id != ''
-                       OR TRIM(strategy_portfolio_json) NOT IN ('', '{}', 'null')
-                       OR TRIM(evidence_pack_json) NOT IN ('', '{}', 'null')
-                       OR TRIM(goal_model_json) NOT IN ('', '{}', 'null')
-                     )
+                     'written_to_calendar', 'cancelled', 'waiting_calendar_write_approval',
+                     'planning', 'final_revision', 'waiting_final_review',
+                     'learning_from_feedback', 'ARCHIVED'
                    )
                  )
                )

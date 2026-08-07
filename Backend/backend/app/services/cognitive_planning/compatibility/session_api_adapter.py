@@ -339,8 +339,8 @@ class SessionApiAdapter:
         if legacy_evidence and metadata:
             metadata = metadata.model_copy(update={"current_stage": "evidence_synthesis"})
 
-        design_approved = bool(execution or row["status"] in {"waiting_execution_approval", "ready_to_write_calendar", "waiting_calendar_write_approval", "written_to_calendar"})
-        execution_approved = row["status"] in {"ready_to_write_calendar", "waiting_calendar_write_approval", "written_to_calendar"}
+        design_approved = bool(execution)
+        execution_approved = row["status"] in {"waiting_final_review", "waiting_calendar_write_approval", "written_to_calendar"}
         contract = goal_to_contract(goal, row["user_input"]) if goal else None
         if contract and completion:
             if completion.complete:
@@ -417,6 +417,47 @@ class SessionApiAdapter:
         ):
             contract = contract.model_copy(update={"can_move_to_design": False})
 
+        artifacts = self.agent_runtime.list_artifacts(row["id"])
+        planning_artifact_types = {
+            "understanding_snapshot",
+            "constraint_set",
+            "context_pack",
+            "plan_blueprint",
+            "plan_quality_report",
+            "schedule_blueprint",
+            "schedule_quality_report",
+            "calendar_proposal",
+            "final_approval_bundle",
+        }
+        planning_artifacts = {
+            artifact_type: max(
+                (item for item in artifacts if item.artifact_type == artifact_type),
+                key=lambda item: item.version,
+                default=None,
+            )
+            for artifact_type in planning_artifact_types
+        }
+        planning_payload = {
+            key: (value.content_json if value else None)
+            for key, value in planning_artifacts.items()
+        }
+        is_formal = bool(planning_payload.get("understanding_snapshot"))
+        if is_formal:
+            if row["status"] in {"needs_goal_clarification", "waiting_understanding_confirmation"}:
+                planning_phase, planning_step = "UNDERSTANDING", "WAITING_CONFIRMATION"
+            elif row["status"] in {"waiting_final_review", "final_revision"}:
+                planning_phase, planning_step = "FINAL_REVIEW", "WAITING_CONFIRMATION"
+            elif row["status"] == "waiting_calendar_write_approval":
+                planning_phase, planning_step = "WRITING", "WAITING_PERMISSION"
+            elif row["status"] == "written_to_calendar":
+                planning_phase, planning_step = "ACTIVE", "CALENDAR_WRITTEN"
+            elif planning_payload.get("schedule_blueprint"):
+                planning_phase, planning_step = "SCHEDULING", "VALIDATING"
+            else:
+                planning_phase, planning_step = "PLANNING", "GENERATING"
+        else:
+            planning_phase = planning_step = None
+
         messages = self.agent_runtime.list_messages(row["id"])
         latest_block = _latest_unresolved_block(row["id"], messages)
         model_failure = _model_failure(
@@ -489,7 +530,7 @@ class SessionApiAdapter:
 
         response_status = "MODEL_UNAVAILABLE" if legacy_evidence else row["status"]
         response_business_status = (
-            "evidence_pending"
+            "planning"
             if legacy_evidence
             else (row["business_status"] or "goal_clarification")
             if "business_status" in row.keys()
@@ -527,10 +568,21 @@ class SessionApiAdapter:
             executionBlueprint=public_execution_raw,
             critiqueReport=public_critique_raw,
             planningLearningUpdate=public_learning_raw,
+            planningPhase=planning_phase,
+            planningStep=planning_step,
+            understandingSnapshot=planning_payload.get("understanding_snapshot"),
+            constraintSet=planning_payload.get("constraint_set"),
+            contextPack=planning_payload.get("context_pack"),
+            planBlueprint=planning_payload.get("plan_blueprint"),
+            planQualityReport=planning_payload.get("plan_quality_report"),
+            scheduleBlueprint=planning_payload.get("schedule_blueprint"),
+            scheduleQualityReport=planning_payload.get("schedule_quality_report"),
+            calendarProposal=planning_payload.get("calendar_proposal"),
+            finalApprovalBundle=planning_payload.get("final_approval_bundle"),
             approvedStrategyId=public_approved_strategy_id,
             modelFailure=model_failure,
             pendingInput=_pending_input(row, model_failure),
-            artifacts=self.agent_runtime.list_artifacts(row["id"]),
+            artifacts=artifacts,
             decisions=self.agent_runtime.list_decisions(row["id"]),
             messages=messages,
             version=int(row["version"] or 1),

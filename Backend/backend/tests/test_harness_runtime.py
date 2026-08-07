@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +21,7 @@ from app.services.cognitive_planning.contracts import SafePlanningError
 from app.services.cognitive_planning.orchestration.persistence import CognitivePlanningPersistence
 from app.services.llm import LlmResult
 from app.services.planning_agent_runtime import PlanningAgentRuntime
+from app.cognitive_planning.runtime import CognitiveOSRuntime
 
 
 class _MinimalContract(BaseModel):
@@ -65,6 +67,45 @@ def test_deterministic_json_repair_changes_syntax_only_and_schema_stays_fail_clo
         contract_type=_MinimalContract,
     )
     assert result.artifact.value == "kept"
+    trace = result.model_usage["trace"]
+    assert trace["modelCalls"] == 1
+    assert trace["modelRetries"] == 0
+    assert trace["providerLatencyMs"] >= 0
+    assert trace["totalLatencyMs"] >= trace["providerLatencyMs"]
+    assert trace["promptBuildStart"] <= trace["agentEnd"]
+
+    class _RetriedLlm:
+        @staticmethod
+        def complete(*_args, **_kwargs):
+            return LlmResult(
+                content='{"value":"kept"}',
+                provider="deepseek",
+                model="deepseek-chat",
+                attempts=[
+                    {"provider": "deepseek", "model": "deepseek-chat", "status": "error", "latencyMs": 11},
+                    {
+                        "provider": "deepseek",
+                        "model": "deepseek-chat",
+                        "status": "success",
+                        "latencyMs": 17,
+                        "automaticRetry": True,
+                        "retryReason": "model_output_truncated",
+                    },
+                ],
+            ), None
+
+    retried = CognitiveModelClient(llm=_RetriedLlm()).complete_contract(
+        stage="goal_modeling",
+        task_type="planning_goal_model",
+        feature="harness_retry_trace",
+        system="unchanged agent prompt",
+        payload={},
+        contract_type=_MinimalContract,
+    )
+    assert retried.model_usage["trace"]["modelCalls"] == 2
+    assert retried.model_usage["trace"]["modelRetries"] == 1
+    assert retried.model_usage["trace"]["retryLatencyMs"] == 17
+    assert retried.model_usage["trace"]["retryReasons"] == ["model_output_truncated"]
 
     with pytest.raises(PlanningModelUnavailable) as exc_info:
         CognitiveModelClient(llm=_FakeLlm('{"other":"untouched",}')).complete_contract(
@@ -78,89 +119,51 @@ def test_deterministic_json_repair_changes_syntax_only_and_schema_stays_fail_clo
     assert exc_info.value.error.error_type == "invalid_model_output"
 
 
+def test_cognitive_runtime_returns_current_session_while_same_session_run_is_active() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _Harness:
+        calls = 0
+
+        @staticmethod
+        def bootstrap(_state):
+            return SimpleNamespace(
+                current_stage="design_approach",
+                artifact_versions={"context_pack": 1},
+            )
+
+        def invoke(self, **_kwargs):
+            self.calls += 1
+            entered.set()
+            assert release.wait(timeout=2)
+            return {"session_id": "session-1"}
+
+    runtime = object.__new__(CognitiveOSRuntime)
+    runtime.harness = _Harness()
+    runtime.get_session = lambda session_id: f"current:{session_id}"
+    first_result: list[str] = []
+    first = threading.Thread(
+        target=lambda: first_result.append(runtime._invoke({"session_id": "session-1"})),
+    )
+    first.start()
+    assert entered.wait(timeout=2)
+
+    duplicate = runtime._invoke({"session_id": "session-1"})
+    assert duplicate == "current:session-1"
+    assert runtime.harness.calls == 1
+
+    release.set()
+    first.join(timeout=2)
+    assert first_result == ["current:session-1"]
+
+
 def test_scheduler_owns_resume_critic_and_repair_decisions() -> None:
     scheduler = AgentScheduler()
-    recovered = scheduler.from_guard(
-        {
-            "user_action": "continue_current_stage",
-            "status": "MODEL_UNAVAILABLE",
-            "resume_node": "strategy",
-        }
-    )
-    assert recovered.action.value == "recover"
-    assert recovered.agent_id == "strategy"
-    assert recovered.next_node == "strategy"
-
-    critic = scheduler.after_execution(
-        {"planning_mode": "model_backed", "execution_blueprint": object()}
-    )
-    assert critic.next_node == "critic"
-    assert critic.agent_id == "critic"
-
-    repair = scheduler.after_critic(
-        {
-            "planning_mode": "model_backed",
-            "critique_report": SimpleNamespace(status="needs_repair"),
-            "repair_count": 0,
-        }
-    )
-    assert repair.action.value == "repair"
-    assert repair.next_node == "repair"
-
-    blocked_repair = scheduler.after_critic(
-        {
-            "planning_mode": "model_backed",
-            "critique_report": SimpleNamespace(
-                status="blocked",
-                repair_requests=[SimpleNamespace(target_agent="execution_designer")],
-            ),
-            "repair_count": 0,
-        }
-    )
-    assert blocked_repair.action.value == "repair"
-    assert blocked_repair.next_node == "repair"
-
-    blocked_terminal = scheduler.after_critic(
-        {
-            "planning_mode": "model_backed",
-            "critique_report": SimpleNamespace(status="blocked", repair_requests=[]),
-            "repair_count": 0,
-        }
-    )
-    assert blocked_terminal.action.value == "wait_user"
-    assert blocked_terminal.next_node == "wait_for_execution_approval"
-
-    inconsistent_pass = scheduler.after_critic(
-        {
-            "planning_mode": "model_backed",
-            "critique_report": SimpleNamespace(
-                status="passed",
-                score=95,
-                calendar_writable=True,
-                issues=[SimpleNamespace(severity="major")],
-                repair_requests=[],
-            ),
-            "repair_count": 0,
-        }
-    )
-    assert inconsistent_pass.action.value == "wait_user"
-    assert inconsistent_pass.reason_code == "critic_inconsistent_pass"
-
-    inconsistent_repair = scheduler.after_critic(
-        {
-            "planning_mode": "model_backed",
-            "critique_report": SimpleNamespace(
-                status="passed",
-                score=95,
-                calendar_writable=True,
-                issues=[],
-                repair_requests=[SimpleNamespace(target_agent="execution_designer")],
-            ),
-            "repair_count": 0,
-        }
-    )
-    assert inconsistent_repair.action.value == "repair"
-    assert inconsistent_repair.next_node == "repair"
+    assert scheduler.__class__ is AgentScheduler
+    assert not hasattr(scheduler, "from_guard")
+    assert not hasattr(scheduler, "after_execution")
+    assert not hasattr(scheduler, "after_critic")
 
 
 @pytest.mark.parametrize("reason_code", ["reality_judgment", "evidence_judgment"])
@@ -202,12 +205,12 @@ def test_critic_user_wait_keeps_the_critic_failure_gate(runtime_db) -> None:
         },
         SchedulerDecision(
             action=SchedulerAction.WAIT_USER,
-            next_node="wait_for_execution_approval",
+            next_node="wait_for_final_review",
             reason_code="critic_blocked",
         ),
     )
 
-    assert selected == "wait_for_execution_approval"
+    assert selected == "wait_for_final_review"
     policy = HarnessStateRepository().recover(session_id).last_policy_decision
     assert policy is not None
     assert policy.subject == "critic_review"
@@ -399,26 +402,26 @@ def test_version_bound_approval_is_restored_and_invalidated_by_repair(runtime_db
     artifacts = PlanningAgentRuntime()
     artifacts.record_artifact(
         session_id,
-        owner_agent="Strategy Agent",
-        artifact_type="strategy_portfolio",
-        content={"recommendedStrategyId": "s1"},
+        owner_agent="Execution Agent",
+        artifact_type="execution_blueprint",
+        content={"tasks": [{"id": "task-1"}]},
     )
     harness = HarnessRuntime(artifact_runtime=artifacts)
-    harness.record_approval(session_id, "strategy")
+    harness.record_approval(session_id, "calendar")
     approved = HarnessStateRepository().recover(session_id)
     assert approved.approvals[-1].status == "approved"
     assert approved.approvals[-1].artifact.version == 1
 
     artifacts.record_artifact(
         session_id,
-        owner_agent="Strategy Agent",
-        artifact_type="strategy_portfolio",
-        content={"recommendedStrategyId": "s2"},
+        owner_agent="Execution Agent",
+        artifact_type="execution_blueprint",
+        content={"tasks": [{"id": "task-1"}, {"id": "task-2"}]},
     )
     harness.bootstrap({"session_id": session_id})
     repaired = HarnessStateRepository().recover(session_id)
     assert repaired.approvals[-1].status == "invalidated"
-    assert repaired.checkpoint.artifact_refs["strategy_portfolio"].version == 2
+    assert repaired.checkpoint.artifact_refs["execution_blueprint"].version == 2
 
 
 def test_recovery_manager_keeps_exact_failed_stage() -> None:
@@ -434,4 +437,4 @@ def test_recovery_manager_keeps_exact_failed_stage() -> None:
     )
     assert decision.action == RecoveryAction.RETRY_STAGE
     assert decision.resume_node == "strategy"
-    assert decision.business_status == "strategy_pending"
+    assert decision.business_status == "planning"

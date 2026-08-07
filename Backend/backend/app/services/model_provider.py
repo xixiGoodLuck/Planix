@@ -172,13 +172,16 @@ def provider_default_model(provider: str) -> str:
 
 
 def merge_openai_compatible_extra_body(payload: dict[str, Any], settings: EffectiveAiSettings) -> dict[str, Any]:
-    if settings.provider != "local" or "qwen" not in settings.model.casefold():
+    if settings.provider not in {"local", "custom"} or "qwen" not in settings.model.casefold():
         return payload
-    extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
-    for key, value in extra_body.items():
-        existing = payload.get(key)
-        payload[key] = {**existing, **value} if isinstance(existing, dict) else value
-    payload.setdefault("reasoning_effort", "none")
+    existing = payload.get("chat_template_kwargs")
+    payload["chat_template_kwargs"] = (
+        {"enable_thinking": False, **existing}
+        if isinstance(existing, dict)
+        else {"enable_thinking": False}
+    )
+    if settings.provider == "local":
+        payload.setdefault("reasoning_effort", "none")
     return payload
 
 

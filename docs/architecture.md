@@ -2,7 +2,7 @@
 
 ```mermaid
 flowchart LR
-  U["User"] --> FE["apps/web React + TypeScript + Vite"]
+  U["User"] --> FE["Frontend React + TypeScript + Vite"]
   FE --> API["FastAPI API"]
   FE --> LS["localStorage fallback"]
 
@@ -39,8 +39,8 @@ The frontend is API-first for plans, month notes, and AI settings. When the back
 
 ```mermaid
 flowchart LR
-  T["Tauri window"] --> W["apps/web/dist/index.html"]
-  W --> API["127.0.0.1:8000 /api"]
+  T["Tauri window"] --> W["Frontend/dist/index.html"]
+  W --> API["127.0.0.1:8003 /api"]
   T --> S["planix-api sidecar"]
   S --> F["FastAPI app"]
   F --> DB["SQLite user data dir"]
@@ -48,9 +48,11 @@ flowchart LR
 
 Phase 7 prepares the Tauri v2 scaffold in `apps/desktop`, the PyInstaller entry in `scripts/pyinstaller`, and PowerShell build scripts in `scripts`. The packaged desktop app is expected to start the `planix-api` sidecar with `PLANIX_ENV=desktop`, so SQLite resolves to `%APPDATA%\Planix\planix.db` unless `PLANIX_DB_PATH` overrides it.
 
-Development mode points the Tauri window to `http://127.0.0.1:5173`, while production loads `index.html` from `apps/web/dist`.
+Development mode points the Tauri window to `http://127.0.0.1:5176`, while production loads `index.html` from `Frontend/dist`.
 
 ## Planning Loop
+
+The production planning path has one entry point: `get_planning_orchestrator()` returns `CognitiveOSRuntime`, which executes the canonical Harness-owned graph. The path is Understanding -> confirmation -> constraints/context -> plan generation and validation -> schedule generation and validation -> deterministic Calendar proposal -> Final Review -> version-bound final approval -> Calendar permission gate -> execution feedback and learning. Strategy, Execution, and Critique artifacts are internal model-generation inputs and never create separate user approval stages. Retired sessions remain read-only and cannot enter an executable legacy graph.
 
 1. `POST /api/planning/goal-plan` retrieves matching knowledge-base chunks, turns a long-term goal into phases and today tasks, then stores the result in `planning_goals`.
 2. The frontend can apply generated tasks into the current day's `plans`.
@@ -83,7 +85,7 @@ Development mode points the Tauri window to `http://127.0.0.1:5173`, while produ
 ## Backend Layout
 
 ```text
-backend/app/
+Backend/backend/app/
   main.py
   db.py
   desktop_paths.py

@@ -10,7 +10,7 @@ Portfolio-facing documentation version: `v3.0.0`. This is a presentation label f
 
 ## Current Phase
 
-The architecture boundary remains **Phase 7: Cognitive Planning OS** for P Mode, with the **Phase 7.1 Goal Understanding + Cognitive UX** refinement, **Phase 7.3 Planning State Progression** hotfix, and the Agent Runtime Harness completed inside it. The canonical Cognitive Agents live under `backend/app/cognitive_planning`; the control plane lives under `backend/app/harness`. Goal Intelligence, Goal Completion Judge, Reality, Evidence, Strategy, Execution, and Critic make independent judgments over typed artifacts. Harness Scheduler/Policy own lifecycle and product decisions; LangGraph executes the selected nodes only. Users approve strategy and execution before Calendar preview, and every Calendar mutation requires a version-bound Calendar approval. If a required formal-planning model call fails or violates its contract, durable `businessStatus` remains at the last valid stage, public `runtimeStatus` becomes `blocked_model`, and compatibility fields retain exact `status="MODEL_UNAVAILABLE"` plus `planningMode="blocked_model_unavailable"`. Understood facts and successful artifacts persist, and the failed stage may resume without restarting goal collection. Existing Planning Session APIs/events, Phase 6 compatibility code, Workbench Runtime, Dashboard Runtime, and Goals remain compatible.
+The architecture boundary remains **Phase 7: Cognitive Planning OS** for P Mode, with the **Phase 7.1 Goal Understanding + Cognitive UX** refinement, **Phase 7.3 Planning State Progression** hotfix, and the Agent Runtime Harness completed inside it. The canonical Cognitive Agents live under `Backend/backend/app/cognitive_planning`; the control plane lives under `Backend/backend/app/harness`. Goal Intelligence, Goal Completion Judge, Reality, Evidence, Strategy, Execution, and Critic make independent judgments over typed artifacts. Harness Scheduler/Policy own lifecycle and product decisions; LangGraph executes the selected nodes only. Users approve strategy and execution before Calendar preview, and every Calendar mutation requires a version-bound Calendar approval. If a required formal-planning model call fails or violates its contract, durable `businessStatus` remains at the last valid stage, public `runtimeStatus` becomes `blocked_model`, and compatibility fields retain exact `status="MODEL_UNAVAILABLE"` plus `planningMode="blocked_model_unavailable"`. Understood facts and successful artifacts persist, and the failed stage may resume without restarting goal collection. Existing Planning Session APIs/events, Phase 6 compatibility code, Workbench Runtime, Dashboard Runtime, and Goals remain compatible.
 
 Allowed in this phase:
 
@@ -22,7 +22,7 @@ Allowed in this phase:
 - Clean Runtime Context Pack history before retrieval and planning.
 - Provide Settings maintenance controls for AI memory/cache cleanup.
 - Keep P Mode Codex-like: outputs appear as inline conversation cards, not as a fixed workspace preview panel.
-- Keep P Mode defaulting to `auto`: normal commands remain conversational, planning requests enter the active Planning Session, and `PLANIX_COGNITIVE_MODE=true` selects Cognitive OS. Forced `chat` remains non-executing; manual `workbench` may still use the old Runtime/hidden-draft path.
+- Keep P Mode defaulting to `auto`: normal commands remain conversational and planning requests enter the single formal Planning Session runtime. Forced `chat` remains non-executing; manual `workbench` remains a separate legacy product mode and is never a planning-runtime fallback.
 - Keep P Mode context thread-local: recent user/assistant text from the current thread may inform chat and planning, but new chats must not inherit prior thread context.
 - Let Phase 7.1 run a model-backed `GoalUnderstandingResult` before generic `CommandDecision` routing for new `auto`-mode input. The only intent states are `clear_goal`, `ambiguous_goal`, `normal_chat`, and `command`; there is no goal-understanding `unknown` state.
 - Treat destination-only goals such as `我要去北京` and `我要去乌鲁木齐` as `ambiguous_goal`: preserve the literal location, ask for purpose, and never infer travel or select a local travel template from the city name alone.
@@ -36,8 +36,8 @@ Allowed in this phase:
 - Keep Command frontend state isolated per local workspace. The active workspace is a projection only: up to two independent Threads may retain background NDJSON streams, one Thread remains strictly serial, and switching/new Thread must never redirect events into the active workspace. Reject a third submission before appending it; a DeepSeek `rate_limit` attempt lowers that page to one lane.
 - Persist surfaced `goal_understanding` cards in `command_messages`, stream them as the additive `goal_understanding` event, and restore them through command-thread replay.
 - Persist `GoalCompletionResult` and expose additive `goal_completion_updated`; `planning_session_status` must add `businessStatus`, `runtimeStatus`, and `goalCompletion` without removing legacy fields or replay kinds.
-- Keep business progress separate from runtime health. A Strategy model failure leaves `businessStatus="strategy_pending"`, sets public `runtimeStatus="blocked_model"`, and records the compatibility planning mode `blocked_model_unavailable`; after recovery, `continue_current_stage` reruns Strategy only and reuses prior Goal, Goal Completion, Reality, and Evidence artifacts.
-- Let cognitive P Mode write Calendar plans only after explicit strategy approval, explicit execution approval, a writable independent critique, deterministic Calendar guards, `command_actions`, `command_approvals`, and PermissionGate.
+- Keep business progress separate from runtime health. A formal planning model failure leaves `businessStatus="planning"`, sets public `runtimeStatus="blocked_model"`, and preserves every valid artifact and the failed-stage resume node.
+- Let P Mode write Calendar plans only after Understanding confirmation, version-bound Final Approval, deterministic Calendar guards, `command_actions`, `command_approvals`, and PermissionGate.
 - Let P Mode refine tasks in the current hidden `calendar_plan` draft through the existing planning refinement service. Refinement results stay in the command draft until the user writes the plan to Calendar.
 - Let P Mode query Calendar plans only through inline `plan_search_results` cards without running Runtime or creating a draft.
 - Let P Mode query and write long-term context through Memory Agent, `memory_search_results`, `memory_write_preview`, `memory_write_result`, and `command_actions(target="memory")`.
@@ -45,7 +45,7 @@ Allowed in this phase:
 - Keep legacy `note_search_results`, `note_write_preview`, `note_write_result`, and `command_actions(target="notes")` replay-compatible by mapping them to `kind="note"` memories.
 - Let Phase 4.8.1 polish P Mode copy and cards: fixed QuickActionBar messages, direct empty-state examples, user-facing decision summaries, plan/note row action buttons that send natural-language messages back through `/api/command/chat`, scenario-specific approval labels, and compact model-usage display.
 - Let Phase 4.8.2 store long-term context in `memories` with kinds `note`, `material`, `planning_history`, `preference`, and `review`; Calendar plans remain separate formal action data.
-- Let Phase 4.9A standardize model calls through `backend/app/services/model_provider.py`, supporting `mock`, `deepseek`, `kimi`, `zhipu_glm`, `openai`, and `custom` providers behind `ModelRouter` while preserving the public `LlmClient` facade.
+- Let Phase 4.9A standardize model calls through `Backend/backend/app/services/model_provider.py`, supporting `mock`, `deepseek`, `kimi`, `zhipu_glm`, `openai`, and `custom` providers behind `ModelRouter` while preserving the public `LlmClient` facade.
 - Let Phase 4.9A.1 persist provider API Keys independently in `ai_provider_configs`; Settings may show saved-key chips and delete one provider key at a time.
 - Let Phase 4.9B.1 route model calls by task type, including `command_decision`, `plan_generation`, `task_refinement`, `calendar_patch`, `memory_query`, `memory_write`, `model_knowledge`, and `chat`, with fallback attempts surfaced in model usage cards.
 - Let Phase 6 route cognitive stages with distinct task types: `planning_goal_model`, `planning_evidence`, `planning_strategy`, `planning_execution`, `planning_critique`, and `planning_learning`. Cognitive routing rules default to no business local fallback.
@@ -53,7 +53,7 @@ Allowed in this phase:
 - Cognitive Planning first-call output budgets are Goal `5400`, Reality `5400`, Evidence `6600`, Strategy `7200`, Execution `12000`, Critique `6600`, and Learning `5400` tokens. Their fixed task caps are respectively `10800`, `10800`, `13200`, `14400`, `24000`, `13200`, and `10800`; the matching `PLANIX_*_MAX_TOKENS` variables override only the first-call budget and clamp to those caps.
 - Generate the initial Execution as one structured `ExecutionBlueprint` (including Narrative). Critic-driven revisions use Narrative then Blueprint with the previous Critique and cumulative repair history; exhausted truncation/invalid-structure failures may use the same two-call fallback. Expose `generationMode="single_pass" | "two_pass_fallback" | "two_pass_repair"` and sanitized attempts. Before returning an Artifact, run deterministic structure, acyclic and provably ordered dependencies, explicit CNY cap, typed Reality, and reliably calculable capacity preflight. One internal model repair is allowed; a second failure blocks Execution before persistence or Critic.
 - For structured Cognitive Planning calls only, `model_output_truncated` may trigger one same-Provider retry at `min(first-call budget * 2, task cap)` before the existing fallback chain continues. A routed call gets at most one such extra invocation, fallback Providers retain the original first-call budget, and this recovery must not change Provider ordering, task scoring, models, or API keys.
-- Let `backend/app/harness` own Agent contracts, scheduling, persistent checkpoints, policy, recovery, version-bound approvals, Critic binding, Memory Evaluation, and durable observability. Checkpoints store Artifact refs/versions, never copied chat or Artifact bodies.
+- Let `Backend/backend/app/harness` own Agent contracts, scheduling, persistent checkpoints, policy, recovery, version-bound approvals, Critic binding, Memory Evaluation, and durable observability. Checkpoints store Artifact refs/versions, never copied chat or Artifact bodies.
 - Persist additive `harness_states` and `harness_events`. Every state/event checkpoint is one CAS-protected SQLite transaction; API and frontend replay shapes remain unchanged.
 - Require every automatic long-term planning rule to pass an independent `memory_evaluation` Artifact and Memory policy. Raw chat, approval text, evaluator failure, rejected/mismatched evidence, and conflicted/expired observations must not become active planning memory.
 - Bind Strategy, Execution, Critique, and Calendar decisions to exact Artifact IDs/versions. A repaired Artifact invalidates affected approvals; a Calendar action also retains the Execution ref that created its preview and rechecks it before the first write.
@@ -95,65 +95,65 @@ Forbidden in this phase:
 
 ## Architecture
 
-- Frontend: React 18 + TypeScript + Vite in `apps/web`.
-- Frontend shell: hash-route Planix RIVA AI OS Shell in `apps/web/src/shell`.
-- Frontend pages: `apps/web/src/pages`.
-- i18n: `apps/web/src/i18n`, default `zh-CN`, supports `en-US`.
-- Agent observability: `apps/web/src/components/agent/flow` renders Runtime events as the Dashboard trace.
-- Agent flow state: `apps/web/src/store/agentFlowStore.ts`.
-- Command Agent UI: `apps/web/src/pages/CommandPage.tsx` and `apps/web/src/components/command`.
-- Command Agent state: `apps/web/src/stores/commandAgentStore.ts`.
-- Phase 7.1 goal understanding: `backend/app/services/goal_understanding.py` and `GoalUnderstandingResult` in `backend/app/schemas.py`.
-- Phase 7.3 completion/control: `backend/app/cognitive_planning/agents/goal_completion_judge.py`, `backend/app/services/cognitive_planning/contracts/goal_completion.py`, and `backend/app/services/cognitive_planning/control_intent.py`.
-- Phase 7.3 persistent progression/recovery: `backend/app/services/cognitive_planning/contracts/state.py`, orchestration `runtime.py`/`persistence.py`, compatibility adapters, `backend/app/db.py`, and public Planning Session schemas.
-- Phase 7.1/7.3 P Mode live workspace/debug disclosure: `apps/web/src/components/command/PlanningOverviewCard.tsx`, `AgentThread.tsx`, Settings, and the persisted `planix_advanced_agent_trace` preference.
+- Frontend: React 18 + TypeScript + Vite in `Frontend`.
+- Frontend shell: hash-route Planix RIVA AI OS Shell in `Frontend/src/shell`.
+- Frontend pages: `Frontend/src/pages`.
+- i18n: `Frontend/src/i18n`, default `zh-CN`, supports `en-US`.
+- Agent observability: `Frontend/src/components/agent/flow` renders Runtime events as the Dashboard trace.
+- Agent flow state: `Frontend/src/store/agentFlowStore.ts`.
+- Command Agent UI: `Frontend/src/pages/CommandPage.tsx` and `Frontend/src/components/command`.
+- Command Agent state: `Frontend/src/stores/commandAgentStore.ts`.
+- Phase 7.1 goal understanding: `Backend/backend/app/services/goal_understanding.py` and `GoalUnderstandingResult` in `Backend/backend/app/schemas.py`.
+- Phase 7.3 completion/control: `Backend/backend/app/cognitive_planning/agents/goal_completion_judge.py`, `Backend/backend/app/services/cognitive_planning/contracts/goal_completion.py`, and `Backend/backend/app/services/cognitive_planning/control_intent.py`.
+- Phase 7.3 persistent progression/recovery: `Backend/backend/app/services/cognitive_planning/contracts/state.py`, orchestration `runtime.py`/`persistence.py`, compatibility adapters, `Backend/backend/app/db.py`, and public Planning Session schemas.
+- Phase 7.1/7.3 P Mode live workspace/debug disclosure: `Frontend/src/components/command/PlanningOverviewCard.tsx`, `AgentThread.tsx`, Settings, and the persisted `planix_advanced_agent_trace` preference.
 - Desktop shell: Tauri v2 in `apps/desktop`.
-- Backend: FastAPI in `backend/app`.
+- Backend: FastAPI in `Backend/backend/app`.
 - Database: SQLite with FTS5/BM25 for local RAG. File databases use WAL, `busy_timeout=5000`, path/identity-aware one-time Schema initialization per process, and an adjacent cross-process initialization lock; `:memory:` remains directly initialized for tests.
 - AI: internal ModelProvider layer plus `LlmClient` compatibility facade for mock, DeepSeek, Kimi, Zhipu GLM, OpenAI, and custom OpenAI-compatible providers with local structured fallback.
-- Planning: Phase 7 typed artifacts under `backend/app/cognitive_planning` are the source of truth for Cognitive OS P Mode sessions; `StructuredGoalPlan` remains the compatibility/Calendar projection and the source of truth for legacy flows.
+- Planning: Phase 7 typed artifacts under `Backend/backend/app/cognitive_planning` are the source of truth for Cognitive OS P Mode sessions; `StructuredGoalPlan` remains the compatibility/Calendar projection and the source of truth for legacy flows.
 - Runtime: `/api/runtime/run` returns NDJSON events from Planner, Memory, Tool Router, Stream Engine, and Runtime Orchestrator.
 - Desktop runtime: Tauri window loads bundled web resources and starts the PyInstaller sidecar `planix-api.exe`.
 - Desktop API access: normal JSON calls use Tauri IPC `proxy_api`; Runtime streaming uses `stream_agent_runtime`.
 
 ## Entry Points
 
-- Web entry: `apps/web/index.html`
-- Web app: `apps/web/src/App.tsx`
-- Web API layer: `apps/web/src/lib/api.ts`
-- Agent Trace: `apps/web/src/components/agent/flow/AgentFlowTrace.tsx`
-- Agent Runtime store: `apps/web/src/store/agentFlowStore.ts`
-- Shell: `apps/web/src/shell/RivaShell.tsx`
-- Route hook: `apps/web/src/shell/useAppRoute.ts`
-- i18n entry: `apps/web/src/i18n/index.ts`
+- Web entry: `Frontend/index.html`
+- Web app: `Frontend/src/App.tsx`
+- Web API layer: `Frontend/src/lib/api.ts`
+- Agent Trace: `Frontend/src/components/agent/flow/AgentFlowTrace.tsx`
+- Agent Runtime store: `Frontend/src/store/agentFlowStore.ts`
+- Shell: `Frontend/src/shell/RivaShell.tsx`
+- Route hook: `Frontend/src/shell/useAppRoute.ts`
+- i18n entry: `Frontend/src/i18n/index.ts`
 - Desktop Rust entry: `apps/desktop/src-tauri/src/main.rs`
-- Backend app: `backend/app/main.py`
-- Backend schemas: `backend/app/schemas.py`
-- Structured planning helper: `backend/app/services/structured_goal_plan.py`
-- Planning quality gate: `backend/app/services/planning_quality.py`
-- Runtime route: `backend/app/routers/runtime.py`
-- Runtime service: `backend/app/services/runtime.py`
-- Command route: `backend/app/routers/command.py`
-- Command service: `backend/app/services/command_agent.py`
-- Model provider layer: `backend/app/services/model_provider.py`
-- LLM compatibility facade: `backend/app/services/llm.py`
-- Cognitive planning kernel: `backend/app/services/cognitive_planning`
-- Phase 7 Cognitive OS: `backend/app/cognitive_planning`
-- Agent Runtime Harness: `backend/app/harness` (`scheduler.py`, `state.py`, `registry.py`, `policy.py`, `recovery.py`, `controllers.py`, `persistence.py`, `observability.py`, and compatibility adapters)
-- Phase 7 agents: `backend/app/cognitive_planning/agents`
-- Phase 7 graph: `backend/app/cognitive_planning/graph/planning_graph.py`
-- Phase 7 memory: `backend/app/cognitive_planning/memory/user_model.py`
-- Phase 7 critic rules: `backend/app/cognitive_planning/evaluation/critic_rules.py`
-- Planning compatibility facade: `backend/app/services/deep_planning.py`; frozen rollout-off implementation: `backend/app/services/legacy_deep_planning.py`
-- Cognitive contracts: `backend/app/services/cognitive_planning/contracts`
-- Cognitive agents: `backend/app/services/cognitive_planning/agents`
-- Cognitive orchestration: `backend/app/services/cognitive_planning/orchestration`
-- Cognitive retrieval/evaluation: `backend/app/services/cognitive_planning/retrieval` and `backend/app/services/cognitive_planning/evaluation`
+- Backend app: `Backend/backend/app/main.py`
+- Backend schemas: `Backend/backend/app/schemas.py`
+- Structured planning helper: `Backend/backend/app/services/structured_goal_plan.py`
+- Planning quality gate: `Backend/backend/app/services/planning_quality.py`
+- Runtime route: `Backend/backend/app/routers/runtime.py`
+- Runtime service: `Backend/backend/app/services/runtime.py`
+- Command route: `Backend/backend/app/routers/command.py`
+- Command service: `Backend/backend/app/services/command_agent.py`
+- Model provider layer: `Backend/backend/app/services/model_provider.py`
+- LLM compatibility facade: `Backend/backend/app/services/llm.py`
+- Cognitive planning kernel: `Backend/backend/app/services/cognitive_planning`
+- Phase 7 Cognitive OS: `Backend/backend/app/cognitive_planning`
+- Agent Runtime Harness: `Backend/backend/app/harness` (`scheduler.py`, `state.py`, `registry.py`, `policy.py`, `recovery.py`, `controllers.py`, `persistence.py`, `observability.py`, and compatibility adapters)
+- Phase 7 agents: `Backend/backend/app/cognitive_planning/agents`
+- Phase 7 graph: `Backend/backend/app/cognitive_planning/graph/planning_graph.py`
+- Phase 7 memory: `Backend/backend/app/cognitive_planning/memory/user_model.py`
+- Shared execution and Calendar invariants: `Backend/backend/app/services/cognitive_planning/evaluation/deterministic_guards.py`
+- Planning compatibility facade: `Backend/backend/app/services/deep_planning.py`; frozen rollout-off implementation: `Backend/backend/app/services/legacy_deep_planning.py`
+- Cognitive contracts: `Backend/backend/app/services/cognitive_planning/contracts`
+- Cognitive agents: `Backend/backend/app/services/cognitive_planning/agents`
+- Cognitive orchestration: `Backend/backend/app/services/cognitive_planning/orchestration`
+- Cognitive retrieval/evaluation: `Backend/backend/app/services/cognitive_planning/retrieval` and `Backend/backend/app/services/cognitive_planning/evaluation`
 - QA-only shadow comparison: `CognitivePlanningShadowRunner` writes safe metrics to `planning_shadow_runs` using isolated shadow thread IDs; it is never automatic in normal P Mode.
-- Settings maintenance route: `backend/app/routers/maintenance.py`
-- Settings maintenance service: `backend/app/services/maintenance.py`
-- SQLite setup: `backend/app/db.py`
-- Backend tests: `backend/tests`
+- Settings maintenance route: `Backend/backend/app/routers/maintenance.py`
+- Settings maintenance service: `Backend/backend/app/services/maintenance.py`
+- SQLite setup: `Backend/backend/app/db.py`
+- Backend tests: `Backend/backend/tests`
 - Packaging scripts: `scripts`
 
 ## Naming Rules
@@ -271,7 +271,7 @@ There is no compatibility fallback for old names or old environment variables.
 - Settings maintenance endpoints under `/api/settings/*` may clear AI memory/cache only. They must not delete formal `plans`, Calendar data, Notes/materials, documents, or AI settings.
 - Phase 4.8 command endpoints expose `POST /api/command/chat`, `POST /api/command/approve`, `GET /api/command/threads`, `GET /api/command/thread/{thread_id}`, and `DELETE /api/command/thread/{thread_id}`. They store `command_threads`, `command_messages`, hidden `command_drafts`, Calendar and Notes write/patch `command_actions`, and `command_approvals`.
 - Phase 4.8 command streams and replay messages may include `command_decision`, `model_usage`, `clarify_question`, `memory_search_results`, `memory_write_preview`, and `memory_write_result` in addition to the existing Runtime, draft, Calendar write, plan search, and Calendar patch cards. Phase 7.1 additively streams/replays `goal_understanding`; Phase 7.3 additively streams/replays `goal_completion_updated`, and `planning_session_status` includes `businessStatus`, `runtimeStatus`, and `goalCompletion`. Legacy `note_*`, Planning Session, and Runtime cards remain replay-compatible.
-- `PlanningSessionResponse` exposes durable `businessStatus` (`goal_clarification`, `goal_understood`, `evidence_pending`, `strategy_pending`, `execution_pending`, `calendar_pending`, `completed`, or `cancelled`) separately from `runtimeStatus` (`idle`, `running`, `blocked_model`, or `retry_required`). Do not expose `blocked_model_unavailable` as the public runtime value; it remains the compatibility `cognitiveMetadata.planningMode` value.
+- `PlanningSessionResponse` exposes durable `businessStatus` (`goal_clarification`, `goal_understood`, `planning`, `calendar_pending`, `completed`, `blocked`, or `cancelled`) separately from `runtimeStatus` (`idle`, `running`, `blocked_model`, or `retry_required`).
 - A failed cognitive model stage must persist its resume node and all earlier canonical artifacts. `continue_current_stage` retries only that failed stage; it must not recollect a completed goal, rerun completed evidence stages, or create an Agent decision/artifact for a model call that failed.
 - Phase 4.8.1 row action buttons are UI affordances only: they must send fixed natural-language messages such as `修改第 1 个计划` back through `/api/command/chat` and must not directly call Calendar or Notes APIs.
 - `refine_current_plan` is a command intent handled through `/api/command/chat`. It updates the current `command_drafts.payload_json.refinements`, emits inline refinement result cards, and does not write Calendar unless the user separately commands a Calendar write.
@@ -292,7 +292,7 @@ There is no compatibility fallback for old names or old environment variables.
 Frontend:
 
 ```powershell
-cd apps\web
+cd Frontend
 npm install
 npx.cmd tsc -b
 npm.cmd run lint
@@ -303,15 +303,16 @@ npm.cmd run build
 Backend:
 
 ```powershell
-python -m compileall backend
-.\.venv\Scripts\python.exe -m pytest backend\tests
+cd Backend
+..\.venv\Scripts\python.exe -m compileall backend
+..\.venv\Scripts\python.exe -m pytest backend\tests
 ```
 
 Phase 7.1 compatibility acceptance specifically verifies Beijing and Urumqi purpose clarification, same-thread follow-up into planning, skiing/project consistency blocking, literal-only extraction without travel meaning, `goal_understanding` stream/replay, friendly stages, and Advanced Debug Mode-only technical disclosure. Phase 7.3 supersedes the original collapsed-process default UI.
 
-Phase 7.3 acceptance specifically verifies semantic multi-turn Go completion (`complete=true`, `nextStage="strategy"` despite optional unknowns), planning-control routing before Goal Intelligence, safe `skip_current_stage` progression from saved context without rerunning Goal Intelligence, non-skippable consistency/safety/feasibility blockers, separate business/runtime status on Strategy `auth_error`, recovery from the failed Strategy node without rerunning Goal/Reality/Evidence, no fake decision/artifact on failure, additive completion/status stream and replay, non-destructive session-column migration, and one live Planning Workspace without a per-message timeline. Targeted coverage lives in `backend/tests/test_goal_completion_hotfix.py`, `backend/tests/planning_evals/test_phase73_hotfix.py`, `apps/web/src/components/command/PlanCommandCards.test.tsx`, and `apps/web/src/stores/commandAgentStore.test.tsx`.
+Phase 7.3 acceptance specifically verifies semantic multi-turn Go completion (`complete=true`, `nextStage="strategy"` despite optional unknowns), planning-control routing before Goal Intelligence, safe `skip_current_stage` progression from saved context without rerunning Goal Intelligence, non-skippable consistency/safety/feasibility blockers, separate business/runtime status on Strategy `auth_error`, recovery from the failed Strategy node without rerunning Goal/Reality/Evidence, no fake decision/artifact on failure, additive completion/status stream and replay, non-destructive session-column migration, and one live Planning Workspace without a per-message timeline. Targeted coverage lives in `Backend/backend/tests/test_goal_completion_hotfix.py`, `Backend/backend/tests/planning_evals/test_phase73_hotfix.py`, `Frontend/src/components/command/PlanCommandCards.test.tsx`, and `Frontend/src/stores/commandAgentStore.test.tsx`.
 
-The formal ten-direction real-model batch must be advanced through the existing `/command` page, with at most two independent live workspaces. `scripts/live_planning_e2e.py` is a GET-only manifest auditor and must never accept API keys or POST chat. Full acceptance additionally requires the manifest's credential-free runtime-source fingerprint to remain unchanged and the travel canary to complete before the other nine runs. Its schema-v3 report separates `fullAcceptancePassed` from `performanceTargetPassed`, excludes human wait time from lane concurrency, excludes skipped routes from request counts, and records per-stage model requests/latency, wall time, observed concurrency, rate limits, truncations, contract repairs, and Execution generation modes.
+The formal ten-direction real-model batch must be advanced through the existing `/command` page. `scripts/live_planning_e2e.py` is a GET-only manifest auditor and must never accept API keys or POST chat. Its schema-v4 report verifies the formal Planning Session snapshot, observed providers, and the credential-free runtime-source fingerprint.
 
 Demo reliability:
 

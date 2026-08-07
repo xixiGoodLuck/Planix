@@ -7,26 +7,10 @@ import { CalendarPlanPreviewCard } from './CalendarPlanPreviewCard';
 import { CalendarWriteResultCard } from './CalendarWriteResultCard';
 import { CommandDecisionCard } from './CommandDecisionCard';
 import {
-  CritiqueReportCard,
-  EvidencePackCard,
-  ExecutionBlueprintCard,
-  GoalModelCard,
-  ModelUnavailableCard,
-  PlanningLearningUpdateCard,
-  RealityAssessmentCard,
-  StrategyPortfolioCard
-} from './CognitivePlanningCards';
-import {
   AgentDecisionCard,
   AgentMessageCard,
-  ExecutionPlanDraftCard,
-  LearningUpdateBadge,
-  MemoryInsightCard,
-  PlanDesignProposalCard,
-  PlanningSessionStatusCard,
-  ResourceBriefCard,
-  UserNeedContractCard
-} from './DeepPlanningCards';
+  PlanningSessionStatusCard
+} from './PlanningTraceCards';
 import { ExecutionMiniCard } from './ExecutionMiniCard';
 import { InlinePlanDetailCard } from './InlinePlanDetailCard';
 import { InlinePlanSummaryCard } from './InlinePlanSummaryCard';
@@ -41,7 +25,7 @@ import { PlanPatchPreviewCard } from './PlanPatchPreviewCard';
 import { PlanPatchResultCard } from './PlanPatchResultCard';
 import { PlanSearchResultsCard } from './PlanSearchResultsCard';
 import { RefinedTasksResultCard } from './RefinedTasksResultCard';
-import { GoalCompletionDetailCard, GoalUnderstandingDetailCard, PlanningOverviewCard } from './PlanningOverviewCard';
+import { GoalUnderstandingDetailCard, PlanningOverviewCard } from './PlanningOverviewCard';
 
 interface AgentThreadProps {
   messages: CommandThreadMessage[];
@@ -58,36 +42,10 @@ function payloadOf(message: CommandThreadMessage): Record<string, unknown> {
 
 const planningCardKinds = new Set<CommandThreadMessage['kind']>([
   'planning_session_started',
-  'user_need_contract',
-  'memory_insight_brief',
-  'resource_brief',
-  'plan_design_proposal',
-  'execution_plan_draft',
-  'learning_update',
   'agent_decision',
   'agent_message',
   'planning_session_status',
-  'goal_understanding',
-  'goal_completion_updated',
-  'goal_model_updated',
-  'reality_assessment_ready',
-  'evidence_pack_ready',
-  'strategy_portfolio_ready',
-  'execution_blueprint_ready',
-  'critique_report_ready',
-  'planning_learning_updated'
-]);
-
-const cognitiveWorkspaceKinds = new Set<CommandThreadMessage['kind']>([
-  'goal_understanding',
-  'goal_completion_updated',
-  'goal_model_updated',
-  'reality_assessment_ready',
-  'evidence_pack_ready',
-  'strategy_portfolio_ready',
-  'execution_blueprint_ready',
-  'critique_report_ready',
-  'planning_learning_updated'
+  'goal_understanding'
 ]);
 
 const technicalPlanningKinds = new Set<CommandThreadMessage['kind']>([
@@ -96,12 +54,6 @@ const technicalPlanningKinds = new Set<CommandThreadMessage['kind']>([
   'agent_decision',
   'agent_message'
 ]);
-
-const planningWorkspaceDetailKinds: CommandThreadMessage['kind'][] = [
-  'strategy_portfolio_ready',
-  'execution_blueprint_ready',
-  'critique_report_ready'
-];
 
 type RenderItem =
   | { type: 'message'; message: CommandThreadMessage }
@@ -259,20 +211,6 @@ function recordOf(value: unknown): Record<string, unknown> {
 
 function planningKindLabel(kind: CommandThreadMessage['kind'], t: (key: string) => string): string {
   if (kind === 'goal_understanding') return t('command.goalUnderstanding');
-  if (kind === 'goal_completion_updated') return t('command.goalCompletion');
-  if (kind === 'goal_model_updated') return t('command.cognitiveGoalModel');
-  if (kind === 'reality_assessment_ready') return t('command.cognitiveReality');
-  if (kind === 'evidence_pack_ready') return t('command.cognitiveEvidence');
-  if (kind === 'strategy_portfolio_ready') return t('command.cognitiveStrategyPortfolio');
-  if (kind === 'execution_blueprint_ready') return t('command.cognitiveExecutionBlueprint');
-  if (kind === 'critique_report_ready') return t('command.cognitiveCritique');
-  if (kind === 'planning_learning_updated') return t('command.cognitiveLearning');
-  if (kind === 'user_need_contract') return t('command.userNeedContract');
-  if (kind === 'memory_insight_brief') return t('command.memoryInsightAgent');
-  if (kind === 'resource_brief') return t('command.resourceIntelligenceAgent');
-  if (kind === 'plan_design_proposal') return t('command.planDesignProposal');
-  if (kind === 'execution_plan_draft') return t('command.executionPlanDraft');
-  if (kind === 'learning_update') return t('command.learningUpdate');
   if (kind === 'agent_decision') return t('command.agentDecision');
   if (kind === 'agent_message') return t('command.agentMessage');
   return t('command.planningSessionStatus');
@@ -282,41 +220,6 @@ function planningCardSummary(message: CommandThreadMessage, t: (key: string) => 
   const payload = payloadOf(message);
   const data = recordOf(payload.data);
   if (message.kind === 'goal_understanding') return String(payload.understoodIntent || payload.nextQuestion || message.content || '');
-  if (message.kind === 'goal_completion_updated') return String(data.nextStage || message.content || '');
-  if (message.kind === 'goal_model_updated') return String(data.goalStatement || message.content || '');
-  if (message.kind === 'reality_assessment_ready') return String(data.feasibilitySummary || message.content || '');
-  if (message.kind === 'evidence_pack_ready') return String(data.synthesis || message.content || '');
-  if (message.kind === 'strategy_portfolio_ready') return String(data.recommendationReason || message.content || '');
-  if (message.kind === 'execution_blueprint_ready') {
-    const tasks = Array.isArray(data.tasks) ? data.tasks.length : 0;
-    return `${tasks} ${t('command.tasks')} · ${String(data.resourceCoverage || '')}`;
-  }
-  if (message.kind === 'critique_report_ready') return `${String(data.status || '')} · ${String(data.score || 0)}`;
-  if (message.kind === 'planning_learning_updated') return String(data.originalFeedback || message.content || '');
-  if (message.kind === 'user_need_contract') {
-    return String(data.interpretedGoal || message.content || '');
-  }
-  if (message.kind === 'memory_insight_brief') {
-    const hits = recordOf(data.memoryHits);
-    const total = ['preferences', 'reviews', 'planningHistory', 'materials', 'notes']
-      .reduce((sum, key) => sum + (Array.isArray(hits[key]) ? (hits[key] as unknown[]).length : 0), 0);
-    return `${t('command.planningCardMemorySummary')} ${total}`;
-  }
-  if (message.kind === 'resource_brief') {
-    const coverage = recordOf(data.coverage);
-    const candidates = Array.isArray(data.resourceCandidates) ? data.resourceCandidates.length : 0;
-    return `${String(coverage.status || 'partial')} · ${candidates} ${t('command.resources')}`;
-  }
-  if (message.kind === 'plan_design_proposal') {
-    return String(data.strategyName || data.status || message.content || '');
-  }
-  if (message.kind === 'execution_plan_draft') {
-    const tasks = Array.isArray(data.tasks) ? data.tasks.length : 0;
-    return `${tasks} ${t('command.tasks')} · ${String(data.status || '')}`;
-  }
-  if (message.kind === 'learning_update') {
-    return String(data.insight || data.feedbackType || message.content || '');
-  }
   if (message.kind === 'agent_decision') {
     return `${String(data.agent || t('command.agentDecision'))} · ${String(data.decision || '')}`;
   }
@@ -330,17 +233,8 @@ function latestPlanningStatus(messages: CommandThreadMessage[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     const payload = payloadOf(message);
-    const data = recordOf(payload.data);
     if (message.kind === 'planning_session_status' || message.kind === 'planning_session_started') {
       return String(payload.status || message.content || '');
-    }
-    if (message.kind === 'execution_plan_draft') {
-      const status = String(data.status || '');
-      if (status === 'approved') return 'ready_to_write_calendar';
-      if (status) return 'waiting_execution_approval';
-    }
-    if (message.kind === 'plan_design_proposal') {
-      return 'waiting_design_approval';
     }
   }
   return '';
@@ -356,25 +250,9 @@ function isNonPlanningGoalUnderstandingGroup(messages: CommandThreadMessage[]): 
   return !hasPlanningArtifact && (intentState === 'normal_chat' || intentState === 'command');
 }
 
-function latestPlanningWorkspaceDetails(messages: CommandThreadMessage[]): CommandThreadMessage[] {
-  return planningWorkspaceDetailKinds.flatMap((kind) => {
-    const message = [...messages].reverse().find((item) => item.kind === kind);
-    return message ? [message] : [];
-  });
-}
-
 function shouldExpandPlanningCard(message: CommandThreadMessage, groupMessages: CommandThreadMessage[], isLatestGroup: boolean): boolean {
   if (!isLatestGroup) return false;
-  const status = latestPlanningStatus(groupMessages);
-  if (status === 'needs_goal_clarification') return message.kind === 'goal_model_updated' || (!groupMessages.some((item) => item.kind === 'goal_model_updated') && message.kind === 'user_need_contract');
-  if (status === 'waiting_design_approval' || status === 'design_revision') return message.kind === 'strategy_portfolio_ready' || (!groupMessages.some((item) => item.kind === 'strategy_portfolio_ready') && message.kind === 'plan_design_proposal');
-  if (status === 'waiting_execution_approval' || status === 'execution_revision' || status === 'learning_from_feedback') {
-    return message.kind === 'execution_blueprint_ready' || message.kind === 'critique_report_ready' || message.kind === 'planning_learning_updated';
-  }
-  if (status === 'ready_to_write_calendar' || status === 'written_to_calendar') {
-    return message.kind === 'execution_blueprint_ready' || message.kind === 'critique_report_ready' || message.kind === 'planning_session_status';
-  }
-  return message.kind === 'plan_design_proposal' || message.kind === 'execution_plan_draft' || message.kind === 'user_need_contract';
+  return message.kind === 'planning_session_status' || message.kind === 'goal_understanding';
 }
 
 function CollapsiblePanel({
@@ -425,32 +303,16 @@ function CollapsiblePanel({
 
 function PlanningCardContent({
   message,
-  onSend,
-  t,
-  planningStatus,
-  actionsEnabled
+  t
 }: {
   message: CommandThreadMessage;
-  onSend: (value: string) => void;
   t: (key: string) => string;
-  planningStatus: string;
-  actionsEnabled: boolean;
 }) {
   const payload = payloadOf(message);
   if (message.kind === 'goal_understanding') {
     const nested = recordOf(payload.data);
     return <GoalUnderstandingDetailCard data={Object.keys(nested).length ? nested : payload} t={t} />;
   }
-  if (message.kind === 'goal_completion_updated') {
-    return <GoalCompletionDetailCard data={{ ...recordOf(payload.data), businessStatus: payload.businessStatus, runtimeStatus: payload.runtimeStatus }} t={t} />;
-  }
-  if (message.kind === 'goal_model_updated') return <GoalModelCard data={payload.data} t={t} />;
-  if (message.kind === 'reality_assessment_ready') return <RealityAssessmentCard data={payload.data} t={t} />;
-  if (message.kind === 'evidence_pack_ready') return <EvidencePackCard data={payload.data} t={t} />;
-  if (message.kind === 'strategy_portfolio_ready') return <StrategyPortfolioCard data={payload.data} t={t} />;
-  if (message.kind === 'execution_blueprint_ready') return <ExecutionBlueprintCard data={payload.data} t={t} />;
-  if (message.kind === 'critique_report_ready') return <CritiqueReportCard data={payload.data} t={t} />;
-  if (message.kind === 'planning_learning_updated') return <PlanningLearningUpdateCard data={payload.data} t={t} />;
   if (message.kind === 'planning_session_started' || message.kind === 'planning_session_status') {
     const nested = recordOf(payload.data);
     const businessStatus = String(payload.businessStatus || nested.businessStatus || '');
@@ -466,24 +328,6 @@ function PlanningCardContent({
         ) : null}
       </>
     );
-  }
-  if (message.kind === 'user_need_contract') {
-    return <UserNeedContractCard data={payload.data} t={t} />;
-  }
-  if (message.kind === 'memory_insight_brief') {
-    return <MemoryInsightCard data={payload.data} t={t} />;
-  }
-  if (message.kind === 'resource_brief') {
-    return <ResourceBriefCard data={payload.data} t={t} />;
-  }
-  if (message.kind === 'plan_design_proposal') {
-    return <PlanDesignProposalCard data={payload.data} onSend={onSend} t={t} planningStatus={planningStatus} actionsEnabled={actionsEnabled} />;
-  }
-  if (message.kind === 'execution_plan_draft') {
-    return <ExecutionPlanDraftCard data={payload.data} onSend={onSend} t={t} planningStatus={planningStatus} actionsEnabled={actionsEnabled} />;
-  }
-  if (message.kind === 'learning_update') {
-    return <LearningUpdateBadge data={payload.data} t={t} />;
   }
   if (message.kind === 'agent_decision') {
     return <AgentDecisionCard data={payload.data} t={t} />;
@@ -511,26 +355,20 @@ function DeepPlanningCardGroup({
 }) {
   const labels = Array.from(new Set(messages.map((message) => planningKindLabel(message.kind, t)))).slice(0, 5);
   const status = latestPlanningStatus(messages);
-  const isCognitiveWorkspace = status === 'MODEL_UNAVAILABLE' || messages.some((message) => cognitiveWorkspaceKinds.has(message.kind));
-  const visibleMessages = advancedAgentTrace
-    ? messages
-    : messages.filter((message) => (
-      isCognitiveWorkspace ? cognitiveWorkspaceKinds.has(message.kind) : !technicalPlanningKinds.has(message.kind)
-    ));
+  const visibleMessages = advancedAgentTrace ? messages : messages.filter((message) => !technicalPlanningKinds.has(message.kind));
   const workspaceTitle = status === 'MODEL_UNAVAILABLE'
     ? t('command.cognitiveModelUnavailable')
-    : status === 'waiting_design_approval' || status === 'design_revision'
-      ? t('command.cognitiveWorkspaceStrategy')
-      : status === 'waiting_execution_approval' || status === 'execution_revision' || status === 'learning_from_feedback'
+    : status === 'waiting_understanding_confirmation'
+      ? t('command.cognitiveWorkspaceUnderstanding')
+      : status === 'final_revision' || status === 'learning_from_feedback'
         ? t('command.cognitiveWorkspaceExecution')
-        : status === 'ready_to_write_calendar' || status === 'waiting_calendar_write_approval' || status === 'written_to_calendar'
+        : status === 'waiting_final_review' || status === 'waiting_calendar_write_approval' || status === 'written_to_calendar'
           ? t('command.cognitiveWorkspaceReady')
           : t('command.cognitiveWorkspaceUnderstanding');
   const title = isLatest ? t('command.latestPlanningStep') : t('command.planningWorkspace');
   const summary = [status, labels.join(' / ')].filter(Boolean).join(' · ');
 
   if (!advancedAgentTrace) {
-    const workspaceDetails = latestPlanningWorkspaceDetails(messages);
     return (
       <div className="planning-workspace-surface">
         <PlanningOverviewCard
@@ -541,53 +379,13 @@ function DeepPlanningCardGroup({
           onSend={onSend}
           t={t}
         />
-        {workspaceDetails.length ? (
-          <div className="planning-workspace-detail-stack">
-            {workspaceDetails.map((message) => (
-              <PlanningCardContent
-                key={message.id}
-                message={message}
-                onSend={onSend}
-                t={t}
-                planningStatus={status}
-                actionsEnabled={isLatest}
-              />
-            ))}
-          </div>
-        ) : null}
       </div>
-    );
-  }
-
-  if (isCognitiveWorkspace) {
-    return (
-      <CollapsiblePanel
-        title={workspaceTitle}
-        summary={isLatest ? undefined : t('command.planningWorkspace')}
-        defaultExpanded={isLatest}
-        t={t}
-        className={`deep-planning-group cognitive-workspace ${isLatest ? 'latest' : 'historical'}`}
-      >
-        <div className="deep-planning-card-list cognitive-workspace-list">
-          {status === 'MODEL_UNAVAILABLE' ? <ModelUnavailableCard t={t} /> : null}
-          {visibleMessages.map((message) => (
-            <PlanningCardContent
-              key={message.id}
-              message={message}
-              onSend={onSend}
-              t={t}
-              planningStatus={status}
-              actionsEnabled={isLatest}
-            />
-          ))}
-        </div>
-      </CollapsiblePanel>
     );
   }
 
   return (
     <CollapsiblePanel
-      title={title}
+      title={isLatest ? workspaceTitle : title}
       summary={summary}
       defaultExpanded={isLatest}
       t={t}
@@ -605,10 +403,7 @@ function DeepPlanningCardGroup({
           >
             <PlanningCardContent
               message={message}
-              onSend={onSend}
               t={t}
-              planningStatus={status}
-              actionsEnabled={isLatest}
             />
           </CollapsiblePanel>
         ))}
@@ -899,30 +694,6 @@ export function AgentThread({ messages, sending, onApprove, onSend, advancedAgen
 
           {message.role === 'card' && message.kind === 'planning_session_started' && (
             <PlanningSessionStatusCard status={String(payloadOf(message).status || message.content || '')} t={t} />
-          )}
-
-          {message.role === 'card' && message.kind === 'user_need_contract' && (
-            <UserNeedContractCard data={payloadOf(message).data} t={t} />
-          )}
-
-          {message.role === 'card' && message.kind === 'memory_insight_brief' && (
-            <MemoryInsightCard data={payloadOf(message).data} t={t} />
-          )}
-
-          {message.role === 'card' && message.kind === 'resource_brief' && (
-            <ResourceBriefCard data={payloadOf(message).data} t={t} />
-          )}
-
-          {message.role === 'card' && message.kind === 'plan_design_proposal' && (
-            <PlanDesignProposalCard data={payloadOf(message).data} onSend={onSend} t={t} />
-          )}
-
-          {message.role === 'card' && message.kind === 'execution_plan_draft' && (
-            <ExecutionPlanDraftCard data={payloadOf(message).data} onSend={onSend} t={t} />
-          )}
-
-          {message.role === 'card' && message.kind === 'learning_update' && (
-            <LearningUpdateBadge data={payloadOf(message).data} t={t} />
           )}
 
           {message.role === 'card' && message.kind === 'agent_decision' && (

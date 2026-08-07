@@ -59,7 +59,7 @@ Execution 首版默认通过一次结构化模型调用生成包含 Narrative �
 
 ## Agent Runtime Harness
 
-`backend/app/harness` 是 Cognitive Agents 的控制面。LangGraph 执行调度结果，但不决定产品策略。
+`Backend/backend/app/harness` 是 Cognitive Agents 的控制面。LangGraph 执行调度结果，但不决定产品策略。
 
 | 组件 | 职责 |
 | --- | --- |
@@ -141,13 +141,14 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 Copy-Item .env.example .env
-python -m uvicorn backend.app.main:app --reload --env-file .env
+cd Backend
+..\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --env-file ..\.env --port 8003
 ```
 
-API 默认运行在 `http://127.0.0.1:8000`。可通过以下命令检查：
+API 默认运行在 `http://127.0.0.1:8003`。可通过以下命令检查：
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/api/health
+Invoke-RestMethod http://127.0.0.1:8003/api/health
 ```
 
 ### 启动 Web
@@ -155,12 +156,12 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 打开另一个 PowerShell：
 
 ```powershell
-cd apps\web
+cd Frontend
 npm ci
 npm run dev
 ```
 
-访问 `http://127.0.0.1:5173`。Vite 会把本地 `/api` 请求代理到 FastAPI。
+访问 `http://127.0.0.1:5176`。Vite 会把本地 `/api` 请求代理到 FastAPI。
 
 ### 启动桌面开发环境
 
@@ -206,14 +207,15 @@ Settings 支持按任务类型设置主 Provider 和 fallback。Cognitive Planni
 ### Backend
 
 ```powershell
-python -m compileall backend
-python -m pytest backend/tests
+cd Backend
+..\.venv\Scripts\python.exe -m compileall backend
+..\.venv\Scripts\python.exe -m pytest backend\tests
 ```
 
 ### Web
 
 ```powershell
-cd apps\web
+cd Frontend
 npx.cmd tsc -b
 npm.cmd run lint
 npm.cmd run test

@@ -80,11 +80,10 @@ class CognitivePlanningPersistence:
     def latest_active(self, thread_id: str):
         active = {
             "needs_goal_clarification",
-            "waiting_design_approval",
-            "design_revision",
-            "waiting_execution_approval",
-            "execution_revision",
-            "ready_to_write_calendar",
+            "waiting_understanding_confirmation",
+            "planning",
+            "final_revision",
+            "waiting_final_review",
             "waiting_calendar_write_approval",
             "learning_from_feedback",
             "MODEL_UNAVAILABLE",

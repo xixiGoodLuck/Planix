@@ -324,6 +324,13 @@ def test_execution_preflight_repairs_once_before_returning_candidate(agent_type)
     assert len(model.calls) == 2
     assert model.calls[1]["payload"]["preflightIssues"]
     assert model.calls[1]["payload"]["invalidExecutionBlueprint"]["tasks"]
+    assert model.calls[1]["payload"]["preflightRepairRules"] == [
+        "Preserve the explicit weeklyCapacityMinutes ceiling exactly.",
+        "A narrative buffer claim does not change numeric task allocation.",
+        "Move work or set per-period weeklyMinutes whose sum equals estimatedMinutes.",
+        "Recompute all period totals from task fields and keep every total within capacity.",
+    ]
+    assert "periodTotal <= weeklyCapacityMinutes" in model.calls[1]["system"]
     assert result.artifact == repaired
     assert result.model_usage["generationMode"] == "single_pass"
     assert result.model_usage["totalTokens"] == 30
@@ -608,6 +615,29 @@ def test_preflight_preserves_an_explicit_cny_hard_cap() -> None:
         budget=ExecutionBudgetSummary(
             spendingLimitCny=20_000,
             allocations=[ExecutionBudgetAllocation(category="all costs", amountCny=18_000)],
+        )
+    )
+    validate_execution_preflight(compliant, goal=goal, reality=_reality())
+
+
+def test_preflight_preserves_an_explicit_zero_cny_hard_cap() -> None:
+    goal = _goal(
+        constraints=[
+            Constraint(
+                statement="The budget is CNY 0.",
+                sourceText="预算 0 元",
+                category="budget",
+            )
+        ]
+    )
+
+    with pytest.raises(DeterministicGuardError, match="requires budgetSummary"):
+        validate_execution_preflight(_blueprint(), goal=goal, reality=_reality())
+
+    compliant = _blueprint(
+        budget=ExecutionBudgetSummary(
+            spendingLimitCny=0,
+            allocations=[ExecutionBudgetAllocation(category="all costs", amountCny=0)],
         )
     )
     validate_execution_preflight(compliant, goal=goal, reality=_reality())
