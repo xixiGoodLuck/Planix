@@ -200,6 +200,7 @@ def test_fresh_schema_keeps_session_lifecycle_separate_from_artifacts(client):
         shadow_table = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'planning_shadow_runs'"
         ).fetchone()
+        tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert {
         "id",
         "thread_id",
@@ -222,3 +223,4 @@ def test_fresh_schema_keeps_session_lifecycle_separate_from_artifacts(client):
         }
     )
     assert shadow_table is None
+    assert not tables.intersection({"agent_runs", "agent_events", "planning_goals", "daily_reviews"})

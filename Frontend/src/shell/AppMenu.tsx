@@ -1,4 +1,4 @@
-import { CalendarDays, CheckSquare, Languages, LayoutDashboard, Menu, NotebookTabs, Settings, Target, X } from 'lucide-react';
+import { CalendarDays, CheckSquare, Languages, Menu, NotebookTabs, Settings, X } from 'lucide-react';
 import type { AppRoute, Language } from '../types';
 
 interface AppMenuProps {
@@ -12,11 +12,9 @@ interface AppMenuProps {
   t: (key: string) => string;
 }
 
-const items: Array<{ route: AppRoute; icon: typeof LayoutDashboard; labelKey: string }> = [
-  { route: 'dashboard', icon: LayoutDashboard, labelKey: 'shell.dashboard' },
+const items: Array<{ route: AppRoute; icon: typeof CalendarDays; labelKey: string }> = [
   { route: 'calendar', icon: CalendarDays, labelKey: 'shell.calendar' },
   { route: 'notes', icon: NotebookTabs, labelKey: 'shell.notes' },
-  { route: 'goals', icon: Target, labelKey: 'shell.goals' },
   { route: 'settings', icon: Settings, labelKey: 'shell.settings' }
 ];
 

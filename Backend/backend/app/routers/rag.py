@@ -4,7 +4,7 @@ from re import search
 from fastapi import APIRouter, Request, Response, status
 
 from ..errors import bad_request
-from ..schemas import AiPayload, RagDocumentCreate, RagDocumentOut, RagIngestPayload, RagQueryOut
+from ..schemas import RagDocumentCreate, RagDocumentOut, RagIngestPayload
 from ..services.rag import RagService
 
 router = APIRouter(prefix="/api/rag", tags=["rag"])
@@ -126,8 +126,3 @@ def delete_document(document_id: str) -> Response:
 @router.post("/ingest")
 def rag_ingest(payload: RagIngestPayload) -> dict[str, int | str]:
     return rag.ingest(payload)
-
-
-@router.post("/query", response_model=RagQueryOut)
-def rag_query(payload: AiPayload) -> RagQueryOut:
-    return rag.query(payload)

@@ -391,7 +391,7 @@ class OpenAICompatibleProvider:
                 and request.task_type == "planning_plan"
                 and request.feature.endswith(
                     (
-                        "planning_plan_generation",
+                        "planning_blueprint_generation",
                         "planning_plan_repair",
                     )
                 )

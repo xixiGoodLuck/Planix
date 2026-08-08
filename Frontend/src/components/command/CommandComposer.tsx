@@ -1,20 +1,16 @@
-import { ArrowUp, MessageCircle, Plus } from 'lucide-react';
+import { ArrowUp } from 'lucide-react';
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { CommandThreadMessage } from '../../stores/commandAgentStore';
-import type { CommandMode, CommandPermission } from '../../types';
+import type { CommandPermission } from '../../types';
 import { DeepPlanningActionBar } from './DeepPlanningActionBar';
 import { PermissionPopover } from './PermissionPopover';
-import { WorkbenchToggle } from './WorkbenchToggle';
 
 interface CommandComposerProps {
   sending: boolean;
   disabled?: boolean;
   messages: CommandThreadMessage[];
-  mode: CommandMode;
   permission: CommandPermission;
   onSend: (value: string) => boolean | void | Promise<boolean | void>;
-  onChatToggle: () => void;
-  onWorkbenchToggle: () => void;
   onPermissionChange: (permission: CommandPermission) => void;
   t: (key: string) => string;
 }
@@ -24,11 +20,8 @@ export function CommandComposer(props: CommandComposerProps) {
     sending,
     disabled = false,
     messages,
-    mode,
     permission,
     onSend,
-    onChatToggle,
-    onWorkbenchToggle,
     onPermissionChange,
     t
   } = props;
@@ -66,17 +59,6 @@ export function CommandComposer(props: CommandComposerProps) {
     <div className="command-composer-shell">
       <div className="command-composer">
         <div className="command-composer-actions">
-          <button className="command-icon-button" type="button" title={t('command.attach')}>
-            <Plus size={18} />
-          </button>
-          <button
-            className={`command-icon-button chat-mode-toggle ${mode === 'chat' ? 'active' : ''}`}
-            type="button"
-            onClick={onChatToggle}
-            title={mode === 'chat' ? t('command.chatModeOn') : t('command.chatModeOff')}
-          >
-            <MessageCircle size={18} />
-          </button>
           <PermissionPopover
             permission={permission}
             open={permissionOpen}
@@ -87,7 +69,6 @@ export function CommandComposer(props: CommandComposerProps) {
             }}
             t={t}
           />
-          <WorkbenchToggle active={mode === 'workbench'} onToggle={onWorkbenchToggle} t={t} />
         </div>
         <textarea
           ref={textareaRef}

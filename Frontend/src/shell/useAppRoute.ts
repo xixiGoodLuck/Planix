@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { AppRoute } from '../types';
 
-const routes: AppRoute[] = ['dashboard', 'calendar', 'notes', 'goals', 'settings', 'command'];
-const defaultRoute: AppRoute = 'command';
+export const appRoutes: AppRoute[] = ['calendar', 'notes', 'settings', 'command'];
+export const defaultRoute: AppRoute = 'command';
 
 function readRouteFromHash(): AppRoute {
   const candidate = window.location.hash.replace(/^#\/?/, '').split('?')[0];
-  return routes.includes(candidate as AppRoute) ? (candidate as AppRoute) : defaultRoute;
+  return appRoutes.includes(candidate as AppRoute) ? (candidate as AppRoute) : defaultRoute;
 }
 
 export function useAppRoute() {

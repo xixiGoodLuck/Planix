@@ -45,7 +45,7 @@ class PlanGenerator:
         result = self.model.complete_contract(
             stage="generate_plan",
             task_type="planning_plan",
-            feature="planning_plan_generation",
+            feature="planning_blueprint_generation",
             system=PLAN_SYSTEM,
             payload={
                 "approvedUnderstanding": understanding.model_dump(by_alias=True),

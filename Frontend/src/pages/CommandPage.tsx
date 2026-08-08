@@ -38,11 +38,8 @@ export function CommandPage({ t }: CommandPageProps) {
         sending={command.sending}
         disabled={!command.canSend}
         messages={command.messages}
-        mode={command.mode}
         permission={command.permission}
         onSend={(value) => commandAgentActions.sendCommand(value, t)}
-        onChatToggle={commandAgentActions.toggleChatMode}
-        onWorkbenchToggle={commandAgentActions.toggleWorkbench}
         onPermissionChange={commandAgentActions.setPermission}
         t={t}
       />

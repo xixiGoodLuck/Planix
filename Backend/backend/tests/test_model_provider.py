@@ -1,4 +1,4 @@
-import json
+﻿import json
 
 import httpx
 import pytest
@@ -308,7 +308,7 @@ def test_deepseek_v4_native_plan_requests_disable_thinking(monkeypatch):
     router = ModelRouter(_settings(provider="deepseek", model="deepseek-v4-flash"), routing_enabled=False)
 
     for feature in (
-        "planning_plan_generation",
+            "planning_blueprint_generation",
         "planning_plan_repair",
     ):
         result, error = router.complete(
@@ -900,141 +900,6 @@ def test_planning_retry_requires_json_truncation(monkeypatch, response_format_js
     assert result is not None and result.provider == "deepseek"
     assert calls == [("kimi", 6600), ("deepseek", 6600)]
     assert not any(attempt.automatic_retry for attempt in result.attempts)
-
-
-def test_model_router_skips_missing_key_and_records_attempt(monkeypatch):
-    def fake_rule(task_type, active_provider):
-        return ModelRoutingRuleConfig(task_type, "kimi", ("deepseek",), True)
-
-    def fake_settings(provider, active_settings=None):
-        return _settings(
-            provider=provider,
-            base_url=provider_default_base_url(provider),
-            model=provider_default_model(provider),
-            api_key="" if provider == "kimi" else "deepseek-key",
-        )
-
-    def fake_complete(self, request):
-        return (ModelCallResult(text="OK", provider=self.settings.provider, model=self.settings.model, latency_ms=3), None)
-
-    monkeypatch.setattr(model_provider, "get_model_routing_rule", fake_rule)
-    monkeypatch.setattr(model_provider, "get_effective_ai_settings_for_provider", fake_settings)
-    monkeypatch.setattr(model_provider.OpenAICompatibleProvider, "complete", fake_complete)
-
-    result, error = ModelRouter(_settings(provider="kimi", base_url="https://api.moonshot.cn/v1", model="kimi-k2.7-code")).complete(
-        _request(task_type="chat")
-    )
-
-    assert error is None
-    assert result is not None
-    assert result.provider == "deepseek"
-    assert result.attempts[0].status == "skipped"
-    assert result.attempts[0].error_type == "missing_api_key"
-
-
-def test_model_router_auto_primary_resolves_to_active_provider(monkeypatch):
-    def fake_rule(task_type, active_provider):
-        return ModelRoutingRuleConfig(task_type, "auto", ("deepseek",), True)
-
-    def fake_settings(provider, active_settings=None):
-        return _settings(
-            provider=provider,
-            base_url=provider_default_base_url(provider),
-            model=provider_default_model(provider),
-            api_key=f"{provider}-key",
-        )
-
-    calls = []
-
-    def fake_complete(self, request):
-        calls.append(self.settings.provider)
-        return (ModelCallResult(text="OK", provider=self.settings.provider, model=self.settings.model, latency_ms=4), None)
-
-    monkeypatch.setattr(model_provider, "get_model_routing_rule", fake_rule)
-    monkeypatch.setattr(model_provider, "get_effective_ai_settings_for_provider", fake_settings)
-    monkeypatch.setattr(model_provider.OpenAICompatibleProvider, "complete", fake_complete)
-
-    result, error = ModelRouter(_settings(provider="zhipu_glm", model="glm-4-flash", api_key="active-key")).complete(
-        _request(task_type="command_decision")
-    )
-
-    assert error is None
-    assert result is not None
-    assert result.provider == "zhipu_glm"
-    assert result.fallback_used is False
-    assert [attempt.provider for attempt in result.attempts] == ["zhipu_glm"]
-    assert calls == ["zhipu_glm"]
-
-
-def test_model_router_auto_primary_missing_key_falls_back(monkeypatch):
-    def fake_rule(task_type, active_provider):
-        return ModelRoutingRuleConfig(task_type, "auto", ("deepseek",), True)
-
-    def fake_settings(provider, active_settings=None):
-        return _settings(
-            provider=provider,
-            base_url=provider_default_base_url(provider),
-            model=provider_default_model(provider),
-            api_key="" if provider == "zhipu_glm" else "deepseek-key",
-        )
-
-    def fake_complete(self, request):
-        return (ModelCallResult(text="OK", provider=self.settings.provider, model=self.settings.model, latency_ms=4), None)
-
-    monkeypatch.setattr(model_provider, "get_model_routing_rule", fake_rule)
-    monkeypatch.setattr(model_provider, "get_effective_ai_settings_for_provider", fake_settings)
-    monkeypatch.setattr(model_provider.OpenAICompatibleProvider, "complete", fake_complete)
-
-    result, error = ModelRouter(_settings(provider="zhipu_glm", model="glm-4-flash", api_key="")).complete(
-        _request(task_type="command_decision")
-    )
-
-    assert error is None
-    assert result is not None
-    assert result.provider == "deepseek"
-    assert result.fallback_used is True
-    assert [(attempt.provider, attempt.status, attempt.error_type) for attempt in result.attempts] == [
-        ("zhipu_glm", "skipped", "missing_api_key"),
-        ("deepseek", "success", None),
-    ]
-
-
-def test_model_router_auto_policy_selects_by_task_strategy(monkeypatch):
-    with get_conn() as conn:
-        for provider in ("zhipu_glm", "deepseek", "kimi"):
-            conn.execute(
-                """
-                INSERT INTO ai_provider_configs(
-                  provider, base_url, model, api_key_encrypted, api_key_source, updated_at
-                )
-                VALUES (?, ?, ?, ?, 'user', CURRENT_TIMESTAMP)
-                ON CONFLICT(provider)
-                DO UPDATE SET
-                  base_url = excluded.base_url,
-                  model = excluded.model,
-                  api_key_encrypted = excluded.api_key_encrypted,
-                  api_key_source = excluded.api_key_source,
-                  updated_at = CURRENT_TIMESTAMP
-                """,
-                (provider, provider_default_base_url(provider), provider_default_model(provider), f"{provider}-key"),
-            )
-
-    calls = []
-
-    def fake_complete(self, request):
-        calls.append((request.task_type, self.settings.provider))
-        return (ModelCallResult(text="OK", provider=self.settings.provider, model=self.settings.model, latency_ms=4), None)
-
-    monkeypatch.setattr(model_provider.OpenAICompatibleProvider, "complete", fake_complete)
-
-    decision_result, decision_error = ModelRouter(_settings(provider="deepseek")).complete(_request(task_type="command_decision"))
-    plan_result, plan_error = ModelRouter(_settings(provider="deepseek")).complete(_request(task_type="plan_generation"))
-
-    assert decision_error is None
-    assert plan_error is None
-    assert decision_result is not None and decision_result.provider == "zhipu_glm"
-    assert plan_result is not None and plan_result.provider == "deepseek"
-    assert calls == [("command_decision", "zhipu_glm"), ("plan_generation", "deepseek")]
 
 
 def test_model_router_auto_policy_user_order_can_change_balanced_choice(monkeypatch):

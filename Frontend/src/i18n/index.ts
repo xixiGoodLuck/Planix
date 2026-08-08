@@ -9,9 +9,6 @@ export type I18nNamespace = {
   common: Record<string, string>;
   shell: Record<string, string>;
   command: Record<string, string>;
-  dashboard: Record<string, string>;
-  agent: Record<string, string>;
-  agentFlow: Record<string, string>;
   inspector: Record<string, string>;
   legacy: Record<string, string>;
 };

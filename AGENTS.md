@@ -57,9 +57,7 @@ Canonical Artifacts are `UnderstandingSnapshot`, `UnderstandingPatch`, `Constrai
 
 ## Independent product features
 
-Dashboard Runtime, manual Workbench, Goals, Calendar, Materials/RAG, Notes/Memory, Settings/model routing, maintenance, Tauri packaging, and desktop sidecar behavior remain separate product capabilities. They must never be selected as a formal planning fallback.
-
-Forced `chat` is pure model chat and performs no planning, tools, RAG, memory, or business writes. Manual `workbench` may retain its independent legacy draft behavior. Auto planning uses only the canonical formal runtime.
+Calendar, Materials/RAG, Notes/Memory, Settings/model routing, Tauri packaging, and desktop sidecar behavior remain separate product capabilities. They must never be selected as a formal planning fallback. Command input always uses the canonical formal runtime.
 
 ## Frontend rules
 

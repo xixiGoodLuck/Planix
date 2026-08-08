@@ -117,7 +117,7 @@ export function CommandThreadDrawer(props: CommandThreadDrawerProps) {
                     <i className={`command-workspace-status ${workspace.status}`}>
                       {workspaceStatusLabel(workspace.status, t)}
                     </i>
-                    {thread?.currentDraftTitle || `${workspace.messageCount} ${t('command.messages')}`}
+                    {`${workspace.messageCount} ${t('command.messages')}`}
                   </small>
                 </span>
                 <em>{formatThreadTime(new Date(workspace.updatedAt).toISOString())}</em>
@@ -139,7 +139,7 @@ export function CommandThreadDrawer(props: CommandThreadDrawerProps) {
               <button type="button" className="command-thread-load" onClick={() => onLoadThread(thread.id)}>
                 <span>
                   <strong>{thread.title || t('command.untitledThread')}</strong>
-                  <small>{thread.currentDraftTitle || `${thread.messageCount} ${t('command.messages')}`}</small>
+                  <small>{`${thread.messageCount} ${t('command.messages')}`}</small>
                 </span>
                 <em>{formatThreadTime(thread.updatedAt)}</em>
               </button>

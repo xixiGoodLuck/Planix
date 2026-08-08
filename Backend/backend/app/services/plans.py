@@ -1,12 +1,11 @@
 from datetime import date as date_type
 from datetime import datetime
-import json
 from calendar import monthrange
 from uuid import uuid4
 
 from ..db import get_conn
 from ..errors import bad_request, not_found
-from ..schemas import PlanCreate, PlanOut, PlanRefinedTaskUpdate, PlanUpdate, RefinedTask
+from ..schemas import PlanCreate, PlanOut, PlanUpdate
 
 
 def _normalize_date(value: str) -> str:
@@ -34,23 +33,7 @@ def _normalize_result(result: str | None, completion: str | None) -> str:
     return result if result is not None else completion or ""
 
 
-def _dump_refined_task(refined_task: RefinedTask | None) -> str:
-    return json.dumps(refined_task.model_dump(by_alias=True), ensure_ascii=False) if refined_task else ""
-
-
-def _load_refined_task(raw: str) -> RefinedTask | None:
-    if not raw:
-        return None
-    try:
-        value = json.loads(raw)
-        return RefinedTask.model_validate(value)
-    except Exception:
-        return None
-
-
 def _to_plan(row) -> PlanOut:
-    refined_task = _load_refined_task(row["refined_task_json"] if "refined_task_json" in row.keys() else "")
-    refined_task_updated_at = row["refined_task_updated_at"] if refined_task and "refined_task_updated_at" in row.keys() else None
     return PlanOut(
         id=row["id"],
         date=row["date"],
@@ -62,8 +45,6 @@ def _to_plan(row) -> PlanOut:
         estimatedMinutes=row["estimated_minutes"],
         source=row["source"],
         sourceKey=row["source_key"] if "source_key" in row.keys() else "",
-        refinedTask=refined_task,
-        refinedTaskUpdatedAt=refined_task_updated_at or None,
         createdAt=row["created_at"],
         updatedAt=row["updated_at"],
     )
@@ -111,16 +92,15 @@ def create_plan(payload: PlanCreate) -> PlanOut:
     normalized_time = _normalize_time(payload.time)
     content = _normalize_content(payload.content, payload.title)
     result = _normalize_result(payload.result, payload.completion)
-    refined_task_json = _dump_refined_task(payload.refined_task)
     plan_id = str(uuid4())
     with get_conn() as conn:
         row = conn.execute(
             """
             INSERT INTO plans(
               id, date, time, content, done, result, priority, estimated_minutes, source,
-              source_key, refined_task_json, refined_task_updated_at
+              source_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? <> '' THEN CURRENT_TIMESTAMP ELSE '' END)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING *
             """,
             (
@@ -134,8 +114,6 @@ def create_plan(payload: PlanCreate) -> PlanOut:
                 payload.estimated_minutes,
                 payload.source,
                 payload.source_key.strip(),
-                refined_task_json,
-                refined_task_json,
             ),
         ).fetchone()
     return _to_plan(row)
@@ -176,44 +154,6 @@ def update_plan(plan_id: str, payload: PlanUpdate) -> PlanOut:
                 """,
                 (*updates.values(), plan_id),
             )
-        row = conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
-    return _to_plan(row)
-
-
-def save_plan_refined_task(plan_id: str, payload: PlanRefinedTaskUpdate) -> PlanOut:
-    with get_conn() as conn:
-        exists = conn.execute("SELECT id FROM plans WHERE id = ?", (plan_id,)).fetchone()
-        if not exists:
-            raise not_found("plan does not exist")
-        conn.execute(
-            """
-            UPDATE plans
-            SET refined_task_json = ?,
-                refined_task_updated_at = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            (_dump_refined_task(payload.refined_task), plan_id),
-        )
-        row = conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
-    return _to_plan(row)
-
-
-def delete_plan_refined_task(plan_id: str) -> PlanOut:
-    with get_conn() as conn:
-        exists = conn.execute("SELECT id FROM plans WHERE id = ?", (plan_id,)).fetchone()
-        if not exists:
-            raise not_found("plan does not exist")
-        conn.execute(
-            """
-            UPDATE plans
-            SET refined_task_json = '',
-                refined_task_updated_at = '',
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            (plan_id,),
-        )
         row = conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
     return _to_plan(row)
 

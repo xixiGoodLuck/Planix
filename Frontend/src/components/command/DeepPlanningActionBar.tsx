@@ -2,13 +2,9 @@ import {
   CalendarPlus,
   CheckCircle2,
   ChevronDown,
-  FileSearch,
-  ListChecks,
-  NotebookPen,
   PencilLine,
   RotateCcw,
   Sparkles,
-  Wand2
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { CommandThreadMessage } from '../../stores/commandAgentStore';
@@ -32,10 +28,6 @@ type PlanningAction = {
 };
 
 const secondaryActions = [
-  { key: 'viewPlans', textKey: 'command.quickViewPlans', messageKey: 'command.quickViewPlansMessage', icon: ListChecks },
-  { key: 'searchMemory', textKey: 'command.quickSearchMemory', messageKey: 'command.quickSearchMemoryMessage', icon: FileSearch },
-  { key: 'recordMemory', textKey: 'command.quickRecordMemory', messageKey: 'command.quickRecordMemoryMessage', icon: NotebookPen },
-  { key: 'refinePlan', textKey: 'command.quickRefinePlan', messageKey: 'command.quickRefinePlanMessage', icon: Wand2 },
   { key: 'modifyPlan', textKey: 'command.quickModifyPlan', messageKey: 'command.quickModifyPlanMessage', icon: PencilLine },
   { key: 'writeCalendar', textKey: 'command.quickWriteCalendar', messageKey: 'command.quickWriteCalendarMessage', icon: CalendarPlus }
 ];
@@ -65,7 +57,7 @@ function primaryActions(status: PlanningStatus | undefined, t: Translator): Plan
   if (status === 'final_revision' || status === 'learning_from_feedback') {
     return [
       { key: 'feedbackTooHeavy', label: t('command.feedbackTooHeavy'), message: t('command.feedbackTooHeavyMessage'), icon: RotateCcw },
-      { key: 'feedbackResourceHard', label: t('command.feedbackResourceHard'), message: t('command.feedbackResourceHardMessage'), icon: FileSearch }
+      { key: 'feedbackResourceHard', label: t('command.feedbackResourceHard'), message: t('command.feedbackResourceHardMessage'), icon: RotateCcw }
     ];
   }
   if (status === 'waiting_final_review') {

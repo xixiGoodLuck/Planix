@@ -32,7 +32,7 @@ The user gates are Understanding confirmation, Final Review approval, and Calend
 - Model failures fail closed at the failed V2 node and preserve prior current Artifacts.
 - `FinalApprovalBundle` and Calendar actions bind exact current versions. Calendar writes require Harness policy, Command approval, PermissionGate, version checks, and idempotent source keys.
 - Learning observations are not durable memory until an independent Memory Evaluation passes.
-- Auto planning uses the formal runtime. Forced chat is non-executing; manual Workbench and Dashboard Runtime are independent features, never planning fallbacks.
+- Command planning uses only the formal runtime. Calendar, Materials/RAG, Notes/Memory, and Settings remain independent capabilities, never planning fallbacks.
 
 ## Model routing
 

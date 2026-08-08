@@ -13,35 +13,15 @@ KEYED_PROVIDERS = {"deepseek", "kimi", "zhipu_glm", "openai", "custom", "local"}
 PROVIDER_ORDER = ["deepseek", "kimi", "zhipu_glm", "openai", "custom", "local"]
 AUTO_PROVIDER_DEFAULT_ORDER = ["deepseek", "zhipu_glm", "kimi", "openai", "custom", "local"]
 ROUTABLE_TASK_TYPES = [
-    "command_decision",
-    "plan_generation",
-    "task_refinement",
-    "calendar_patch",
-    "memory_query",
-    "memory_write",
-    "chat",
-    "model_knowledge",
     "planning_understanding",
     "planning_plan",
     "planning_review",
     "planning_learning",
 ]
-LEGACY_ROUTING_TASK_ALIASES = {
-    "note_query": "memory_query",
-    "note_write": "memory_write",
-}
 AUTO_MODEL_POLICY_KEY = "ai.autoModelPolicy"
 KEY_STATUS_VALUES = {"unchecked", "valid", "invalid"}
 KEY_INVALIDATING_ERRORS = {"auth_error", "invalid_key_format"}
 DEFAULT_TASK_STRATEGIES = {
-    "command_decision": "fast_low_cost",
-    "plan_generation": "structured_stable",
-    "task_refinement": "fast_low_cost",
-    "calendar_patch": "strict_json",
-    "memory_query": "context_summary",
-    "memory_write": "classification",
-    "chat": "balanced",
-    "model_knowledge": "knowledge_reasoning",
     "planning_understanding": "knowledge_reasoning",
     "planning_plan": "structured_stable",
     "planning_review": "strict_json",
@@ -187,10 +167,6 @@ def _default_model(provider: str) -> str:
     return DEFAULT_MODELS.get(provider, "deepseek-v4-flash")
 
 
-def normalize_routing_task_type(task_type: str) -> str:
-    return LEGACY_ROUTING_TASK_ALIASES.get(task_type, task_type)
-
-
 def _env_base_url() -> str:
     provider = _env_provider()
     default = _default_base_url(provider)
@@ -314,10 +290,26 @@ def _auto_model_policy(conn) -> AiAutoModelPolicy:
     except json.JSONDecodeError:
         raw = {}
     raw = raw if isinstance(raw, dict) else {}
-    return AiAutoModelPolicy(
+    normalized = AiAutoModelPolicy(
         autoProviderOrder=_normalize_auto_provider_order(raw.get("autoProviderOrder")),
         taskStrategy=_normalize_task_strategies(raw.get("taskStrategy")),
     )
+    normalized_json = json.dumps(
+        normalized.model_dump(by_alias=True),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    if json.dumps(raw, ensure_ascii=False, separators=(",", ":"), sort_keys=True) != json.dumps(
+        normalized.model_dump(by_alias=True),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ):
+        conn.execute(
+            "UPDATE user_preferences SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?",
+            (normalized_json, AUTO_MODEL_POLICY_KEY),
+        )
+    return normalized
 
 
 def _save_auto_model_policy(conn, policy: AiAutoModelPolicy | None) -> None:
@@ -374,7 +366,7 @@ def _routing_row_to_config(row) -> ModelRoutingRuleConfig | None:
     primary = row["primary_provider"] if row["primary_provider"] == "auto" or row["primary_provider"] in KEYED_PROVIDERS else "auto"
     if primary != "auto":
         fallbacks = [provider for provider in fallbacks if provider != primary]
-    task_type = normalize_routing_task_type(row["task_type"])
+    task_type = row["task_type"]
     return ModelRoutingRuleConfig(
         task_type=task_type,
         primary_provider=primary,
@@ -397,15 +389,12 @@ def _routing_config_to_public(rule: ModelRoutingRuleConfig) -> AiModelRoutingRul
 
 
 def _ensure_default_routing_rules(conn) -> None:
-    count = conn.execute("SELECT COUNT(*) AS count FROM ai_model_routing_rules").fetchone()["count"]
-    if count:
-        return
     settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = ?", (SETTINGS_ID,)).fetchone()
     active_provider = settings_row["provider"] if settings_row else _env_provider()
     for rule in _default_routing_rule_configs(active_provider):
         conn.execute(
             """
-            INSERT INTO ai_model_routing_rules(
+            INSERT OR IGNORE INTO ai_model_routing_rules(
               task_type, primary_provider, fallback_providers_json, local_fallback_enabled, updated_at
             )
             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -419,7 +408,7 @@ def _ensure_default_routing_rules(conn) -> None:
         )
 
 
-def _migrate_retired_planning_routing_rules(conn) -> None:
+def _migrate_pure_v2_routing_rules(conn) -> None:
     migrations = (
         ("planning_goal_model", "planning_understanding"),
         ("goal_understanding", "planning_understanding"),
@@ -429,7 +418,7 @@ def _migrate_retired_planning_routing_rules(conn) -> None:
     for source, target in migrations:
         conn.execute(
             """
-            INSERT INTO ai_model_routing_rules(
+            INSERT OR IGNORE INTO ai_model_routing_rules(
               task_type, primary_provider, fallback_providers_json, local_fallback_enabled, updated_at
             )
             SELECT ?, primary_provider, fallback_providers_json, 0, updated_at
@@ -441,7 +430,13 @@ def _migrate_retired_planning_routing_rules(conn) -> None:
             """,
             (target, source, target),
         )
-    retired = (*(source for source, _ in migrations), "planning_reality", "planning_evidence", "planning_strategy")
+    retired = tuple(
+        row["task_type"]
+        for row in conn.execute("SELECT task_type FROM ai_model_routing_rules").fetchall()
+        if row["task_type"] not in ROUTABLE_TASK_TYPES
+    )
+    if not retired:
+        return
     conn.execute(
         f"DELETE FROM ai_model_routing_rules WHERE task_type IN ({','.join('?' for _ in retired)})",
         retired,
@@ -449,16 +444,13 @@ def _migrate_retired_planning_routing_rules(conn) -> None:
 
 
 def _routing_rule_rows(conn) -> list[AiModelRoutingRule]:
-    _migrate_retired_planning_routing_rules(conn)
+    _migrate_pure_v2_routing_rules(conn)
     _ensure_default_routing_rules(conn)
     rows = conn.execute("SELECT * FROM ai_model_routing_rules ORDER BY task_type").fetchall()
     by_task: dict[str, ModelRoutingRuleConfig] = {}
     for row in rows:
         config = _routing_row_to_config(row)
         if not config or config.task_type not in ROUTABLE_TASK_TYPES:
-            continue
-        is_legacy_alias = row["task_type"] in LEGACY_ROUTING_TASK_ALIASES
-        if is_legacy_alias and config.task_type in by_task:
             continue
         by_task[config.task_type] = config
     settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = ?", (SETTINGS_ID,)).fetchone()
@@ -605,22 +597,17 @@ def mark_provider_key_invalid(provider: str, attempted_api_key: str, error_type:
 
 
 def get_model_routing_rule(task_type: str, active_provider: str) -> ModelRoutingRuleConfig:
-    task_type = normalize_routing_task_type(task_type)
     if task_type not in ROUTABLE_TASK_TYPES:
         return ModelRoutingRuleConfig(
             task_type=task_type,
             primary_provider="auto",
             fallback_providers=("deepseek",),
-            local_fallback_enabled=True,
+            local_fallback_enabled=False,
         )
     with get_conn() as conn:
-        _migrate_retired_planning_routing_rules(conn)
+        _migrate_pure_v2_routing_rules(conn)
         _ensure_default_routing_rules(conn)
         row = conn.execute("SELECT * FROM ai_model_routing_rules WHERE task_type = ?", (task_type,)).fetchone()
-        if not row:
-            legacy_task = next((legacy for legacy, canonical in LEGACY_ROUTING_TASK_ALIASES.items() if canonical == task_type), "")
-            if legacy_task:
-                row = conn.execute("SELECT * FROM ai_model_routing_rules WHERE task_type = ?", (legacy_task,)).fetchone()
         config = _routing_row_to_config(row)
     if config:
         return config
@@ -633,7 +620,6 @@ def get_model_routing_rule(task_type: str, active_provider: str) -> ModelRouting
 
 
 def get_auto_model_provider_chain(task_type: str, fallback_providers: tuple[str, ...] = ()) -> tuple[str, ...]:
-    task_type = normalize_routing_task_type(task_type)
     with get_conn() as conn:
         policy = _auto_model_policy(conn)
     strategy = policy.task_strategy.get(task_type, DEFAULT_TASK_STRATEGIES.get(task_type, "balanced"))
@@ -655,7 +641,7 @@ def get_auto_model_provider_chain(task_type: str, fallback_providers: tuple[str,
 
 def get_public_ai_settings() -> AiSettingsOut:
     with get_conn() as conn:
-        _migrate_retired_planning_routing_rules(conn)
+        _migrate_pure_v2_routing_rules(conn)
         settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = ?", (SETTINGS_ID,)).fetchone()
         provider = settings_row["provider"] if settings_row else _env_provider()
         config = _config_for_provider(conn, provider) if provider in KEYED_PROVIDERS else None
@@ -838,18 +824,16 @@ def save_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
 
 
 def save_model_routing_rules(payload: AiModelRoutingUpdate) -> AiSettingsOut:
-    incoming = {normalize_routing_task_type(rule.task_type): rule for rule in payload.routing_rules}
+    incoming = {rule.task_type: rule for rule in payload.routing_rules}
     unknown_tasks = set(incoming) - set(ROUTABLE_TASK_TYPES)
     if unknown_tasks:
         raise ValueError(f"Unsupported routing task type: {sorted(unknown_tasks)[0]}")
     with get_conn() as conn:
-        _migrate_retired_planning_routing_rules(conn)
+        _migrate_pure_v2_routing_rules(conn)
         settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = ?", (SETTINGS_ID,)).fetchone()
         active_provider = settings_row["provider"] if settings_row else _env_provider()
         defaults = {rule.task_type: rule for rule in _default_routing_rule_configs(active_provider)}
         _save_auto_model_policy(conn, payload.auto_model_policy)
-        for legacy_task in LEGACY_ROUTING_TASK_ALIASES:
-            conn.execute("DELETE FROM ai_model_routing_rules WHERE task_type = ?", (legacy_task,))
         for task_type in ROUTABLE_TASK_TYPES:
             rule = incoming.get(task_type)
             if rule:

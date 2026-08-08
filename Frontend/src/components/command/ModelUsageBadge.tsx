@@ -39,24 +39,6 @@ function usageItems(value: unknown): ModelUsage[] {
 
 function taskLabel(taskType: string | undefined, t: (key: string) => string): string {
   switch (taskType) {
-    case 'command_decision':
-      return t('command.usageTaskDecision');
-    case 'plan_generation':
-      return t('command.usageTaskPlanGeneration');
-    case 'task_refinement':
-      return t('command.usageTaskRefinement');
-    case 'calendar_patch':
-      return t('command.usageTaskCalendarPatch');
-    case 'memory_query':
-    case 'note_query':
-      return t('command.usageTaskMemoryQuery');
-    case 'memory_write':
-    case 'note_write':
-      return t('command.usageTaskMemoryWrite');
-    case 'chat':
-      return t('command.usageTaskChat');
-    case 'model_knowledge':
-      return t('command.usageTaskModelKnowledge');
     case 'settings_test':
       return t('command.usageTaskSettingsTest');
     case 'planning_understanding':

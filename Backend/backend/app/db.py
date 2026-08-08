@@ -193,36 +193,6 @@ def init_db(conn: sqlite3.Connection) -> None:
           PRIMARY KEY(year, month)
         );
 
-        CREATE TABLE IF NOT EXISTS daily_reviews (
-          id TEXT PRIMARY KEY,
-          date TEXT NOT NULL UNIQUE,
-          summary TEXT NOT NULL,
-          suggestions TEXT NOT NULL DEFAULT '[]',
-          done_count INTEGER NOT NULL DEFAULT 0,
-          total_count INTEGER NOT NULL DEFAULT 0,
-          suggestions_json TEXT NOT NULL DEFAULT '[]',
-          replan_tasks_json TEXT NOT NULL DEFAULT '[]',
-          target_date TEXT NOT NULL DEFAULT '',
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS planning_goals (
-          id TEXT PRIMARY KEY,
-          goal TEXT NOT NULL,
-          deadline TEXT NOT NULL DEFAULT '',
-          daily_hours REAL NOT NULL DEFAULT 2,
-          materials TEXT NOT NULL DEFAULT '',
-          preferences TEXT NOT NULL DEFAULT '',
-          summary TEXT NOT NULL DEFAULT '',
-          phases_json TEXT NOT NULL DEFAULT '[]',
-          tasks_json TEXT NOT NULL DEFAULT '[]',
-          structured_plan_json TEXT NOT NULL DEFAULT '{}',
-          sources_json TEXT NOT NULL DEFAULT '[]',
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-
         CREATE TABLE IF NOT EXISTS planning_sessions (
           id TEXT PRIMARY KEY,
           thread_id TEXT NOT NULL DEFAULT '',
@@ -479,30 +449,6 @@ def init_db(conn: sqlite3.Connection) -> None:
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
-        CREATE TABLE IF NOT EXISTS agent_runs (
-          id TEXT PRIMARY KEY,
-          input TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'running',
-          output_summary TEXT NOT NULL DEFAULT '',
-          error TEXT NOT NULL DEFAULT '',
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS agent_events (
-          id TEXT PRIMARY KEY,
-          run_id TEXT NOT NULL,
-          sequence INTEGER NOT NULL,
-          event_type TEXT NOT NULL,
-          node_id TEXT NOT NULL DEFAULT '',
-          payload TEXT NOT NULL,
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_agent_events_run_sequence
-          ON agent_events(run_id, sequence);
-
         CREATE TABLE IF NOT EXISTS command_threads (
           id TEXT PRIMARY KEY,
           title TEXT NOT NULL DEFAULT '',
@@ -694,17 +640,8 @@ def init_db(conn: sqlite3.Connection) -> None:
           AND api_key_encrypted != ''
         """
     )
-    ensure_column(conn, "daily_reviews", "done_count", "INTEGER NOT NULL DEFAULT 0")
-    ensure_column(conn, "daily_reviews", "total_count", "INTEGER NOT NULL DEFAULT 0")
-    ensure_column(conn, "daily_reviews", "suggestions_json", "TEXT NOT NULL DEFAULT '[]'")
-    ensure_column(conn, "daily_reviews", "replan_tasks_json", "TEXT NOT NULL DEFAULT '[]'")
-    ensure_column(conn, "daily_reviews", "target_date", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "documents", "source_type", "TEXT NOT NULL DEFAULT 'paste'")
     ensure_column(conn, "documents", "summary", "TEXT NOT NULL DEFAULT ''")
-    ensure_column(conn, "planning_goals", "structured_plan_json", "TEXT NOT NULL DEFAULT '{}'")
-    ensure_column(conn, "planning_goals", "sources_json", "TEXT NOT NULL DEFAULT '[]'")
-    ensure_column(conn, "plans", "refined_task_json", "TEXT NOT NULL DEFAULT ''")
-    ensure_column(conn, "plans", "refined_task_updated_at", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "plans", "source_key", "TEXT NOT NULL DEFAULT ''")
     conn.execute(
         """
