@@ -116,22 +116,6 @@ export type CommandChatEvent =
   | { type: 'agent_decision'; sessionId: string; data: unknown }
   | { type: 'agent_message'; sessionId: string; data: unknown }
   | ({ type: 'planning_session_status' } & PlanningSessionResponse)
-  | {
-      type: 'goal_understanding';
-      sessionId?: string;
-      intentState?: string;
-      understoodIntent?: unknown;
-      possibleDomains?: unknown[];
-      knownFacts?: unknown;
-      uncertainties?: unknown[];
-      consistencyWarnings?: unknown[];
-      nextQuestion?: string;
-      clarificationOptions?: string[];
-      confidence?: number;
-      source?: string;
-      error?: unknown;
-      modelUsage?: unknown;
-    }
   | { type: 'model_usage'; usage: unknown; feature?: string; source?: string; error?: string }
   | { type: 'clarify_question'; question: string; decision?: unknown }
   | { type: 'execution_result'; actionId?: string; status: 'success' | 'failed' | 'rejected'; text: string }

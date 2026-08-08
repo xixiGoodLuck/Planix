@@ -26,7 +26,18 @@ def test_ai_settings_endpoint_returns_json(client):
     assert body["provider"] == "deepseek"
     assert body["baseUrl"] == "https://api.deepseek.com"
     assert body["routingRules"]
-    assert {rule["taskType"] for rule in body["routingRules"]} >= {"command_decision", "plan_generation", "chat"}
+    task_types = {rule["taskType"] for rule in body["routingRules"]}
+    assert task_types >= {"command_decision", "plan_generation", "chat"}
+    assert {"planning_understanding", "planning_plan", "planning_review", "planning_learning"} <= task_types
+    assert not task_types.intersection({
+        "goal_understanding",
+        "planning_goal_model",
+        "planning_reality",
+        "planning_evidence",
+        "planning_strategy",
+        "planning_execution",
+        "planning_critique",
+    })
     assert {"memory_query", "memory_write"} <= {rule["taskType"] for rule in body["routingRules"]}
     assert "note_query" not in {rule["taskType"] for rule in body["routingRules"]}
     assert "note_write" not in {rule["taskType"] for rule in body["routingRules"]}
@@ -178,6 +189,69 @@ def test_model_routing_legacy_note_rules_are_normalized_to_memory_tasks(client):
     saved_rules = {rule["taskType"]: rule for rule in saved.json()["routingRules"]}
     assert "note_query" not in saved_rules
     assert saved_rules["memory_query"]["primaryProvider"] == "openai"
+
+
+def test_retired_planning_routing_rows_migrate_idempotently_without_touching_provider_config(client):
+    saved = client.put(
+        "/api/ai/settings",
+        json={
+            "provider": "deepseek",
+            "baseUrl": "https://api.deepseek.com",
+            "model": "deepseek-chat",
+            "apiKey": "sk-routing-migration-test",
+            "temperature": 0.2,
+            "timeoutSeconds": 30,
+        },
+    )
+    assert saved.status_code == 200
+    with get_conn() as conn:
+        provider_before = dict(conn.execute(
+            "SELECT * FROM ai_provider_configs WHERE provider = 'deepseek'"
+        ).fetchone())
+        conn.execute("DELETE FROM ai_model_routing_rules")
+        rows = [
+            ("goal_understanding", "kimi"),
+            ("planning_goal_model", "openai"),
+            ("planning_reality", "kimi"),
+            ("planning_evidence", "kimi"),
+            ("planning_strategy", "kimi"),
+            ("planning_execution", "zhipu_glm"),
+            ("planning_critique", "custom"),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO ai_model_routing_rules(
+              task_type, primary_provider, fallback_providers_json, local_fallback_enabled, updated_at
+            ) VALUES (?, ?, '["deepseek"]', 1, CURRENT_TIMESTAMP)
+            """,
+            rows,
+        )
+
+    first = client.get("/api/ai/settings")
+    second = client.get("/api/ai/settings")
+    assert first.status_code == second.status_code == 200
+    first_rules = {rule["taskType"]: rule for rule in first.json()["routingRules"]}
+    second_rules = {rule["taskType"]: rule for rule in second.json()["routingRules"]}
+    assert first_rules == second_rules
+    assert first_rules["planning_understanding"]["primaryProvider"] == "openai"
+    assert first_rules["planning_plan"]["primaryProvider"] == "zhipu_glm"
+    assert first_rules["planning_review"]["primaryProvider"] == "custom"
+    assert all(not rule["localFallbackEnabled"] for task, rule in first_rules.items() if task.startswith("planning_"))
+    with get_conn() as conn:
+        remaining = {row["task_type"] for row in conn.execute("SELECT task_type FROM ai_model_routing_rules")}
+        provider_after = dict(conn.execute(
+            "SELECT * FROM ai_provider_configs WHERE provider = 'deepseek'"
+        ).fetchone())
+    assert not remaining.intersection({
+        "goal_understanding",
+        "planning_goal_model",
+        "planning_reality",
+        "planning_evidence",
+        "planning_strategy",
+        "planning_execution",
+        "planning_critique",
+    })
+    assert provider_after == provider_before
 
 
 def test_model_routing_accepts_auto_primary_provider(client):

@@ -20,7 +20,6 @@ from ..schemas import (
     CommandPermission,
     CommandThreadSummaryOut,
     CreatePlanningSessionRequest,
-    GoalUnderstandingResult,
     MemoryCreate,
     ModelUsage,
     MonthNotePut,
@@ -34,7 +33,6 @@ from ..schemas import (
 )
 from .command_decision import CommandDecisionResult, CommandDecisionService, local_fallback_usage, usage_from_llm_result
 from ..cognitive_planning.control_intent import detect_planning_control_intent
-from .goal_understanding import GoalUnderstandingOutcome, GoalUnderstandingService
 from ..cognitive_planning import get_planning_orchestrator
 from .llm import LlmClient
 from .memory_agent import MemoryAgentService, detect_query_kinds
@@ -48,7 +46,6 @@ from .runtime import RuntimeOrchestrator
 
 CommandIntent = Literal[
     "normal_chat",
-    "goal_understanding_unavailable",
     "planning_request",
     "regenerate_draft",
     "modify_current_draft",
@@ -320,131 +317,6 @@ def _fallback_reply(message: str) -> str:
     if _looks_english(message):
         return "The model is temporarily unavailable. I can still discuss the request, but I will not execute actions or write data."
     return "模型暂时不可用。我可以先用本地回复继续讨论，但不会执行操作或写入数据。"
-
-
-_PROVIDER_LABELS = {
-    "deepseek": "DeepSeek",
-    "zhipu_glm": "GLM",
-    "kimi": "Kimi",
-    "openai": "OpenAI",
-    "custom": "Custom",
-    "mock": "Mock",
-}
-
-
-def _goal_failure_providers(outcome: GoalUnderstandingOutcome | None, error_types: set[str]) -> list[str]:
-    usage = outcome.usage if outcome else None
-    result: list[str] = []
-    for attempt in (usage.attempts if usage else []):
-        if attempt.error_type not in error_types:
-            continue
-        label = _PROVIDER_LABELS.get(attempt.provider, attempt.provider)
-        if label and label not in result:
-            result.append(label)
-    return result
-
-
-def _joined_providers(providers: list[str], *, english: bool) -> str:
-    if not providers:
-        return "the configured providers" if english else "已配置的模型服务"
-    if english and len(providers) > 1:
-        return f"{', '.join(providers[:-1])} and {providers[-1]}"
-    return (", " if english else "、").join(providers)
-
-
-def _goal_understanding_unavailable_reply(
-    message: str,
-    outcome: GoalUnderstandingOutcome | None = None,
-) -> str:
-    english = _looks_english(message)
-    usage = outcome.usage if outcome else None
-    error_types = {
-        attempt.error_type or "unknown"
-        for attempt in (usage.attempts if usage else [])
-    }
-    if outcome and outcome.source == "invalid_model_output":
-        error_types.add("invalid_model_output")
-
-    auth = _goal_failure_providers(outcome, {"auth_error", "invalid_key_format"})
-    missing = _goal_failure_providers(outcome, {"missing_api_key"})
-    primary_missing = [provider for provider in missing if provider in {"DeepSeek", "GLM", "Kimi"}]
-    balance = _goal_failure_providers(outcome, {"insufficient_balance"})
-    limited = _goal_failure_providers(outcome, {"rate_limit"})
-    timed_out = _goal_failure_providers(outcome, {"timeout"})
-    network = _goal_failure_providers(outcome, {"network_error", "bad_base_url"})
-    bad_model = _goal_failure_providers(outcome, {"bad_model"})
-    bad_request = _goal_failure_providers(outcome, {"bad_request"})
-
-    if english:
-        prefix = "I received your goal, but the Goal Understanding model could not complete its check, so planning did not start."
-        if auth:
-            reason = f" {_joined_providers(auth, english=True)} rejected the saved API Key as invalid or expired."
-            if primary_missing:
-                reason += f" {_joined_providers(primary_missing, english=True)} does not have a saved Key."
-            action = " Update at least one valid model Key in Settings, then retry."
-        elif balance:
-            reason = f" {_joined_providers(balance, english=True)} reported insufficient balance or quota."
-            action = " Add quota or select another configured provider, then retry."
-        elif limited:
-            reason = f" {_joined_providers(limited, english=True)} is currently rate-limited."
-            action = " Wait briefly or select another configured provider, then retry."
-        elif timed_out:
-            reason = f" {_joined_providers(timed_out, english=True)} timed out before returning a result."
-            action = " Check the network or timeout setting, then retry."
-        elif network:
-            reason = f" {_joined_providers(network, english=True)} could not be reached with the configured endpoint."
-            action = " Check the Base URL and network in Settings, then retry."
-        elif bad_model:
-            reason = f" {_joined_providers(bad_model, english=True)} rejected the configured model name."
-            action = " Select a model available to that account, then retry."
-        elif {"invalid_model_output", "model_output_truncated"} & error_types:
-            reason = " The model response was truncated or did not satisfy the Goal Understanding structured contract."
-            action = " Retry or select another configured model in Settings."
-        elif bad_request:
-            reason = f" {_joined_providers(bad_request, english=True)} rejected the Goal Understanding request."
-            action = " Check the provider configuration or select another model, then retry."
-        elif missing:
-            reason = f" No usable API Key is saved; {_joined_providers(missing, english=True)} was skipped."
-            action = " Save at least one model Key in Settings, then retry."
-        else:
-            reason = " The configured model service did not return a usable result."
-            action = " Check model Settings and retry."
-        return f"{prefix}{reason}{action} This is not caused by how you phrased the goal; your original input was saved."
-
-    prefix = "我已经收到你的目标，但目标理解模型未能完成判断，因此没有启动规划。"
-    if auth:
-        reason = f"原因：{_joined_providers(auth, english=False)} 的 API Key 无效或已过期。"
-        if primary_missing:
-            reason += f"{_joined_providers(primary_missing, english=False)} 尚未配置 Key。"
-        action = "请在设置中更新至少一个有效的模型 Key，然后重试。"
-    elif balance:
-        reason = f"原因：{_joined_providers(balance, english=False)} 返回余额或额度不足。"
-        action = "请补充额度或选择其他已配置 Provider，然后重试。"
-    elif limited:
-        reason = f"原因：{_joined_providers(limited, english=False)} 当前触发频率限制。"
-        action = "请稍后重试，或选择其他已配置 Provider。"
-    elif timed_out:
-        reason = f"原因：{_joined_providers(timed_out, english=False)} 在返回结果前超时。"
-        action = "请检查网络或超时设置，然后重试。"
-    elif network:
-        reason = f"原因：无法通过当前地址连接 {_joined_providers(network, english=False)}。"
-        action = "请在设置中检查 Base URL 与网络，然后重试。"
-    elif bad_model:
-        reason = f"原因：{_joined_providers(bad_model, english=False)} 不接受当前模型名称。"
-        action = "请选择该账号可用的模型，然后重试。"
-    elif {"invalid_model_output", "model_output_truncated"} & error_types:
-        reason = "原因：模型返回内容被截断或不符合 Goal Understanding 结构化协议。"
-        action = "请重试，或在设置中切换到其他已配置模型。"
-    elif bad_request:
-        reason = f"原因：{_joined_providers(bad_request, english=False)} 拒绝了本次目标理解请求。"
-        action = "请检查 Provider 配置或切换模型，然后重试。"
-    elif missing:
-        reason = f"原因：没有可用的 API Key，{_joined_providers(missing, english=False)} 已被跳过。"
-        action = "请在设置中至少保存一个模型 Key，然后重试。"
-    else:
-        reason = "原因：已配置的模型服务没有返回可用结果。"
-        action = "请检查模型设置后重试。"
-    return f"{prefix}{reason}{action}这不是你的目标表达有问题；原始输入已经保留。"
 
 
 def _stream_failure_message(payload: CommandChatRequest, intent: CommandIntent | None = None) -> str:
@@ -1520,30 +1392,6 @@ class CommandAgentService:
     def _planning_agent_event(self, name: str, status: str, summary: str) -> str:
         return _ndjson({"type": "runtime_event", "name": name, "status": status, "summary": summary})
 
-    def _stream_goal_understanding(
-        self,
-        thread_id: str,
-        outcome: GoalUnderstandingOutcome,
-    ) -> Iterator[str]:
-        understanding = outcome.result
-        if not understanding:
-            return
-        event = understanding.model_dump(by_alias=True, exclude_none=True)
-        event["source"] = outcome.source
-        if outcome.error:
-            event["error"] = outcome.error
-        usage = _usage_payload(outcome.usage)
-        if usage and outcome.source == "llm":
-            event["modelUsage"] = usage
-        content = understanding.next_question or understanding.understood_intent or understanding.intent_state
-        self._add_planning_session_card(
-            thread_id,
-            "goal_understanding",
-            content,
-            event,
-        )
-        yield _ndjson({"type": "goal_understanding", **event})
-
     def _stream_planning_session_snapshot(
         self,
         thread_id: str,
@@ -1630,16 +1478,9 @@ class CommandAgentService:
         self,
         thread_id: str,
         payload: CommandChatRequest,
-        *,
-        goal_understanding: GoalUnderstandingResult | None = None,
     ) -> Iterator[str]:
         service = get_planning_orchestrator()
         request_context = dict(payload.context) if isinstance(payload.context, dict) else {}
-        if goal_understanding:
-            request_context["goalUnderstanding"] = goal_understanding.model_dump(
-                by_alias=True,
-                exclude_none=True,
-            )
         session = service.create_session(
             CreatePlanningSessionRequest(
                 entryPoint="p_mode",
@@ -1862,35 +1703,6 @@ class CommandAgentService:
                 lines.append(f"{role}: {content}")
         return "\n".join(lines)
 
-    def _latest_goal_understanding_context(self, thread_id: str) -> dict[str, Any] | None:
-        with get_conn() as conn:
-            row = conn.execute(
-                """
-                SELECT payload_json
-                FROM command_messages
-                WHERE thread_id = ? AND role = 'card' AND kind = 'goal_understanding'
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                (thread_id,),
-            ).fetchone()
-        if not row:
-            return None
-        payload = _json_object(row["payload_json"])
-        allowed = {
-            "intentState",
-            "understoodIntent",
-            "possibleDomains",
-            "knownFacts",
-            "uncertainties",
-            "consistencyWarnings",
-            "nextQuestion",
-            "clarificationOptions",
-            "confidence",
-        }
-        result = {key: payload[key] for key in allowed if key in payload}
-        return result or None
-
     def _draft_decision_summary(self, draft: CommandDraftOut | None) -> dict[str, Any] | None:
         if not draft:
             return None
@@ -1962,7 +1774,6 @@ class CommandAgentService:
         str,
         ModelUsage | None,
         str,
-        GoalUnderstandingOutcome | None,
     ]:
         base_iso = _context_date(payload)
         current_draft = self._get_current_draft(thread_id)
@@ -1972,28 +1783,8 @@ class CommandAgentService:
             detect_command_intent(payload.message),
             has_current_draft=current_draft is not None,
         )
-        goal_outcome = GoalUnderstandingService().understand(
-            payload.message,
-            thread_context=thread_context,
-            prior_understanding=self._latest_goal_understanding_context(thread_id),
-        )
-        understanding = goal_outcome.result
-        if not understanding:
-            return (
-                "goal_understanding_unavailable",
-                None,
-                goal_outcome.source,
-                goal_outcome.usage,
-                goal_outcome.error,
-                goal_outcome,
-            )
-        if understanding:
-            if understanding.intent_state == "ambiguous_goal":
-                return "clarify", None, "", None, "", goal_outcome
-            if understanding.intent_state == "clear_goal":
-                return "planning_request", None, "", None, "", goal_outcome
-            if understanding.intent_state == "normal_chat":
-                return "normal_chat", None, "", None, "", goal_outcome
+        if pre_intent == "planning_request":
+            return "planning_request", None, "deterministic_intent", None, ""
 
         decision_result: CommandDecisionResult = CommandDecisionService().decide(
             payload.message,
@@ -2007,22 +1798,12 @@ class CommandAgentService:
         )
         if decision_result.decision:
             resolved_intent = _decision_to_intent(decision_result.decision)
-            if resolved_intent == "planning_request":
-                return (
-                    "normal_chat",
-                    decision_result.decision,
-                    "goal_understanding_conflict",
-                    decision_result.usage,
-                    decision_result.error,
-                    goal_outcome,
-                )
             return (
                 resolved_intent,
                 decision_result.decision,
                 decision_result.source,
                 decision_result.usage,
                 decision_result.error,
-                goal_outcome,
             )
 
         intent = resolve_command_intent(
@@ -2030,15 +1811,12 @@ class CommandAgentService:
             detect_command_intent(payload.message),
             has_current_draft=current_draft is not None,
         )
-        if intent == "planning_request":
-            intent = "normal_chat"
         return (
             intent,
             _fallback_decision(intent, payload.message),
             "local_fallback",
             decision_result.usage,
             decision_result.error,
-            goal_outcome,
         )
 
     def stream_chat(self, payload: CommandChatRequest) -> Iterator[str]:
@@ -2086,7 +1864,6 @@ class CommandAgentService:
         decision_source = ""
         decision_error = ""
         model_usage: ModelUsage | None = None
-        goal_understanding: GoalUnderstandingOutcome | None = None
         try:
             thread_id = self.ensure_thread(payload.thread_id, title=payload.message)
             if payload.mode == "workbench":
@@ -2115,7 +1892,6 @@ class CommandAgentService:
                     decision_source,
                     model_usage,
                     decision_error,
-                    goal_understanding,
                 ) = self._resolve_auto_decision(thread_id, payload)
             else:
                 intent = resolve_command_intent(
@@ -2131,7 +1907,6 @@ class CommandAgentService:
                 decision_source=decision_source,
                 decision_error=decision_error,
                 model_usage=model_usage,
-                goal_understanding=goal_understanding,
             )
         except AssertionError:
             raise
@@ -2152,24 +1927,9 @@ class CommandAgentService:
         decision_source: str = "",
         decision_error: str = "",
         model_usage: ModelUsage | None = None,
-        goal_understanding: GoalUnderstandingOutcome | None = None,
     ) -> Iterator[str]:
         user_message = self.add_message(thread_id, "user", payload.message)
         yield _ndjson({"type": "thread", "threadId": thread_id})
-
-        if goal_understanding and goal_understanding.result:
-            yield from self._stream_goal_understanding(thread_id, goal_understanding)
-        elif goal_understanding:
-            goal_usage = _usage_payload(goal_understanding.usage)
-            if goal_usage:
-                diagnostic = {
-                    "usage": goal_usage,
-                    "feature": "goal_understanding",
-                    "source": goal_understanding.source,
-                    "error": goal_understanding.error,
-                }
-                self.add_message(thread_id, "card", "", kind="model_usage", payload=diagnostic)
-                yield _ndjson({"type": "model_usage", **diagnostic})
 
         if payload.mode == "auto" and decision and intent != "planning_request":
             decision_card = _decision_payload(decision, decision_source or "local_fallback", decision_error)
@@ -2211,30 +1971,12 @@ class CommandAgentService:
             return
 
         if payload.mode == "auto" and intent == "planning_request":
-            yield from self._stream_planning_start(
-                thread_id,
-                payload,
-                goal_understanding=(
-                    goal_understanding.result
-                    if goal_understanding
-                    and goal_understanding.result
-                    and goal_understanding.result.intent_state == "clear_goal"
-                    else None
-                ),
-            )
-            yield _ndjson({"type": "done", "threadId": thread_id})
-            return
-
-        if payload.mode == "auto" and intent == "goal_understanding_unavailable":
-            reply = _goal_understanding_unavailable_reply(payload.message, goal_understanding)
-            self.add_message(thread_id, "assistant", reply)
-            yield _ndjson({"type": "assistant_delta", "text": reply})
+            yield from self._stream_planning_start(thread_id, payload)
             yield _ndjson({"type": "done", "threadId": thread_id})
             return
 
         if payload.mode == "auto" and intent == "clarify":
-            if not goal_understanding:
-                yield from self._stream_clarify(thread_id, decision)
+            yield from self._stream_clarify(thread_id, decision)
             yield _ndjson({"type": "done", "threadId": thread_id})
             return
 

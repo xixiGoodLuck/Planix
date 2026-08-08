@@ -19,7 +19,7 @@ export interface CommandThreadMessage {
   role: 'user' | 'assistant' | 'card';
   content: string;
   createdAt: number;
-  kind?: 'error' | 'runtime' | 'summary' | 'plan_detail' | 'refined_tasks_result' | 'calendar_preview' | 'approval' | 'calendar_write_result' | 'command_decision' | 'plan_search_results' | 'memory_search_results' | 'note_search_results' | 'plan_patch_preview' | 'plan_patch_result' | 'memory_write_preview' | 'memory_write_result' | 'note_write_preview' | 'note_write_result' | 'planning_session_started' | 'agent_decision' | 'agent_message' | 'planning_session_status' | 'goal_understanding' | 'model_usage' | 'clarify_question' | 'execution_result';
+  kind?: 'error' | 'runtime' | 'summary' | 'plan_detail' | 'refined_tasks_result' | 'calendar_preview' | 'approval' | 'calendar_write_result' | 'command_decision' | 'plan_search_results' | 'memory_search_results' | 'note_search_results' | 'plan_patch_preview' | 'plan_patch_result' | 'memory_write_preview' | 'memory_write_result' | 'note_write_preview' | 'note_write_result' | 'planning_session_started' | 'agent_decision' | 'agent_message' | 'planning_session_status' | 'model_usage' | 'clarify_question' | 'execution_result';
   status?: 'running' | 'success' | 'error';
   title?: string;
   draftId?: string;
@@ -246,7 +246,6 @@ const CARD_KINDS = new Set([
   'agent_decision',
   'agent_message',
   'planning_session_status',
-  'goal_understanding',
   'model_usage',
   'clarify_question',
   'execution_result'
@@ -465,13 +464,6 @@ function deriveWorkspaceStatus(messages: CommandThreadMessage[]): CommandWorkspa
   for (const message of [...messages].reverse()) {
     if (message.kind === 'error') return 'failed';
     if (message.kind === 'clarify_question') return 'waiting_clarification';
-    if (message.kind === 'goal_understanding') {
-      const payload = message.payload || {};
-      const intentState = String(payload.intentState || '').toLowerCase();
-      const nextQuestion = String(payload.nextQuestion || '').trim();
-      const warnings = Array.isArray(payload.consistencyWarnings) ? payload.consistencyWarnings : [];
-      if (intentState === 'ambiguous_goal' || nextQuestion || warnings.length) return 'waiting_clarification';
-    }
     if (message.kind !== 'planning_session_status') continue;
     const payload = message.payload || {};
     const status = String(payload.status || message.content || '').toLowerCase();
@@ -483,6 +475,7 @@ function deriveWorkspaceStatus(messages: CommandThreadMessage[]): CommandWorkspa
       payload.modelFailure ||
       data?.modelFailure
     ) return 'blocked_model';
+    if (status === 'needs_goal_clarification') return 'waiting_clarification';
     if (status === 'waiting_understanding_confirmation' || status === 'waiting_final_review') return 'waiting_confirmation';
     if (status.includes('failed') || status.includes('error')) return 'failed';
   }
@@ -491,18 +484,13 @@ function deriveWorkspaceStatus(messages: CommandThreadMessage[]): CommandWorkspa
 
 function eventWorkspaceStatus(event: CommandChatEvent): CommandWorkspaceStatus | undefined {
   if (event.type === 'clarify_question') return 'waiting_clarification';
-  if (event.type === 'goal_understanding') {
-    const intentState = String(event.intentState || '').toLowerCase();
-    const nextQuestion = String(event.nextQuestion || '').trim();
-    const warnings = Array.isArray(event.consistencyWarnings) ? event.consistencyWarnings : [];
-    if (intentState === 'ambiguous_goal' || nextQuestion || warnings.length) return 'waiting_clarification';
-  }
   if (event.type === 'planning_session_status') {
     const status = String(event.status || '').toLowerCase();
     const runtimeStatus = String(event.runtimeStatus || event.data?.runtimeStatus || '').toLowerCase();
     if (runtimeStatus === 'blocked_model' || status === 'model_unavailable' || event.modelFailure || event.data?.modelFailure) {
       return 'blocked_model';
     }
+    if (status === 'needs_goal_clarification') return 'waiting_clarification';
     if (status === 'waiting_understanding_confirmation' || status === 'waiting_final_review') return 'waiting_confirmation';
     if (status.includes('failed') || status.includes('error')) return 'failed';
   }
@@ -768,16 +756,6 @@ function addEventCard(event: CommandChatEvent, t: (key: string) => string, works
       payload: { ...event }
     });
   }
-  if (event.type === 'goal_understanding') {
-    addMessage({
-      role: 'card',
-      kind: 'goal_understanding',
-      status: event.consistencyWarnings?.length ? 'error' : 'success',
-      title: t('command.goalUnderstanding'),
-      content: event.nextQuestion || String(event.understoodIntent || t('command.goalUnderstanding')),
-      payload: { ...event }
-    });
-  }
   if (event.type === 'agent_decision') {
     const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {};
     addMessage({
@@ -898,7 +876,6 @@ function createStreamHandler(t: (key: string) => string, workspaceId: string) {
         event.type === 'agent_decision' ||
         event.type === 'agent_message' ||
         event.type === 'planning_session_status' ||
-        event.type === 'goal_understanding' ||
         event.type === 'model_usage' ||
         event.type === 'clarify_question' ||
         event.type === 'execution_result'

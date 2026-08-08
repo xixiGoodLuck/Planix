@@ -344,17 +344,23 @@ describe('commandAgentStore workbench mode', () => {
     expect(renderWorkspaces()).toContain('data-status="blocked_model"');
   });
 
-  it('marks sparse goal understanding as waiting for clarification both live and after replay', async () => {
+  it('marks native V2 understanding as waiting for clarification both live and after replay', async () => {
     apiMocks.runCommandChat.mockReset();
     apiMocks.runCommandChat.mockImplementationOnce(async (_payload, handlers) => {
       handlers.onEvent({ type: 'thread', threadId: 'thread-ambiguous-live' });
       handlers.onEvent({
-        type: 'goal_understanding',
-        intentState: 'ambiguous_goal',
-        understoodIntent: 'Autumn Japan trip',
-        consistencyWarnings: [],
-        nextQuestion: 'Which city will you depart from?'
-      });
+        type: 'planning_session_status',
+        sessionId: 'session-ambiguous-live',
+        status: 'needs_goal_clarification',
+        businessStatus: 'goal_clarification',
+        runtimeStatus: 'idle',
+        data: {
+          understandingSnapshot: {
+            goalSummary: 'Autumn Japan trip',
+            nextQuestion: { question: 'Which city will you depart from?' }
+          }
+        }
+      } as never);
     });
     apiMocks.listCommandThreads.mockResolvedValue([]);
 
@@ -369,14 +375,21 @@ describe('commandAgentStore workbench mode', () => {
       createdAt: '2026-07-14T00:00:00Z',
       updatedAt: '2026-07-14T00:01:00Z',
       messages: [{
-        id: 'goal-understanding-replay',
+        id: 'planning-status-replay',
         role: 'card',
-        kind: 'goal_understanding',
-        content: 'Which city will you depart from?',
+        kind: 'planning_session_status',
+        content: 'needs_goal_clarification',
         payload: {
-          intentState: 'ambiguous_goal',
-          nextQuestion: 'Which city will you depart from?',
-          consistencyWarnings: []
+          sessionId: 'session-ambiguous-replay',
+          status: 'needs_goal_clarification',
+          businessStatus: 'goal_clarification',
+          runtimeStatus: 'idle',
+          data: {
+            understandingSnapshot: {
+              goalSummary: 'Autumn Japan trip',
+              nextQuestion: { question: 'Which city will you depart from?' }
+            }
+          }
         },
         createdAt: '2026-07-14T00:01:00Z'
       }]

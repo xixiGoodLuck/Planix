@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { apiKeyDraftAfterProviderSwitch, providerModelRecommendations, upgradeLegacyKimiDefaults } from '../lib/aiSettingsDefaults';
 import { AIWorkspace } from './AIWorkspace';
 import type { AiSettings } from '../types';
+import { enUS } from '../i18n/en-US';
+import { zhCN } from '../i18n/zh-CN';
 
 const labels: Record<string, string> = {
   'legacy.goalPlaceholder': 'Learn Python',
@@ -60,7 +62,6 @@ const labels: Record<string, string> = {
   'legacy.routingNoFallback': 'No fallback',
   'legacy.routingLocalFallback': 'Local fallback',
   'legacy.cognitiveNoLocalFallback': 'No local fallback for deep planning',
-  'legacy.goalUnderstandingNoLocalFallback': 'No local semantic fallback for goal understanding',
   'legacy.routingMissingKey': 'Missing key',
   'legacy.saveRouting': 'Save routing',
   'legacy.savingRouting': 'Saving routing',
@@ -68,7 +69,6 @@ const labels: Record<string, string> = {
   'legacy.enabled': 'Enabled',
   'legacy.disabled': 'Disabled',
   'legacy.routingTaskCommandDecision': 'Intent',
-  'legacy.routingTaskGoalUnderstanding': 'Goal understanding',
   'legacy.routingTaskPlanGeneration': 'Plan generation',
   'legacy.routingTaskRefinement': 'Task refinement',
   'legacy.routingTaskCalendarPatch': 'Calendar patch',
@@ -78,21 +78,22 @@ const labels: Record<string, string> = {
   'legacy.routingTaskNoteWrite': 'Write notes',
   'legacy.routingTaskModelKnowledge': 'Knowledge',
   'legacy.routingTaskChat': 'Chat',
-  'legacy.routingTaskPlanningGoal': 'Cognitive goal modeling',
-  'legacy.routingTaskPlanningEvidence': 'Cognitive evidence',
-  'legacy.routingTaskPlanningStrategy': 'Cognitive strategy',
-  'legacy.routingTaskPlanningExecution': 'Cognitive execution',
-  'legacy.routingTaskPlanningCritique': 'Cognitive critique',
-  'legacy.routingTaskPlanningLearning': 'Cognitive learning',
+  'legacy.routingTaskPlanningUnderstanding': 'Planning · Understanding',
+  'legacy.routingTaskPlanningPlan': 'Planning · Plan Generation',
+  'legacy.routingTaskPlanningReview': 'Planning · Plan Review',
+  'legacy.routingTaskPlanningLearning': 'Planning · Feedback Learning',
   'legacy.routingTaskCommandDecisionDesc': 'Understands user intent',
-  'legacy.routingTaskGoalUnderstandingDesc': 'Understands ambiguity and consistency before routing',
   'legacy.routingTaskPlanGenerationDesc': 'Generates structuredPlan',
   'legacy.routingTaskRefinementDesc': 'Breaks tasks down',
   'legacy.routingTaskCalendarPatchDesc': 'Extracts calendar edits',
   'legacy.routingTaskMemoryQueryDesc': 'Searches memory',
   'legacy.routingTaskMemoryWriteDesc': 'Prepares memory records',
   'legacy.routingTaskModelKnowledgeDesc': 'Adds knowledge',
-  'legacy.routingTaskChatDesc': 'Normal chat'
+  'legacy.routingTaskChatDesc': 'Normal chat',
+  'legacy.routingTaskPlanningUnderstandingDesc': 'V2 understanding',
+  'legacy.routingTaskPlanningPlanDesc': 'V2 plan generation',
+  'legacy.routingTaskPlanningReviewDesc': 'V2 plan review',
+  'legacy.routingTaskPlanningLearningDesc': 'V2 feedback learning'
 };
 
 function t(key: string): string {
@@ -128,9 +129,10 @@ describe('AIWorkspace settings', () => {
     expect(html).toContain('DeepSeek API Key');
     expect(html).toContain('Model Routing');
     expect(html).toContain('Auto selection policy');
-    expect(html).toContain('Goal understanding');
-    expect(html).toContain('Understands ambiguity and consistency before routing');
-    expect(html).toContain('No local semantic fallback for goal understanding');
+    expect(html).toContain('Planning · Understanding');
+    expect(html).toContain('Planning · Plan Generation');
+    expect(html).toContain('Planning · Plan Review');
+    expect(html).toContain('Planning · Feedback Learning');
     expect(html).toContain('Auto select');
     const deepSeekOrder = html.indexOf('1. DeepSeek');
     const glmOrder = html.indexOf('2. Zhipu GLM');
@@ -141,9 +143,28 @@ describe('AIWorkspace settings', () => {
     expect(html).toContain('Plan generation');
     expect(html).toContain('Memory query');
     expect(html).toContain('Searches memory');
-    expect(html).toContain('Cognitive critique');
+    expect(html).not.toContain('Cognitive goal modeling');
+    expect(html).not.toContain('Cognitive evidence');
+    expect(html).not.toContain('Cognitive strategy');
+    expect(html).not.toContain('Cognitive execution');
+    expect(html).not.toContain('Cognitive critique');
     expect(html).toContain('No local fallback for deep planning');
     expect(html).toContain('Save routing');
+  });
+
+  it('defines the exact V2 planning labels in both languages', () => {
+    expect([
+      zhCN.legacy.routingTaskPlanningUnderstanding,
+      zhCN.legacy.routingTaskPlanningPlan,
+      zhCN.legacy.routingTaskPlanningReview,
+      zhCN.legacy.routingTaskPlanningLearning
+    ]).toEqual(['认知规划 · 目标理解', '认知规划 · 计划生成', '认知规划 · 计划审查', '认知规划 · 反馈学习']);
+    expect([
+      enUS.legacy.routingTaskPlanningUnderstanding,
+      enUS.legacy.routingTaskPlanningPlan,
+      enUS.legacy.routingTaskPlanningReview,
+      enUS.legacy.routingTaskPlanningLearning
+    ]).toEqual(['Planning · Understanding', 'Planning · Plan Generation', 'Planning · Plan Review', 'Planning · Feedback Learning']);
   });
 
   it('keeps Kimi API URLs and selectable models while correcting platform URLs', () => {

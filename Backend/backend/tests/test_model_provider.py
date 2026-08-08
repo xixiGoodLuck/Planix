@@ -1151,7 +1151,7 @@ def test_model_router_primary_only_failure_is_not_reported_as_fallback(monkeypat
 
     result, error = ModelRouter(
         _settings(provider="kimi", base_url="https://api.moonshot.cn/v1", model="kimi-k2.7-code")
-    ).complete(_request(task_type="goal_understanding"))
+    ).complete(_request(task_type="planning_understanding"))
 
     assert result is None
     assert error is not None

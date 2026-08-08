@@ -13,7 +13,6 @@ KEYED_PROVIDERS = {"deepseek", "kimi", "zhipu_glm", "openai", "custom", "local"}
 PROVIDER_ORDER = ["deepseek", "kimi", "zhipu_glm", "openai", "custom", "local"]
 AUTO_PROVIDER_DEFAULT_ORDER = ["deepseek", "zhipu_glm", "kimi", "openai", "custom", "local"]
 ROUTABLE_TASK_TYPES = [
-    "goal_understanding",
     "command_decision",
     "plan_generation",
     "task_refinement",
@@ -35,7 +34,6 @@ AUTO_MODEL_POLICY_KEY = "ai.autoModelPolicy"
 KEY_STATUS_VALUES = {"unchecked", "valid", "invalid"}
 KEY_INVALIDATING_ERRORS = {"auth_error", "invalid_key_format"}
 DEFAULT_TASK_STRATEGIES = {
-    "goal_understanding": "knowledge_reasoning",
     "command_decision": "fast_low_cost",
     "plan_generation": "structured_stable",
     "task_refinement": "fast_low_cost",
@@ -353,7 +351,7 @@ def _default_routing_rule_configs(active_provider: str) -> list[ModelRoutingRule
             task_type=task_type,
             primary_provider="auto",
             fallback_providers=("deepseek",),
-            local_fallback_enabled=task_type != "goal_understanding" and not task_type.startswith("planning_"),
+            local_fallback_enabled=not task_type.startswith("planning_"),
         )
         for task_type in ROUTABLE_TASK_TYPES
     ]
@@ -382,7 +380,7 @@ def _routing_row_to_config(row) -> ModelRoutingRuleConfig | None:
         primary_provider=primary,
         fallback_providers=tuple(fallbacks),
         local_fallback_enabled=False
-        if task_type == "goal_understanding" or task_type.startswith("planning_")
+        if task_type.startswith("planning_")
         else bool(row["local_fallback_enabled"]),
         updated_at=row["updated_at"],
     )
@@ -421,7 +419,37 @@ def _ensure_default_routing_rules(conn) -> None:
         )
 
 
+def _migrate_retired_planning_routing_rules(conn) -> None:
+    migrations = (
+        ("planning_goal_model", "planning_understanding"),
+        ("goal_understanding", "planning_understanding"),
+        ("planning_execution", "planning_plan"),
+        ("planning_critique", "planning_review"),
+    )
+    for source, target in migrations:
+        conn.execute(
+            """
+            INSERT INTO ai_model_routing_rules(
+              task_type, primary_provider, fallback_providers_json, local_fallback_enabled, updated_at
+            )
+            SELECT ?, primary_provider, fallback_providers_json, 0, updated_at
+            FROM ai_model_routing_rules
+            WHERE task_type = ?
+              AND NOT EXISTS (
+                SELECT 1 FROM ai_model_routing_rules WHERE task_type = ?
+              )
+            """,
+            (target, source, target),
+        )
+    retired = (*(source for source, _ in migrations), "planning_reality", "planning_evidence", "planning_strategy")
+    conn.execute(
+        f"DELETE FROM ai_model_routing_rules WHERE task_type IN ({','.join('?' for _ in retired)})",
+        retired,
+    )
+
+
 def _routing_rule_rows(conn) -> list[AiModelRoutingRule]:
+    _migrate_retired_planning_routing_rules(conn)
     _ensure_default_routing_rules(conn)
     rows = conn.execute("SELECT * FROM ai_model_routing_rules ORDER BY task_type").fetchall()
     by_task: dict[str, ModelRoutingRuleConfig] = {}
@@ -586,6 +614,7 @@ def get_model_routing_rule(task_type: str, active_provider: str) -> ModelRouting
             local_fallback_enabled=True,
         )
     with get_conn() as conn:
+        _migrate_retired_planning_routing_rules(conn)
         _ensure_default_routing_rules(conn)
         row = conn.execute("SELECT * FROM ai_model_routing_rules WHERE task_type = ?", (task_type,)).fetchone()
         if not row:
@@ -599,7 +628,7 @@ def get_model_routing_rule(task_type: str, active_provider: str) -> ModelRouting
         task_type=task_type,
         primary_provider="auto",
         fallback_providers=("deepseek",),
-        local_fallback_enabled=task_type != "goal_understanding" and not task_type.startswith("planning_"),
+        local_fallback_enabled=not task_type.startswith("planning_"),
     )
 
 
@@ -626,6 +655,7 @@ def get_auto_model_provider_chain(task_type: str, fallback_providers: tuple[str,
 
 def get_public_ai_settings() -> AiSettingsOut:
     with get_conn() as conn:
+        _migrate_retired_planning_routing_rules(conn)
         settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = ?", (SETTINGS_ID,)).fetchone()
         provider = settings_row["provider"] if settings_row else _env_provider()
         config = _config_for_provider(conn, provider) if provider in KEYED_PROVIDERS else None
@@ -813,6 +843,7 @@ def save_model_routing_rules(payload: AiModelRoutingUpdate) -> AiSettingsOut:
     if unknown_tasks:
         raise ValueError(f"Unsupported routing task type: {sorted(unknown_tasks)[0]}")
     with get_conn() as conn:
+        _migrate_retired_planning_routing_rules(conn)
         settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = ?", (SETTINGS_ID,)).fetchone()
         active_provider = settings_row["provider"] if settings_row else _env_provider()
         defaults = {rule.task_type: rule for rule in _default_routing_rule_configs(active_provider)}
@@ -830,7 +861,7 @@ def save_model_routing_rules(payload: AiModelRoutingUpdate) -> AiSettingsOut:
                 ]
                 local_fallback_enabled = (
                     False
-                    if task_type == "goal_understanding" or task_type.startswith("planning_")
+                    if task_type.startswith("planning_")
                     else rule.local_fallback_enabled
                 )
             else:

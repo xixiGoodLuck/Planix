@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Children, isValidElement, type ReactElement, type ReactNode } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { AgentThread } from './AgentThread';
 import { ApprovalCard } from './ApprovalCard';
 import { CommandDecisionCard } from './CommandDecisionCard';
@@ -16,7 +16,6 @@ import { NoteWriteResultCard } from './NoteWriteResultCard';
 import { PlanPatchPreviewCard } from './PlanPatchPreviewCard';
 import { PlanPatchResultCard } from './PlanPatchResultCard';
 import { PlanSearchResultsCard } from './PlanSearchResultsCard';
-import { ClarificationChoices, PlanningOverviewCard } from './PlanningOverviewCard';
 
 const labels: Record<string, string> = {
   'command.title': 'Planix',
@@ -380,19 +379,6 @@ function collectButtons(node: ReactNode): ReactElement[] {
   return buttons;
 }
 
-function collectForms(node: ReactNode): ReactElement[] {
-  const forms: ReactElement[] = [];
-  function visit(value: ReactNode) {
-    Children.forEach(value, (child) => {
-      if (!isValidElement(child)) return;
-      if (child.type === 'form') forms.push(child);
-      visit(child.props.children);
-    });
-  }
-  visit(node);
-  return forms;
-}
-
 describe('Plan command cards', () => {
   it('removes the user role label while retaining the Planix assistant label', () => {
     const html = renderToStaticMarkup(
@@ -682,213 +668,6 @@ describe('Plan command cards', () => {
     expect(finalThread).toContain('Build demo');
     expect(finalThread).toContain('Plan quality');
     expect(finalThread).not.toContain('Confirm direction');
-  });
-
-  it('renders model-authored A-D clarification choices and submits choices or other text', () => {
-    const preRoutingHtml = renderToStaticMarkup(PlanningOverviewCard({
-      messages: [{
-        id: 'goal-understanding-options',
-        role: 'card',
-        kind: 'goal_understanding',
-        content: '你学习 Python 最主要想实现什么？',
-        createdAt: 0,
-        payload: {
-          intentState: 'ambiguous_goal',
-          understoodIntent: '你想学习 Python，但主要用途尚未确定。',
-          uncertainties: [{ field: 'purpose', impact: '用途会改变项目和知识重点。' }],
-          nextQuestion: '你学习 Python 最主要想实现什么？',
-          clarificationOptions: ['找工作或实习', '完成个人项目', '数据分析', '系统学习编程']
-        }
-      }],
-      onSend: () => undefined,
-      t
-    }));
-    expect(preRoutingHtml).toContain('A</span>找工作或实习');
-    expect(preRoutingHtml).toContain('<summary aria-disabled="false">Other</summary>');
-
-    const messages = [
-      {
-        id: 'goal-model-options',
-        role: 'card' as const,
-        kind: 'goal_understanding' as const,
-        content: '',
-        createdAt: 1,
-        payload: {
-          sessionId: 's-options',
-          data: {
-            goalStatement: '学习 Python',
-            knownFacts: [{ key: 'skill', statement: 'Python' }],
-            decisionRelevantUnknowns: [{
-              key: 'purpose',
-              description: 'Python 学习用途',
-              whyItChangesThePlan: '用途会改变项目和知识重点。',
-              impact: 'strategy',
-              priority: 'blocking'
-            }]
-          }
-        }
-      },
-      {
-        id: 'goal-completion-options',
-        role: 'card' as const,
-        kind: 'goal_understanding' as const,
-        content: '',
-        createdAt: 2,
-        payload: {
-          sessionId: 's-options',
-          data: {
-            intentState: 'ambiguous_goal',
-            nextQuestion: 'What do you most want to achieve by learning Python?',
-            clarificationOptions: ['找工作或实习', '完成个人项目', '数据分析', '系统学习编程'],
-            complete: false,
-            blockingUnknowns: [{
-              question: '你学习 Python 最主要想实现什么？',
-              impact: '用途会改变项目和知识重点。',
-              answerOptions: ['找工作或实习', '完成个人项目', '数据分析', '系统学习编程']
-            }],
-            optionalUnknowns: [],
-            nextStage: 'goal_clarification'
-          }
-        }
-      },
-      {
-        id: 'goal-status-options',
-        role: 'card' as const,
-        kind: 'planning_session_status' as const,
-        content: 'needs_goal_clarification',
-        createdAt: 3,
-        payload: {
-          sessionId: 's-options',
-          status: 'needs_goal_clarification',
-          businessStatus: 'goal_clarification',
-          runtimeStatus: 'idle'
-        }
-      }
-    ];
-    const sent: string[] = [];
-    const card = PlanningOverviewCard({
-      messages,
-      status: 'needs_goal_clarification',
-      onSend: (value) => sent.push(value),
-      t
-    });
-    const html = renderToStaticMarkup(card);
-    expect(html).toContain('A</span>找工作或实习');
-    expect(html).toContain('B</span>完成个人项目');
-    expect(html).toContain('C</span>数据分析');
-    expect(html).toContain('D</span>系统学习编程');
-    expect(html).toContain('<summary aria-disabled="false">Other</summary>');
-    expect(html).toContain('placeholder="Describe your situation"');
-
-    const interactiveChoices = ClarificationChoices({
-      options: ['找工作或实习', '完成个人项目', '数据分析', '系统学习编程'],
-      disabled: false,
-      onSend: (value) => sent.push(value),
-      t
-    });
-    const choiceButton = collectButtons(interactiveChoices).find((button) => (
-      renderToStaticMarkup(button).includes('完成个人项目')
-    ));
-    choiceButton?.props.onClick();
-    expect(sent).toEqual(['完成个人项目']);
-
-    const reset = vi.fn();
-    const removeAttribute = vi.fn();
-    const preventDefault = vi.fn();
-    vi.stubGlobal('FormData', class {
-      get() {
-        return '准备自动化办公';
-      }
-    });
-    const form = collectForms(interactiveChoices)[0];
-    form.props.onSubmit({
-      preventDefault,
-      currentTarget: { reset, closest: () => ({ removeAttribute }) }
-    });
-    vi.unstubAllGlobals();
-    expect(preventDefault).toHaveBeenCalledOnce();
-    expect(reset).toHaveBeenCalledOnce();
-    expect(removeAttribute).toHaveBeenCalledWith('open');
-    expect(sent).toEqual(['完成个人项目', '准备自动化办公']);
-
-    const disabledHtml = renderToStaticMarkup(PlanningOverviewCard({
-      messages,
-      status: 'needs_goal_clarification',
-      sending: true,
-      actionsEnabled: false,
-      onSend: () => undefined,
-      t
-    }));
-    expect(disabledHtml).toContain('A</span>找工作或实习');
-    expect(disabledHtml).toContain('disabled=""');
-    expect(disabledHtml).toContain('aria-disabled="true"');
-  });
-
-  it('aggregates goal understanding, consistency warnings, and the next question without debug details', () => {
-    const messages = [{
-      id: 'goal-understanding',
-      role: 'card' as const,
-      kind: 'goal_understanding' as const,
-      content: '',
-      createdAt: 1,
-      payload: {
-        sessionId: 'goal-session',
-        intentState: 'ambiguous_goal',
-        understoodIntent: 'Go to Beijing',
-        possibleDomains: ['travel', 'career', 'relocation'],
-        knownFacts: { location: 'Beijing' },
-        uncertainties: [{ field: 'purpose', impact: 'Changes the planning strategy' }],
-        consistencyWarnings: ['The stated purpose does not match the skiing goal.'],
-        nextQuestion: 'What is the main purpose of going to Beijing?',
-        confidence: 0.72,
-        source: 'llm',
-        modelUsage: { provider: 'deepseek', model: 'deepseek-chat', taskType: 'goal_understanding' }
-      }
-    }];
-    const html = renderToStaticMarkup(
-      <AgentThread messages={messages} sending={false} onApprove={() => undefined} onSend={() => undefined} t={t} />
-    );
-    expect(html).toContain('Current Stage');
-    expect(html).toContain('Understand Goal');
-    expect(html).toContain('Go to Beijing');
-    expect(html).toContain('Location: Beijing');
-    expect(html).toContain('Purpose — Changes the planning strategy');
-    expect(html).not.toContain('purpose — Changes the planning strategy');
-    expect(html).toContain('Goal consistency warning');
-    expect(html).toContain('The stated purpose does not match the skiing goal.');
-    expect(html).toContain('What is the main purpose of going to Beijing?');
-    expect(html).toContain('Planning Workspace');
-    expect(html).not.toContain('Planning process');
-    expect(html).not.toContain('ambiguous_goal');
-    expect(html).not.toContain('deepseek-chat');
-
-    const advancedHtml = renderToStaticMarkup(
-      <AgentThread messages={messages} sending={false} onApprove={() => undefined} onSend={() => undefined} advancedAgentTrace t={t} />
-    );
-    expect(advancedHtml).toContain('ambiguous_goal');
-    expect(advancedHtml).toContain('deepseek-chat');
-  });
-
-  it('hides standalone decision and model-routing diagnostics unless advanced trace is enabled', () => {
-    const messages = [
-      { id: 'understanding', role: 'card' as const, kind: 'goal_understanding' as const, content: '', createdAt: 0, payload: { intentState: 'command', understoodIntent: 'Operational calendar query', source: 'llm' } },
-      { id: 'decision', role: 'card' as const, kind: 'command_decision' as const, content: '', createdAt: 1, payload: { intent: 'query_plan', source: 'local_fallback' } },
-      { id: 'usage', role: 'card' as const, kind: 'model_usage' as const, content: '', createdAt: 2, payload: { usage: { provider: 'deepseek', model: 'deepseek-chat', attempts: [{ provider: 'kimi', status: 'error', errorType: 'timeout' }] }, feature: 'goal_understanding', source: 'model_unavailable', error: 'Goal understanding model unavailable' } }
-    ];
-    const defaultHtml = renderToStaticMarkup(
-      <AgentThread messages={messages} sending={false} onApprove={() => undefined} onSend={() => undefined} t={t} />
-    );
-    expect(defaultHtml).not.toContain('deepseek-chat');
-    expect(defaultHtml).not.toContain('Local fallback rule');
-    expect(defaultHtml).not.toContain('Operational calendar query');
-
-    const advancedHtml = renderToStaticMarkup(
-      <AgentThread messages={messages} sending={false} onApprove={() => undefined} onSend={() => undefined} advancedAgentTrace t={t} />
-    );
-    expect(advancedHtml).toContain('deepseek-chat');
-    expect(advancedHtml).toContain('Local fallback rule');
-    expect(advancedHtml).toContain('Operational calendar query');
-    expect(advancedHtml).toContain('Goal understanding model unavailable');
   });
 
   it('renders an honest model-unavailable state without a fake plan', () => {

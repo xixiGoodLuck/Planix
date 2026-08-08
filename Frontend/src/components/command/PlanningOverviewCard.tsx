@@ -1,7 +1,6 @@
 import type { FormEvent } from 'react';
 import type { CommandThreadMessage } from '../../stores/commandAgentStore';
 import { planningStageFromStatus, planningStageTranslationKey, type PlanningStage } from './deepPlanningStatus';
-import { ModelUsageBadge } from './ModelUsageBadge';
 
 type Translator = (key: string) => string;
 
@@ -32,16 +31,6 @@ function localizedText(value: unknown, t: Translator): string {
     : text(localized.en) || text(localized.zh);
 }
 
-function messageData(message: CommandThreadMessage | undefined): Record<string, unknown> {
-  const payload = message?.payload ?? {};
-  const data = record(payload.data);
-  return Object.keys(data).length ? data : payload;
-}
-
-function latest(messages: CommandThreadMessage[], kind: CommandThreadMessage['kind']): Record<string, unknown> {
-  return messageData([...messages].reverse().find((message) => message.kind === kind));
-}
-
 function latestKindPayloadField(
   messages: CommandThreadMessage[],
   kind: CommandThreadMessage['kind'],
@@ -65,18 +54,6 @@ function itemText(value: unknown): string {
 function listText(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map(itemText).filter(Boolean);
-}
-
-function factLines(value: unknown): string[] {
-  if (Array.isArray(value)) return listText(value);
-  return Object.entries(record(value)).flatMap(([key, fact]) => {
-    if (Array.isArray(fact)) {
-      const joined = fact.map(itemText).filter(Boolean).join(' / ');
-      return joined ? [`${key}: ${joined}`] : [];
-    }
-    const rendered = itemText(fact);
-    return rendered ? [`${key}: ${rendered}`] : [];
-  });
 }
 
 function userFieldLabel(key: string, t: Translator): string {
@@ -133,19 +110,6 @@ function semanticFactLines(value: unknown, t: Translator): string[] {
     if (!rendered) return [];
     const label = userFieldLabel(text(raw.key), t);
     return [label ? `${label}: ${rendered}` : rendered];
-  });
-}
-
-function userUncertaintyLines(value: unknown, t: Translator): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
-    if (typeof item === 'string') return item.trim() ? [item.trim()] : [];
-    const raw = record(item);
-    const label = userFieldLabel(text(raw.field), t);
-    const impact = text(raw.impact) || text(raw.whyItChangesThePlan) || text(raw.whyThisQuestionMatters) || text(raw.consequence);
-    const description = text(raw.description) || text(raw.message) || text(raw.question);
-    const rendered = [label, impact || description].filter(Boolean).join(' — ');
-    return rendered ? [rendered] : [];
   });
 }
 
@@ -253,7 +217,6 @@ export function ClarificationChoices({
     </div>
   );
 }
-
 function nextActionKey(stage: PlanningStage): string {
   const suffix = stage.split('_').map((part) => part[0].toUpperCase() + part.slice(1)).join('');
   return `command.planningNext${suffix}`;
@@ -267,7 +230,6 @@ export function PlanningOverviewCard({
   onSend,
   t
 }: PlanningOverviewCardProps) {
-  const understanding = latest(messages, 'goal_understanding');
   const planningPhase = text(latestKindPayloadField(messages, 'planning_session_status', 'planningPhase'));
   const planningUnderstanding = record(latestKindPayloadField(messages, 'planning_session_status', 'understandingSnapshot'));
   const planningPlan = record(latestKindPayloadField(messages, 'planning_session_status', 'planBlueprint'));
@@ -291,31 +253,24 @@ export function PlanningOverviewCard({
     || runtimeStatus === 'blocked_model_unavailable'
     || runtimeStatus === 'retry_required';
 
-  const understoodIntent = text(understanding.understoodIntent)
-    || text(record(understanding.understoodIntent).summary)
-    || text(record(understanding.understoodIntent).goal);
   const goalStatement = text(planningUnderstanding.goalSummary)
-    || understoodIntent
     || t('command.planningUnderstandingPending');
   const facts = Array.from(new Set([
     ...semanticFactLines(planningUnderstanding.facts, t),
     ...listText(planningUnderstanding.constraints).map((item) => `${t('command.planningFactConstraints')}: ${item}`),
     ...listText(planningUnderstanding.preferences),
     ...listText(planningUnderstanding.successSignals),
-    ...listText(planningUnderstanding.assumptions),
-    ...(modelBlocked ? [] : userFactLines(understanding.knownFacts, t))
+    ...listText(planningUnderstanding.assumptions)
   ]));
-  const warnings = listText(understanding.consistencyWarnings);
-  const blockingUnknowns = listText(planningUnderstanding.unknowns).length
-    ? listText(planningUnderstanding.unknowns)
-    : userUncertaintyLines(understanding.uncertainties, t);
+  const warnings = listText(planningUnderstanding.consistencyWarnings);
+  const blockingUnknowns = listText(planningUnderstanding.unknowns);
   const pendingInputText = pendingInput.applied === false ? text(pendingInput.text) : '';
   const visibleBlockingUnknowns = modelBlocked
     ? [pendingInputText
         ? `${t('command.planningPendingModelInput')}: ${pendingInputText}`
         : t('command.planningPendingModelInputFallback')]
     : blockingUnknowns;
-  const clarificationOptions = listText(understanding.clarificationOptions).slice(0, 4);
+  const clarificationOptions = listText(record(planningUnderstanding.nextQuestion).options).slice(0, 4);
   const showClarificationChoices = stage === 'understand_goal'
     && !modelBlocked
     && clarificationOptions.length >= 2;
@@ -330,8 +285,7 @@ export function PlanningOverviewCard({
   const retryDisabled = sending || !onSend;
 
   const nextQuestion = text(record(planningUnderstanding.nextQuestion).question)
-    || text(planningUnderstanding.nextQuestion)
-    || text(understanding.nextQuestion);
+    || text(planningUnderstanding.nextQuestion);
   const nextAction = modelBlocked
     ? modelFailureAction
     : status === 'waiting_understanding_confirmation'
@@ -457,30 +411,6 @@ export function PlanningOverviewCard({
           </div>
         ) : null}
       </section>
-    </div>
-  );
-}
-
-export function GoalUnderstandingDetailCard({ data, t }: { data?: unknown; t: Translator }) {
-  const raw = record(data);
-  const facts = factLines(raw.knownFacts);
-  const uncertainties = listText(raw.uncertainties);
-  const warnings = listText(raw.consistencyWarnings);
-  const error = typeof raw.error === 'string' ? raw.error : Object.keys(record(raw.error)).length ? JSON.stringify(raw.error) : '';
-  return (
-    <div className="command-inline-card wide goal-understanding-trace">
-      <div className="command-card-heading">
-        <strong>{t('command.goalUnderstanding')}</strong>
-        <span>{text(raw.intentState) || t('common.unknown')}</span>
-      </div>
-      {text(raw.understoodIntent) ? <p>{text(raw.understoodIntent)}</p> : null}
-      {facts.length ? <dl className="command-result-meta"><div><dt>{t('command.knownFacts')}</dt><dd>{facts.join(' / ')}</dd></div></dl> : null}
-      {uncertainties.length ? <p>{t('command.uncertainties')}: {uncertainties.join(' / ')}</p> : null}
-      {warnings.length ? <p>{t('command.consistencyWarning')}: {warnings.join(' / ')}</p> : null}
-      {text(raw.nextQuestion) ? <p>{t('command.nextAction')}: {text(raw.nextQuestion)}</p> : null}
-      <small>{t('command.source')}: {text(raw.source) || t('common.unknown')} · {t('command.confidence')}: {typeof raw.confidence === 'number' ? `${Math.round(raw.confidence * 100)}%` : '-'}</small>
-      {error ? <small>{t('command.errorType')}: {error}</small> : null}
-      {raw.modelUsage ? <ModelUsageBadge usage={raw.modelUsage} t={t} /> : null}
     </div>
   );
 }
