@@ -26,6 +26,13 @@ def test_command_final_approval_text_routes_to_calendar_preview(monkeypatch):
     assert action and action[0] == "approve_final"
 
 
+def test_command_final_confirmation_is_separate_from_calendar_permission(monkeypatch):
+    session = _session("waiting_final_review")
+    monkeypatch.setattr("app.services.command_agent.get_planning_orchestrator", lambda: SimpleNamespace(latest_for_thread=lambda _id: session))
+    action = CommandAgentService()._followup_action("formal-thread", CommandChatRequest(message="确认最终计划"))
+    assert action and action[0] == "approve_final"
+
+
 def test_command_first_input_uses_single_formal_orchestrator(monkeypatch):
     calls = []
     session = _session("waiting_understanding_confirmation")

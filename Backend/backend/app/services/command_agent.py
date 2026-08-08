@@ -58,7 +58,7 @@ def _row_to_message(row) -> CommandMessageOut:
 
 def _approval_text(text: str) -> bool:
     normalized = text.strip().lower()
-    return normalized in {"确认", "确认理解", "确认当前理解", "同意", "批准", "approve", "confirm", "yes"}
+    return normalized in {"确认", "确认理解", "确认当前理解", "确认最终计划", "同意", "批准", "approve", "confirm", "confirm current understanding", "confirm final plan", "yes"}
 
 
 def _calendar_write_text(text: str) -> bool:
@@ -348,7 +348,7 @@ class CommandAgentService:
         if session.status == "waiting_understanding_confirmation":
             return ("confirm_understanding" if control == "approve_current_stage" or _approval_text(text) else "revise_understanding"), session
         if session.status in {"final_revision", "waiting_final_review"}:
-            if session.status == "waiting_final_review" and _calendar_write_text(text):
+            if session.status == "waiting_final_review" and (_approval_text(text) or _calendar_write_text(text)):
                 return "approve_final", session
             return "revise_final", session
         if session.status == "waiting_calendar_write_approval":

@@ -1,6 +1,6 @@
-import type { FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import type { CommandThreadMessage } from '../../stores/commandAgentStore';
-import { planningStageFromStatus, planningStageTranslationKey, type PlanningStage } from './deepPlanningStatus';
+import { planningStageFromStatus, planningStageTranslationKey, type PlanningStage } from './planningStatus';
 
 type Translator = (key: string) => string;
 
@@ -230,6 +230,8 @@ export function PlanningOverviewCard({
   onSend,
   t
 }: PlanningOverviewCardProps) {
+  const [revisionTarget, setRevisionTarget] = useState<'understanding' | 'final' | null>(null);
+  const [revisionText, setRevisionText] = useState('');
   const planningPhase = text(latestKindPayloadField(messages, 'planning_session_status', 'planningPhase'));
   const planningUnderstanding = record(latestKindPayloadField(messages, 'planning_session_status', 'understandingSnapshot'));
   const planningPlan = record(latestKindPayloadField(messages, 'planning_session_status', 'planBlueprint'));
@@ -237,16 +239,16 @@ export function PlanningOverviewCard({
   const planningSchedule = record(latestKindPayloadField(messages, 'planning_session_status', 'scheduleBlueprint'));
   const planningScheduleQuality = record(latestKindPayloadField(messages, 'planning_session_status', 'scheduleQualityReport'));
   const planningCalendar = record(latestKindPayloadField(messages, 'planning_session_status', 'calendarProposal'));
+  const sessionStatus = text(latestKindPayloadField(messages, 'planning_session_status', 'status'));
   const businessStatus = text(latestKindPayloadField(messages, 'planning_session_status', 'businessStatus'));
   const runtimeStatus = text(latestKindPayloadField(messages, 'planning_session_status', 'runtimeStatus'));
   const modelFailure = record(latestKindPayloadField(messages, 'planning_session_status', 'modelFailure'));
   const pendingInput = record(latestKindPayloadField(messages, 'planning_session_status', 'pendingInput'));
-  const stableStatus = status && status !== 'MODEL_UNAVAILABLE' ? status : businessStatus;
-  const stage: PlanningStage = planningPhase === 'UNDERSTANDING'
-    ? 'understand_goal'
-    : planningPhase === 'FINAL_REVIEW'
-      ? 'waiting_confirmation'
-    : planningStageFromStatus(stableStatus || status, messages);
+  const stableStatus = status && status !== 'MODEL_UNAVAILABLE' ? status : sessionStatus || businessStatus;
+  const currentStatus = stableStatus || status;
+  const stage: PlanningStage = planningPhase === 'FINAL_REVIEW'
+    ? 'waiting_confirmation'
+    : planningStageFromStatus(currentStatus);
   const modelBlocked = Object.keys(modelFailure).length > 0
     || status === 'MODEL_UNAVAILABLE'
     || runtimeStatus === 'blocked_model'
@@ -283,16 +285,28 @@ export function PlanningOverviewCard({
   const modelRetryable = typeof modelFailure.retryable === 'boolean' ? modelFailure.retryable : true;
   const showRetryControl = modelBlocked && modelRetryable && actionsEnabled;
   const retryDisabled = sending || !onSend;
+  const showUnderstandingActions = currentStatus === 'waiting_understanding_confirmation' && !modelBlocked;
+  const showFinalReviewActions = currentStatus === 'waiting_final_review' && !modelBlocked;
+  const actionDisabled = !actionsEnabled || !onSend || sending;
 
   const nextQuestion = text(record(planningUnderstanding.nextQuestion).question)
     || text(planningUnderstanding.nextQuestion);
   const nextAction = modelBlocked
     ? modelFailureAction
-    : status === 'waiting_understanding_confirmation'
+    : currentStatus === 'waiting_understanding_confirmation'
       ? t('command.confirmUnderstanding')
-      : status === 'waiting_final_review'
+      : currentStatus === 'waiting_final_review'
         ? t('command.approveFinalPlan')
         : nextQuestion || blockingUnknowns[0] || t(nextActionKey(stage));
+
+  const submitRevision = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const value = revisionText.trim();
+    if (!value || actionDisabled) return;
+    onSend?.(value);
+    setRevisionText('');
+    setRevisionTarget(null);
+  };
 
   return (
     <div className="command-inline-card wide planning-overview-card">
@@ -399,12 +413,79 @@ export function PlanningOverviewCard({
             t={t}
           />
         ) : null}
+        {showUnderstandingActions ? (
+          <div className="planning-context-actions">
+            <button
+              type="button"
+              disabled={actionDisabled}
+              onClick={() => onSend?.(t('command.confirmUnderstanding'))}
+            >
+              {t('command.confirmUnderstanding')}
+            </button>
+            <button
+              type="button"
+              disabled={actionDisabled}
+              onClick={() => setRevisionTarget('understanding')}
+            >
+              {t('command.reviseUnderstanding')}
+            </button>
+          </div>
+        ) : null}
+        {showFinalReviewActions ? (
+          <div className="planning-context-actions">
+            <button
+              type="button"
+              disabled={actionDisabled}
+              onClick={() => onSend?.(t('command.approveFinalPlan'))}
+            >
+              {t('command.approveFinalPlan')}
+            </button>
+            <button
+              type="button"
+              disabled={actionDisabled}
+              onClick={() => setRevisionTarget('final')}
+            >
+              {t('command.reviseFinalPlan')}
+            </button>
+          </div>
+        ) : null}
+        {revisionTarget ? (
+          <form className="planning-revision-form" onSubmit={submitRevision}>
+            <textarea
+              value={revisionText}
+              disabled={actionDisabled}
+              maxLength={1000}
+              onChange={(event) => setRevisionText(event.target.value)}
+              aria-label={t(revisionTarget === 'understanding'
+                ? 'command.reviseUnderstandingPlaceholder'
+                : 'command.reviseFinalPlanPlaceholder')}
+              placeholder={t(revisionTarget === 'understanding'
+                ? 'command.reviseUnderstandingPlaceholder'
+                : 'command.reviseFinalPlanPlaceholder')}
+            />
+            <div>
+              <button type="submit" disabled={actionDisabled || !revisionText.trim()}>
+                {t('command.submitRevision')}
+              </button>
+              <button
+                type="button"
+                disabled={actionDisabled}
+                onClick={() => {
+                  setRevisionText('');
+                  setRevisionTarget(null);
+                }}
+              >
+                {t('command.reject')}
+              </button>
+            </div>
+          </form>
+        ) : null}
         {showRetryControl ? (
           <div className="planning-retry-control">
             <button
               type="button"
               disabled={retryDisabled}
-              onClick={() => onSend?.(t('command.retryDeepPlanningMessage'))}
+              onClick={() => onSend?.(t('command.retryCurrentPlanningStage'))}
             >
               {t('command.retryCurrentPlanningStage')}
             </button>

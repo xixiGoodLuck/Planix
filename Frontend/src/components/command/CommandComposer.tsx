@@ -1,14 +1,11 @@
 import { ArrowUp } from 'lucide-react';
 import { useLayoutEffect, useRef, useState } from 'react';
-import type { CommandThreadMessage } from '../../stores/commandAgentStore';
 import type { CommandPermission } from '../../types';
-import { DeepPlanningActionBar } from './DeepPlanningActionBar';
 import { PermissionPopover } from './PermissionPopover';
 
 interface CommandComposerProps {
   sending: boolean;
   disabled?: boolean;
-  messages: CommandThreadMessage[];
   permission: CommandPermission;
   onSend: (value: string) => boolean | void | Promise<boolean | void>;
   onPermissionChange: (permission: CommandPermission) => void;
@@ -19,7 +16,6 @@ export function CommandComposer(props: CommandComposerProps) {
   const {
     sending,
     disabled = false,
-    messages,
     permission,
     onSend,
     onPermissionChange,
@@ -95,7 +91,6 @@ export function CommandComposer(props: CommandComposerProps) {
           <ArrowUp size={18} />
         </button>
       </div>
-      <DeepPlanningActionBar disabled={sending || disabled} messages={messages} onSend={onSend} t={t} />
     </div>
   );
 }

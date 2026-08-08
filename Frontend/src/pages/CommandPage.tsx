@@ -37,7 +37,6 @@ export function CommandPage({ t }: CommandPageProps) {
       <CommandComposer
         sending={command.sending}
         disabled={!command.canSend}
-        messages={command.messages}
         permission={command.permission}
         onSend={(value) => commandAgentActions.sendCommand(value, t)}
         onPermissionChange={commandAgentActions.setPermission}
