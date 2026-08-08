@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CalendarPage } from './pages/CalendarPage';
 import { CommandPage } from './pages/CommandPage';
-import { NotesPage } from './pages/NotesPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { RivaShell } from './shell/RivaShell';
 import { useAppRoute } from './shell/useAppRoute';
@@ -120,7 +119,7 @@ export function App() {
     route,
     agentStatus: 'idle',
     logs: [{ id: 'boot', level: 'info', message: t('inspector.bootLog'), timestamp: Date.now() }],
-    memory: { preferenceSummary: t('inspector.emptyMemory'), materialCount: 0, planCount: selectedPlans.length },
+    planning: { planCount: selectedPlans.length },
     api: { mode: aiSettings ? 'backend' : 'unknown', hasApiKey: aiSettings?.hasApiKey ?? false, provider: aiSettings?.provider ?? 'unknown' }
   }), [aiSettings, route, selectedPlans.length, t]);
 
@@ -145,7 +144,6 @@ export function App() {
         onDelete={(id) => { updateDay(selectedDate, (plans) => plans.filter((plan) => plan.id !== id)); void deleteRemotePlan(id); }}
         onCompletionChange={(id, value) => { updateDay(selectedDate, (plans) => plans.map((plan) => plan.id === id ? { ...plan, completion: value } : plan)); void updateRemotePlan(id, { completion: value }); }} t={t}
       />}
-      {route === 'notes' && <NotesPage t={t} />}
       {route === 'settings' && <SettingsPage onSettingsChange={setAiSettings} t={t} />}
       {route === 'command' && <CommandPage t={t} />}
     </RivaShell>

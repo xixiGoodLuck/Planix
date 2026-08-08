@@ -1,6 +1,6 @@
 export type Language = 'zh-CN' | 'en-US';
 export type Lang = Language;
-export type AppRoute = 'calendar' | 'notes' | 'settings' | 'command';
+export type AppRoute = 'calendar' | 'settings' | 'command';
 export type CommandPermission = 'low' | 'medium' | 'high';
 
 export interface CommandMessage {
@@ -22,12 +22,9 @@ export type AppData = Record<string, DayRecord>;
 export interface InspectorLog { id: string; level: 'info' | 'success' | 'warning' | 'error'; message: string; timestamp: number; }
 export interface InspectorSnapshot {
   route: AppRoute; agentStatus: 'idle' | 'running' | 'done' | 'error'; logs: InspectorLog[];
-  memory: { preferenceSummary: string; materialCount: number; planCount: number; };
+  planning: { planCount: number; };
   api: { mode: 'local' | 'backend' | 'unknown'; hasApiKey: boolean; provider: string; };
 }
-
-export interface RagDocument { id: string; title: string; sourceType: string; summary: string; chunks: number; createdAt: string; }
-export interface RagDocumentInput { title: string; content: string; sourceType?: string; }
 
 export type AiProvider = 'mock' | 'deepseek' | 'kimi' | 'zhipu_glm' | 'openai' | 'custom' | 'local';
 export type RoutingPrimaryProvider = 'auto' | Exclude<AiProvider, 'mock'>;

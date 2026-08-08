@@ -1,4 +1,4 @@
-import { Activity, Brain, Circle, Server, TerminalSquare } from 'lucide-react';
+import { Activity, CalendarDays, Circle, Server, TerminalSquare } from 'lucide-react';
 import type { AppRoute, InspectorSnapshot } from '../types';
 
 interface InspectorPanelProps {
@@ -55,21 +55,13 @@ export function InspectorPanel({ snapshot, t }: InspectorPanelProps) {
 
       <section className="inspector-card">
         <div className="inspector-card-title">
-          <Brain size={15} />
-          <span>{t('inspector.memory')}</span>
+          <CalendarDays size={15} />
+          <span>{t('inspector.planning')}</span>
         </div>
         <dl className="inspector-metrics">
           <div>
-            <dt>{t('inspector.preferenceMemory')}</dt>
-            <dd>{snapshot.memory.preferenceSummary}</dd>
-          </div>
-          <div>
-            <dt>{t('inspector.materials')}</dt>
-            <dd>{snapshot.memory.materialCount}</dd>
-          </div>
-          <div>
             <dt>{t('inspector.plans')}</dt>
-            <dd>{snapshot.memory.planCount}</dd>
+            <dd>{snapshot.planning.planCount}</dd>
           </div>
         </dl>
       </section>

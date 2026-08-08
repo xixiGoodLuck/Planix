@@ -15,7 +15,7 @@ Planix 是本地优先的 AI 规划应用。作品集文档版本为 **v3.0.0**�
 - `planning_review`
 - `planning_learning`
 
-Calendar、Materials/RAG、Notes/Memory、Settings 和桌面打包是独立产品能力，不是正式规划的替代路径。RAG 页面只管理本地资料；模型只能通过 V2 Context 构建读取相关资料。
+Calendar、Settings 和桌面打包是独立产品能力，不是正式规划的替代路径。V2 Context 仅使用可追溯的请求上下文、日历快照和正式学习记忆。
 
 ## 启动
 

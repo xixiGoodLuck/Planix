@@ -1,5 +1,6 @@
-import { CalendarDays, CheckSquare, Languages, Menu, NotebookTabs, Settings, X } from 'lucide-react';
+import { CalendarDays, CheckSquare, Languages, Menu, Settings, X } from 'lucide-react';
 import type { AppRoute, Language } from '../types';
+import { appMenuRoutes } from './useAppRoute';
 
 interface AppMenuProps {
   route: AppRoute;
@@ -12,11 +13,10 @@ interface AppMenuProps {
   t: (key: string) => string;
 }
 
-const items: Array<{ route: AppRoute; icon: typeof CalendarDays; labelKey: string }> = [
-  { route: 'calendar', icon: CalendarDays, labelKey: 'shell.calendar' },
-  { route: 'notes', icon: NotebookTabs, labelKey: 'shell.notes' },
-  { route: 'settings', icon: Settings, labelKey: 'shell.settings' }
-];
+const menuIcons: Record<(typeof appMenuRoutes)[number], typeof CalendarDays> = {
+  calendar: CalendarDays,
+  settings: Settings
+};
 
 export function AppMenu(props: AppMenuProps) {
   const { route, language, onRouteChange, onLanguageChange, onToday, pOnlyMode = false, onCommandToggle, t } = props;
@@ -83,18 +83,18 @@ export function AppMenu(props: AppMenuProps) {
             <span className="command-letter-icon">P</span>
             <span>{t('command.title')}</span>
           </button>
-          {items.map((item) => {
-            const Icon = item.icon;
-            const active = route === item.route;
+          {appMenuRoutes.map((itemRoute) => {
+            const Icon = menuIcons[itemRoute];
+            const active = route === itemRoute;
             return (
               <button
                 className={active ? 'active' : ''}
-                key={item.route}
-                onClick={() => onRouteChange(item.route)}
+                key={itemRoute}
+                onClick={() => onRouteChange(itemRoute)}
                 aria-current={active ? 'page' : undefined}
               >
                 <Icon size={17} />
-                <span>{t(item.labelKey)}</span>
+                <span>{t(`shell.${itemRoute}`)}</span>
               </button>
             );
           })}

@@ -343,27 +343,6 @@ def init_db(conn: sqlite3.Connection) -> None:
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
-        CREATE TABLE IF NOT EXISTS memories (
-          id TEXT PRIMARY KEY,
-          kind TEXT NOT NULL,
-          title TEXT NOT NULL,
-          content TEXT NOT NULL,
-          summary TEXT NOT NULL DEFAULT '',
-          tags_json TEXT NOT NULL DEFAULT '[]',
-          source TEXT NOT NULL DEFAULT 'user',
-          source_id TEXT NOT NULL DEFAULT '',
-          source_key TEXT NOT NULL DEFAULT '',
-          metadata_json TEXT NOT NULL DEFAULT '{}',
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_memories_kind
-          ON memories(kind);
-
-        CREATE INDEX IF NOT EXISTS idx_memories_source_key
-          ON memories(source_key);
-
         CREATE TABLE IF NOT EXISTS user_planning_hypotheses (
           id TEXT PRIMARY KEY,
           statement TEXT NOT NULL,
@@ -401,41 +380,6 @@ def init_db(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_user_model_memories_category_status
           ON user_model_memories(category, status, last_validated_at);
-
-        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
-          USING fts5(memory_id, kind, title, content, summary, tags);
-
-        CREATE TABLE IF NOT EXISTS documents (
-          id TEXT PRIMARY KEY,
-          title TEXT NOT NULL,
-          source TEXT NOT NULL DEFAULT 'manual',
-          source_type TEXT NOT NULL DEFAULT 'paste',
-          summary TEXT NOT NULL DEFAULT '',
-          content_hash TEXT NOT NULL DEFAULT '',
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS document_chunks (
-          id TEXT PRIMARY KEY,
-          document_id TEXT NOT NULL,
-          chunk_index INTEGER NOT NULL,
-          content TEXT NOT NULL,
-          token_count INTEGER NOT NULL DEFAULT 0,
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id
-          ON document_chunks(document_id);
-
-        CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks_fts
-          USING fts5(
-            chunk_id UNINDEXED,
-            document_id UNINDEXED,
-            title,
-            content,
-            tokenize = 'unicode61'
-          );
 
         CREATE TABLE IF NOT EXISTS ai_runs (
           id TEXT PRIMARY KEY,
@@ -640,20 +584,7 @@ def init_db(conn: sqlite3.Connection) -> None:
           AND api_key_encrypted != ''
         """
     )
-    ensure_column(conn, "documents", "source_type", "TEXT NOT NULL DEFAULT 'paste'")
-    ensure_column(conn, "documents", "summary", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "plans", "source_key", "TEXT NOT NULL DEFAULT ''")
-    conn.execute(
-        """
-        INSERT INTO document_chunks_fts(chunk_id, document_id, title, content)
-        SELECT c.id, c.document_id, d.title, c.content
-        FROM document_chunks c
-        JOIN documents d ON d.id = c.document_id
-        WHERE NOT EXISTS (
-          SELECT 1 FROM document_chunks_fts f WHERE f.chunk_id = c.id
-        )
-        """
-    )
 
 
 def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> bool:
@@ -677,68 +608,3 @@ def save_event(kind: str, payload: str) -> None:
             """,
             (str(uuid4()), kind, payload[:4000], payload[:4000]),
         )
-
-
-def save_memory(user_id: str, preferences: str) -> None:
-    key = f"preferences:{user_id}"
-    with get_conn() as conn:
-        conn.execute(
-            """
-            INSERT INTO user_preferences(key, value, updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(key)
-            DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-            """,
-            (key, preferences),
-        )
-
-
-def load_memory(user_id: str = "local-user") -> str:
-    key = f"preferences:{user_id}"
-    with get_conn() as conn:
-        row = conn.execute("SELECT value FROM user_preferences WHERE key = ?", (key,)).fetchone()
-    return row["value"] if row else ""
-
-
-def save_chunk(title: str, chunk: str) -> None:
-    with get_conn() as conn:
-        doc = conn.execute("SELECT id FROM documents WHERE title = ? ORDER BY created_at DESC LIMIT 1", (title,)).fetchone()
-        document_id = doc["id"] if doc else str(uuid4())
-        if not doc:
-            conn.execute(
-                "INSERT INTO documents(id, title, source) VALUES (?, ?, ?)",
-                (document_id, title, "manual"),
-            )
-        chunk_index = conn.execute(
-            "SELECT COUNT(*) AS total FROM document_chunks WHERE document_id = ?",
-            (document_id,),
-        ).fetchone()["total"]
-        conn.execute(
-            """
-            INSERT INTO document_chunks(id, document_id, chunk_index, content, token_count)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (chunk_id := str(uuid4()), document_id, chunk_index, chunk, len(chunk.split())),
-        )
-        conn.execute(
-            """
-            INSERT INTO document_chunks_fts(chunk_id, document_id, title, content)
-            VALUES (?, ?, ?, ?)
-            """,
-            (chunk_id, document_id, title, chunk),
-        )
-
-
-def list_chunks(limit: int = 200) -> list[dict[str, str]]:
-    with get_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT documents.title, document_chunks.content AS chunk
-            FROM document_chunks
-            JOIN documents ON documents.id = document_chunks.document_id
-            ORDER BY document_chunks.created_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    return [{"title": row["title"], "chunk": row["chunk"]} for row in rows]

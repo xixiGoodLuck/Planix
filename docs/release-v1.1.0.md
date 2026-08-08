@@ -8,7 +8,7 @@ This release turns Planix from a web-first AI planning app into a Windows deskto
 - Added a FastAPI sidecar packaging path with PyInstaller.
 - Added Windows release scripts for web build, backend sidecar build, Tauri build, and SHA256 checksum generation.
 - Added GitHub Actions release automation for `v*` tags.
-- Kept all existing AI planning, daily review, local RAG, TXT/MD upload, source citations, and planner evaluation features.
+- Kept the planning and desktop packaging capabilities available in that release.
 
 ## Assets
 

@@ -10,7 +10,7 @@ Formal P Mode has one native planning runtime. A user goal moves through Underst
 
 The only model routes are `planning_understanding`, `planning_plan`, `planning_review`, and `planning_learning`.
 
-Calendar, Materials/RAG, Notes/Memory, Settings, and desktop packaging remain independent product capabilities, not alternate planning paths. The Materials page manages local documents; planning models consume relevant material only through the V2 Context builder.
+Calendar, Settings, and desktop packaging remain independent product capabilities, not alternate planning paths. V2 Context uses only traceable request context, Calendar snapshots, and formal learning memory.
 
 ## Run locally
 

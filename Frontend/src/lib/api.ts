@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   AiModelRoutingInput, AiSettings, AiSettingsInput, AiSettingsTestResult, AppliedPlan,
-  CommandPermission, CommandThread, CommandThreadSummary, Plan, RagDocument, RagDocumentInput
+  CommandPermission, CommandThread, CommandThreadSummary, Plan
 } from '../types';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -137,16 +137,3 @@ export async function deletePlan(id: string) { return callApi<void>('DELETE', `/
 export async function clearAllPlans() { return callApi<{ deleted: number }>('DELETE', '/api/plans/all'); }
 export async function fetchMonthNote(year: number, month: number) { return (await callApi<{ content: string }>('GET', `/api/month-notes?year=${year}&month=${month}`)).content; }
 export async function saveRemoteMonthNote(year: number, month: number, content: string) { return callApi<void>('PUT', '/api/month-notes', { year, month, content }); }
-
-export async function fetchRagDocuments() { return callApi<RagDocument[]>('GET', '/api/rag/documents'); }
-export async function createRagDocument(payload: RagDocumentInput) { return callApi<RagDocument>('POST', '/api/rag/documents', payload); }
-export async function deleteRagDocument(id: string) { return callApi<void>('DELETE', `/api/rag/documents/${id}`); }
-export async function uploadRagDocument(file: File, title?: string): Promise<RagDocument> {
-  const name = file.name.toLowerCase();
-  if ((!name.endsWith('.txt') && !name.endsWith('.md')) || file.size <= 0 || file.size > 5 * 1024 * 1024) throw new ApiHttpError(400, { detail: 'Only non-empty .txt/.md files up to 5MB are supported.' });
-  if (isTauri) return createRagDocument({ title: title?.trim() || file.name.replace(/\.[^/.]+$/, ''), content: await file.text(), sourceType: 'upload' });
-  const form = new FormData(); form.append('file', file); if (title?.trim()) form.append('title', title.trim()); form.append('sourceType', 'upload');
-  const response = await fetch(apiUrl('/api/rag/documents/upload'), { method: 'POST', body: form });
-  if (!response.ok) { let detail: unknown; try { detail = await response.json(); } catch { detail = undefined; } throw new ApiHttpError(response.status, detail); }
-  return response.json() as Promise<RagDocument>;
-}

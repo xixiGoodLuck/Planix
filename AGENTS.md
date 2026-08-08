@@ -57,7 +57,7 @@ Canonical Artifacts are `UnderstandingSnapshot`, `UnderstandingPatch`, `Constrai
 
 ## Independent product features
 
-Calendar, Materials/RAG, Notes/Memory, Settings/model routing, Tauri packaging, and desktop sidecar behavior remain separate product capabilities. They must never be selected as a formal planning fallback. Command input always uses the canonical formal runtime.
+Calendar, Settings/model routing, Tauri packaging, and desktop sidecar behavior remain separate product capabilities. They must never be selected as a formal planning fallback. Command input always uses the canonical formal runtime.
 
 ## Frontend rules
 

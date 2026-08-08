@@ -180,7 +180,7 @@ The project also includes `.github/workflows/desktop-release.yml`. Pushing a `v*
 - Open `Planix`.
 - Confirm the web UI loads.
 - Confirm the FastAPI sidecar responds on `/api/health`.
-- Try calendar, goal planning, RAG query, TXT/MD material flow, planner evaluation, Runtime trace, and P Mode.
+- Try calendar, Native V2 planning, model settings, Final Review, and approved Calendar write.
 - Close the app and confirm every `planix-api` sidecar process exits, including the PyInstaller parent/child process tree.
 
 Run the installed-app smoke test:

@@ -16,13 +16,11 @@ def test_list_month_plans_returns_only_requested_month(client):
     assert [item["content"] for item in body] == ["First", "Second"]
 
 
-def test_delete_all_plans_preserves_independent_data(client):
+def test_delete_all_plans_preserves_month_note(client):
     assert client.post("/api/plans", json={"date": "2026-07-06", "time": "09:00", "content": "Plan"}).status_code == 200
     assert client.put("/api/month-notes", json={"year": 2026, "month": 7, "content": "Keep note"}).status_code == 200
-    assert client.post("/api/rag/documents", json={"title": "Keep document", "content": "Keep content"}).status_code == 200
     assert client.delete("/api/plans/all").json()["deleted"] == 1
     assert client.get("/api/month-notes", params={"year": 2026, "month": 7}).json()["content"] == "Keep note"
-    assert client.get("/api/rag/documents").json()[0]["title"] == "Keep document"
 
 
 def test_month_note_upsert(client):

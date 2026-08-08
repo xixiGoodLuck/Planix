@@ -30,7 +30,5 @@ The model layer is OpenAI-compatible and supports DeepSeek, GLM, Kimi, OpenAI, C
 ## Independent capabilities
 
 - Calendar persists manual and approved V2 events.
-- Materials/RAG stores pasted or uploaded TXT/Markdown documents and provides deterministic retrieval to the V2 Context builder.
-- Notes/Memory retains independent storage and the guarded V2 learning path.
 - Settings manages providers and the four V2 routing rules.
 - Tauri packages the same FastAPI and Vite application.
