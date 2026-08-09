@@ -95,7 +95,7 @@ def record_ai_run(
             INSERT INTO ai_runs(
               id, feature, provider, model, input_summary, output_summary, success, error
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 str(uuid4()),
@@ -104,7 +104,7 @@ def record_ai_run(
                 settings.model,
                 input_summary[:4000],
                 output_summary[:4000],
-                int(success),
+                success,
                 error[:1000],
             ),
         )

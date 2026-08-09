@@ -58,7 +58,7 @@ def list_plans(plan_date: str) -> list[PlanOut]:
             """
             SELECT *
             FROM plans
-            WHERE date = ?
+            WHERE date = %s
             ORDER BY time ASC, created_at ASC
             """,
             (normalized_date,),
@@ -80,7 +80,7 @@ def list_month_plans(year: int, month: int) -> list[PlanOut]:
             """
             SELECT *
             FROM plans
-            WHERE date >= ? AND date <= ?
+            WHERE date >= %s AND date <= %s
             ORDER BY date ASC, time ASC, created_at ASC
             """,
             (start.isoformat(), end.isoformat()),
@@ -101,7 +101,7 @@ def create_plan(payload: PlanCreate) -> PlanOut:
               id, date, time, content, done, result, priority, estimated_minutes, source,
               source_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
             """,
             (
@@ -109,7 +109,7 @@ def create_plan(payload: PlanCreate) -> PlanOut:
                 normalized_date,
                 normalized_time,
                 content,
-                int(payload.done),
+                payload.done,
                 result,
                 payload.priority,
                 payload.estimated_minutes,
@@ -130,7 +130,7 @@ def update_plan(plan_id: str, payload: PlanUpdate) -> PlanOut:
     if payload.content is not None or payload.title is not None:
         updates["content"] = _normalize_content(payload.content, payload.title)
     if payload.done is not None:
-        updates["done"] = int(payload.done)
+        updates["done"] = payload.done
     if payload.result is not None or payload.completion is not None:
         updates["result"] = _normalize_result(payload.result, payload.completion)
     if payload.priority is not None:
@@ -143,27 +143,27 @@ def update_plan(plan_id: str, payload: PlanUpdate) -> PlanOut:
         updates["source_key"] = payload.source_key.strip()
 
     with get_conn() as conn:
-        exists = conn.execute("SELECT id FROM plans WHERE id = ?", (plan_id,)).fetchone()
+        exists = conn.execute("SELECT id FROM plans WHERE id = %s", (plan_id,)).fetchone()
         if not exists:
             raise not_found("plan does not exist")
         if updates:
-            assignments = ", ".join(f"{field} = ?" for field in updates)
+            assignments = ", ".join(f"{field} = %s" for field in updates)
             conn.execute(
                 f"""
                 UPDATE plans
                 SET {assignments}, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = %s
                 """,
                 (*updates.values(), plan_id),
             )
             bump_calendar_revision(conn)
-        row = conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
+        row = conn.execute("SELECT * FROM plans WHERE id = %s", (plan_id,)).fetchone()
     return _to_plan(row)
 
 
 def delete_plan(plan_id: str) -> None:
     with get_conn() as conn:
-        cursor = conn.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
+        cursor = conn.execute("DELETE FROM plans WHERE id = %s", (plan_id,))
         if cursor.rowcount == 0:
             raise not_found("plan does not exist")
         bump_calendar_revision(conn)
@@ -180,8 +180,7 @@ def delete_all_plans() -> int:
 def upsert_calendar_plans(items: list[dict], *, expected_revision: int) -> tuple[list[tuple[str, PlanOut]], int]:
     results: list[tuple[str, PlanOut]] = []
     with get_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        current = conn.execute("SELECT revision FROM calendar_state WHERE id = 'local'").fetchone()
+        current = conn.execute("SELECT revision FROM calendar_state WHERE id = 'local' FOR UPDATE").fetchone()
         if int(current["revision"] if current else 0) != expected_revision:
             raise ValueError("Calendar revision is stale")
         for item in items:
@@ -192,11 +191,11 @@ def upsert_calendar_plans(items: list[dict], *, expected_revision: int) -> tuple
             target_date = _normalize_date(str(item.get("date") or ""))
             target_time = _normalize_time(str(item.get("time") or "09:00"))
             estimated = max(1, int(item.get("estimatedMinutes") or 30))
-            existing = conn.execute("SELECT id FROM plans WHERE source_key = ?", (source_key,)).fetchone()
+            existing = conn.execute("SELECT id FROM plans WHERE source_key = %s", (source_key,)).fetchone()
             if existing:
                 conn.execute(
-                    """UPDATE plans SET date = ?, time = ?, content = ?, result = ?, priority = 'medium',
-                       estimated_minutes = ?, source = 'ai', updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                    """UPDATE plans SET date = %s, time = %s, content = %s, result = %s, priority = 'medium',
+                       estimated_minutes = %s, source = 'ai', updated_at = CURRENT_TIMESTAMP WHERE id = %s""",
                     (target_date, target_time, title, str(item.get("description") or ""), estimated, existing["id"]),
                 )
                 state, plan_id = "updated", existing["id"]
@@ -204,11 +203,11 @@ def upsert_calendar_plans(items: list[dict], *, expected_revision: int) -> tuple
                 plan_id = str(uuid4())
                 conn.execute(
                     """INSERT INTO plans(id, date, time, content, result, priority, estimated_minutes, source, source_key)
-                       VALUES (?, ?, ?, ?, ?, 'medium', ?, 'ai', ?)""",
+                       VALUES (%s, %s, %s, %s, %s, 'medium', %s, 'ai', %s)""",
                     (plan_id, target_date, target_time, title, str(item.get("description") or ""), estimated, source_key),
                 )
                 state = "created"
-            row = conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
+            row = conn.execute("SELECT * FROM plans WHERE id = %s", (plan_id,)).fetchone()
             results.append((state, _to_plan(row)))
         revision = bump_calendar_revision(conn) if results else expected_revision
     return results, revision

@@ -3,7 +3,7 @@ import json
 import re
 from dataclasses import dataclass
 
-from ..db import get_conn
+from ..db import get_conn, jsonb
 from ..schemas import AiAutoModelPolicy, AiModelRoutingRule, AiModelRoutingUpdate, AiProvider, AiSavedProvider, AiSettingsOut, AiSettingsUpdate
 from .secret_store import get_secret_store, provider_secret_key
 
@@ -212,13 +212,11 @@ def _row_to_provider_config(row) -> ProviderConfig | None:
 
 
 def _config_for_provider(conn, provider: str) -> ProviderConfig | None:
-    _migrate_plaintext_secrets(conn)
-    row = conn.execute("SELECT * FROM ai_provider_configs WHERE provider = ?", (provider,)).fetchone()
+    row = conn.execute("SELECT * FROM ai_provider_configs WHERE provider = %s", (provider,)).fetchone()
     return _row_to_provider_config(row)
 
 
 def _saved_provider_rows(conn) -> list[AiSavedProvider]:
-    _migrate_plaintext_secrets(conn)
     rows = conn.execute("SELECT * FROM ai_provider_configs").fetchall()
     configs = [_row_to_provider_config(row) for row in rows]
     configs = [config for config in configs if config and config.provider in KEYED_PROVIDERS]
@@ -262,7 +260,6 @@ def _normalize_task_strategies(value: object) -> dict[str, str]:
 
 
 def _saved_key_provider_order(conn) -> list[str]:
-    _migrate_plaintext_secrets(conn)
     rows = conn.execute("SELECT * FROM ai_provider_configs").fetchall()
     saved = {
         config.provider
@@ -287,13 +284,10 @@ def _default_auto_model_policy(conn=None) -> AiAutoModelPolicy:
 
 
 def _auto_model_policy(conn) -> AiAutoModelPolicy:
-    row = conn.execute("SELECT value FROM user_preferences WHERE key = ?", (AUTO_MODEL_POLICY_KEY,)).fetchone()
+    row = conn.execute("SELECT value FROM user_preferences WHERE key = %s", (AUTO_MODEL_POLICY_KEY,)).fetchone()
     if not row:
         return _default_auto_model_policy(conn)
-    try:
-        raw = json.loads(row["value"] or "{}")
-    except json.JSONDecodeError:
-        raw = {}
+    raw = row["value"] if isinstance(row["value"], dict) else {}
     raw = raw if isinstance(raw, dict) else {}
     normalized = AiAutoModelPolicy(
         autoProviderOrder=_normalize_auto_provider_order(raw.get("autoProviderOrder")),
@@ -311,8 +305,8 @@ def _auto_model_policy(conn) -> AiAutoModelPolicy:
         sort_keys=True,
     ):
         conn.execute(
-            "UPDATE user_preferences SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?",
-            (normalized_json, AUTO_MODEL_POLICY_KEY),
+            "UPDATE user_preferences SET value = %s, updated_at = CURRENT_TIMESTAMP WHERE key = %s",
+            (jsonb(normalized.model_dump(by_alias=True)), AUTO_MODEL_POLICY_KEY),
         )
     return normalized
 
@@ -327,13 +321,13 @@ def _save_auto_model_policy(conn, policy: AiAutoModelPolicy | None) -> None:
     conn.execute(
         """
         INSERT INTO user_preferences(key, value, updated_at)
-        VALUES (?, ?, CURRENT_TIMESTAMP)
+        VALUES (%s, %s, CURRENT_TIMESTAMP)
         ON CONFLICT(key)
         DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
         """,
         (
             AUTO_MODEL_POLICY_KEY,
-            json.dumps(normalized.model_dump(by_alias=True), ensure_ascii=False, separators=(",", ":")),
+            jsonb(normalized.model_dump(by_alias=True)),
         ),
     )
 
@@ -357,10 +351,7 @@ def _default_routing_rule_configs(active_provider: str) -> list[ModelRoutingRule
 def _routing_row_to_config(row) -> ModelRoutingRuleConfig | None:
     if not row:
         return None
-    try:
-        raw_fallbacks = json.loads(row["fallback_providers_json"] or "[]")
-    except json.JSONDecodeError:
-        raw_fallbacks = []
+    raw_fallbacks = row["fallback_providers_json"] if isinstance(row["fallback_providers_json"], list) else []
     fallbacks: list[str] = []
     if isinstance(raw_fallbacks, list):
         for provider in raw_fallbacks:
@@ -394,62 +385,27 @@ def _routing_config_to_public(rule: ModelRoutingRuleConfig) -> AiModelRoutingRul
 
 
 def _ensure_default_routing_rules(conn) -> None:
-    settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = ?", (SETTINGS_ID,)).fetchone()
+    settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = %s", (SETTINGS_ID,)).fetchone()
     active_provider = settings_row["provider"] if settings_row else _env_provider()
     for rule in _default_routing_rule_configs(active_provider):
         conn.execute(
             """
-            INSERT OR IGNORE INTO ai_model_routing_rules(
+            INSERT INTO ai_model_routing_rules(
               task_type, primary_provider, fallback_providers_json, local_fallback_enabled, updated_at
             )
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (task_type) DO NOTHING
             """,
             (
                 rule.task_type,
                 rule.primary_provider,
-                json.dumps(list(rule.fallback_providers)),
-                int(rule.local_fallback_enabled),
+                jsonb(list(rule.fallback_providers)),
+                rule.local_fallback_enabled,
             ),
         )
 
 
-def _migrate_pure_v2_routing_rules(conn) -> None:
-    migrations = (
-        ("planning_goal_model", "planning_understanding"),
-        ("goal_understanding", "planning_understanding"),
-        ("planning_execution", "planning_plan"),
-        ("planning_critique", "planning_review"),
-    )
-    for source, target in migrations:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO ai_model_routing_rules(
-              task_type, primary_provider, fallback_providers_json, local_fallback_enabled, updated_at
-            )
-            SELECT ?, primary_provider, fallback_providers_json, 0, updated_at
-            FROM ai_model_routing_rules
-            WHERE task_type = ?
-              AND NOT EXISTS (
-                SELECT 1 FROM ai_model_routing_rules WHERE task_type = ?
-              )
-            """,
-            (target, source, target),
-        )
-    retired = tuple(
-        row["task_type"]
-        for row in conn.execute("SELECT task_type FROM ai_model_routing_rules").fetchall()
-        if row["task_type"] not in ROUTABLE_TASK_TYPES
-    )
-    if not retired:
-        return
-    conn.execute(
-        f"DELETE FROM ai_model_routing_rules WHERE task_type IN ({','.join('?' for _ in retired)})",
-        retired,
-    )
-
-
 def _routing_rule_rows(conn) -> list[AiModelRoutingRule]:
-    _migrate_pure_v2_routing_rules(conn)
     _ensure_default_routing_rules(conn)
     rows = conn.execute("SELECT * FROM ai_model_routing_rules ORDER BY task_type").fetchall()
     by_task: dict[str, ModelRoutingRuleConfig] = {}
@@ -458,7 +414,7 @@ def _routing_rule_rows(conn) -> list[AiModelRoutingRule]:
         if not config or config.task_type not in ROUTABLE_TASK_TYPES:
             continue
         by_task[config.task_type] = config
-    settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = ?", (SETTINGS_ID,)).fetchone()
+    settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = %s", (SETTINGS_ID,)).fetchone()
     active_provider = settings_row["provider"] if settings_row else _env_provider()
     defaults = {rule.task_type: rule for rule in _default_routing_rule_configs(active_provider)}
     rules = [by_task.get(task_type) or defaults[task_type] for task_type in ROUTABLE_TASK_TYPES]
@@ -531,7 +487,7 @@ def _to_public(
 
 def get_effective_ai_settings() -> EffectiveAiSettings:
     with get_conn() as conn:
-        settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = ?", (SETTINGS_ID,)).fetchone()
+        settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = %s", (SETTINGS_ID,)).fetchone()
         provider = settings_row["provider"] if settings_row else _env_provider()
         config = _config_for_provider(conn, provider) if provider in KEYED_PROVIDERS else None
     return _effective_from_rows(settings_row, config)
@@ -539,7 +495,7 @@ def get_effective_ai_settings() -> EffectiveAiSettings:
 
 def get_effective_ai_settings_for_provider(provider: str, active_settings: EffectiveAiSettings | None = None) -> EffectiveAiSettings:
     with get_conn() as conn:
-        settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = ?", (SETTINGS_ID,)).fetchone()
+        settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = %s", (SETTINGS_ID,)).fetchone()
         active = active_settings or _effective_from_rows(
             settings_row,
             _config_for_provider(conn, settings_row["provider"]) if settings_row and settings_row["provider"] in KEYED_PROVIDERS else None,
@@ -579,7 +535,7 @@ def mark_provider_key_valid(provider: str, attempted_api_key: str) -> None:
             UPDATE ai_provider_configs
             SET key_status = 'valid', key_error_type = '',
                 last_validated_at = CURRENT_TIMESTAMP
-            WHERE provider = ? AND api_key_source = 'secret_store'
+            WHERE provider = %s AND api_key_source = 'secret_store'
               AND key_status != 'valid'
             """,
             (provider,),
@@ -593,9 +549,9 @@ def mark_provider_key_invalid(provider: str, attempted_api_key: str, error_type:
         conn.execute(
             """
             UPDATE ai_provider_configs
-            SET key_status = 'invalid', key_error_type = ?,
+            SET key_status = 'invalid', key_error_type = %s,
                 last_validated_at = CURRENT_TIMESTAMP
-            WHERE provider = ? AND api_key_source = 'secret_store'
+            WHERE provider = %s AND api_key_source = 'secret_store'
             """,
             (error_type, provider),
         )
@@ -610,9 +566,8 @@ def get_model_routing_rule(task_type: str, active_provider: str) -> ModelRouting
             local_fallback_enabled=False,
         )
     with get_conn() as conn:
-        _migrate_pure_v2_routing_rules(conn)
         _ensure_default_routing_rules(conn)
-        row = conn.execute("SELECT * FROM ai_model_routing_rules WHERE task_type = ?", (task_type,)).fetchone()
+        row = conn.execute("SELECT * FROM ai_model_routing_rules WHERE task_type = %s", (task_type,)).fetchone()
         config = _routing_row_to_config(row)
     if config:
         return config
@@ -646,8 +601,7 @@ def get_auto_model_provider_chain(task_type: str, fallback_providers: tuple[str,
 
 def get_public_ai_settings() -> AiSettingsOut:
     with get_conn() as conn:
-        _migrate_pure_v2_routing_rules(conn)
-        settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = ?", (SETTINGS_ID,)).fetchone()
+        settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = %s", (SETTINGS_ID,)).fetchone()
         provider = settings_row["provider"] if settings_row else _env_provider()
         config = _config_for_provider(conn, provider) if provider in KEYED_PROVIDERS else None
         settings = _effective_from_rows(settings_row, config)
@@ -753,15 +707,14 @@ def _upsert_provider_config(conn, candidate: PendingProviderConfig) -> tuple[str
     conn.execute(
         """
         INSERT INTO ai_provider_configs(
-          provider, base_url, model, api_key_encrypted, api_key_source,
+          provider, base_url, model, api_key_source,
           key_status, key_error_type, last_validated_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE ? END, CURRENT_TIMESTAMP)
+        VALUES (%s, %s, %s, %s, %s, %s, CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE %s END, CURRENT_TIMESTAMP)
         ON CONFLICT(provider)
         DO UPDATE SET
           base_url = excluded.base_url,
           model = excluded.model,
-          api_key_encrypted = excluded.api_key_encrypted,
           api_key_source = excluded.api_key_source,
           key_status = excluded.key_status,
           key_error_type = excluded.key_error_type,
@@ -772,12 +725,11 @@ def _upsert_provider_config(conn, candidate: PendingProviderConfig) -> tuple[str
             candidate.provider,
             candidate.base_url,
             candidate.model,
-            "",
             stored_source,
             "valid" if candidate.should_validate else candidate.key_status,
             "" if candidate.should_validate else candidate.key_error_type,
-            int(candidate.should_validate),
-            candidate.last_validated_at,
+            candidate.should_validate,
+            candidate.last_validated_at or None,
         ),
     )
     return "", stored_source
@@ -788,7 +740,6 @@ def save_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
         if payload.provider == "mock":
             base_url = payload.base_url.strip().rstrip("/") or _default_base_url(payload.provider)
             model = payload.model.strip() or _default_model(payload.provider)
-            api_key = ""
             api_key_source = ""
         else:
             candidate = _candidate_provider_config(conn, payload)
@@ -799,23 +750,21 @@ def save_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
                     timeout_seconds=payload.timeout_seconds,
                 )
             _db_api_key, api_key_source = _upsert_provider_config(conn, candidate)
-            api_key = ""
             base_url = candidate.base_url
             model = candidate.model
 
         conn.execute(
             """
             INSERT INTO ai_settings(
-              id, provider, base_url, model, api_key_encrypted, api_key_source,
+              id, provider, base_url, model, api_key_source,
               temperature, timeout_seconds, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT(id)
             DO UPDATE SET
               provider = excluded.provider,
               base_url = excluded.base_url,
               model = excluded.model,
-              api_key_encrypted = excluded.api_key_encrypted,
               api_key_source = excluded.api_key_source,
               temperature = excluded.temperature,
               timeout_seconds = excluded.timeout_seconds,
@@ -826,7 +775,6 @@ def save_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
                 payload.provider,
                 base_url,
                 model,
-                api_key,
                 api_key_source,
                 payload.temperature,
                 payload.timeout_seconds,
@@ -841,8 +789,7 @@ def save_model_routing_rules(payload: AiModelRoutingUpdate) -> AiSettingsOut:
     if unknown_tasks:
         raise ValueError(f"Unsupported routing task type: {sorted(unknown_tasks)[0]}")
     with get_conn() as conn:
-        _migrate_pure_v2_routing_rules(conn)
-        settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = ?", (SETTINGS_ID,)).fetchone()
+        settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = %s", (SETTINGS_ID,)).fetchone()
         active_provider = settings_row["provider"] if settings_row else _env_provider()
         defaults = {rule.task_type: rule for rule in _default_routing_rule_configs(active_provider)}
         _save_auto_model_policy(conn, payload.auto_model_policy)
@@ -870,7 +817,7 @@ def save_model_routing_rules(payload: AiModelRoutingUpdate) -> AiSettingsOut:
                 INSERT INTO ai_model_routing_rules(
                   task_type, primary_provider, fallback_providers_json, local_fallback_enabled, updated_at
                 )
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
                 ON CONFLICT(task_type)
                 DO UPDATE SET
                   primary_provider = excluded.primary_provider,
@@ -881,8 +828,8 @@ def save_model_routing_rules(payload: AiModelRoutingUpdate) -> AiSettingsOut:
                 (
                     task_type,
                     primary,
-                    json.dumps(fallbacks[:2]),
-                    int(local_fallback_enabled),
+                    jsonb(fallbacks[:2]),
+                    local_fallback_enabled,
                 ),
             )
     return get_public_ai_settings()
@@ -894,16 +841,16 @@ def delete_provider_api_key(provider: AiProvider | str) -> AiSettingsOut:
     get_secret_store().delete(provider_secret_key(str(provider)))
     with get_conn() as conn:
         if provider == "local":
-            conn.execute("DELETE FROM ai_provider_configs WHERE provider = ?", (provider,))
+            conn.execute("DELETE FROM ai_provider_configs WHERE provider = %s", (provider,))
         elif provider in KEYED_PROVIDERS:
             existing = _config_for_provider(conn, provider)
             if existing:
                 conn.execute(
                     """
                     UPDATE ai_provider_configs
-                    SET api_key_encrypted = '', api_key_source = '', key_status = 'unchecked',
-                        key_error_type = '', last_validated_at = '', updated_at = CURRENT_TIMESTAMP
-                    WHERE provider = ?
+                    SET api_key_source = '', key_status = 'unchecked',
+                        key_error_type = '', last_validated_at = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE provider = %s
                     """,
                     (provider,),
                 )
@@ -911,20 +858,20 @@ def delete_provider_api_key(provider: AiProvider | str) -> AiSettingsOut:
                 conn.execute(
                     """
                     INSERT INTO ai_provider_configs(
-                      provider, base_url, model, api_key_encrypted, api_key_source, updated_at
+                      provider, base_url, model, api_key_source, updated_at
                     )
-                    VALUES (?, ?, ?, '', '', CURRENT_TIMESTAMP)
+                    VALUES (%s, %s, %s, '', CURRENT_TIMESTAMP)
                     """,
                     (provider, _default_base_url(provider), _default_model(provider)),
                 )
-        settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = ?", (SETTINGS_ID,)).fetchone()
+        settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = %s", (SETTINGS_ID,)).fetchone()
         if settings_row and settings_row["provider"] == provider:
             if provider == "local":
                 conn.execute(
                     """
                     UPDATE ai_settings
-                    SET base_url = '', model = '', api_key_encrypted = '', api_key_source = '', updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
+                    SET base_url = '', model = '', api_key_source = '', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
                     """,
                     (SETTINGS_ID,),
                 )
@@ -932,38 +879,9 @@ def delete_provider_api_key(provider: AiProvider | str) -> AiSettingsOut:
                 conn.execute(
                     """
                     UPDATE ai_settings
-                    SET api_key_encrypted = '', api_key_source = '', updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
+                    SET api_key_source = '', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
                     """,
                     (SETTINGS_ID,),
                 )
     return get_public_ai_settings()
-
-
-def _migrate_plaintext_secrets(conn) -> None:
-    rows = conn.execute(
-        """SELECT provider, api_key_encrypted FROM ai_provider_configs
-           WHERE api_key_source = 'user' AND api_key_encrypted <> ''"""
-    ).fetchall()
-    settings = conn.execute(
-        """SELECT provider, api_key_encrypted FROM ai_settings
-           WHERE id = ? AND api_key_source = 'user' AND api_key_encrypted <> ''""",
-        (SETTINGS_ID,),
-    ).fetchone()
-    values = {row["provider"]: row["api_key_encrypted"] for row in rows}
-    if settings:
-        values.setdefault(settings["provider"], settings["api_key_encrypted"])
-    if not values:
-        return
-    store = get_secret_store()
-    for provider, secret in values.items():
-        store.set(provider_secret_key(provider), secret)
-    conn.execute(
-        """UPDATE ai_provider_configs SET api_key_encrypted = '', api_key_source = 'secret_store'
-           WHERE api_key_source = 'user' AND api_key_encrypted <> ''"""
-    )
-    conn.execute(
-        """UPDATE ai_settings SET api_key_encrypted = '', api_key_source = 'secret_store'
-           WHERE id = ? AND api_key_source = 'user' AND api_key_encrypted <> ''""",
-        (SETTINGS_ID,),
-    )

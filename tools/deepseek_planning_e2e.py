@@ -56,7 +56,7 @@ SCENARIOS = (
     Scenario(
         "software",
         "In six weeks I want to complete a personal expense-tracking Web application with add, edit, delete, category totals, and monthly summary. I know Python and React and can invest ten hours per week. It must run reliably locally and include a complete README.",
-        persona={"project": "Use FastAPI, React, and SQLite; local single-user operation is sufficient."},
+        persona={"project": "Use FastAPI, React, and PostgreSQL; local single-user operation is sufficient."},
     ),
     Scenario(
         "exam",
@@ -66,7 +66,7 @@ SCENARIOS = (
     Scenario(
         "zero_budget",
         "In one month I want to learn FastAPI. My budget is exactly 0 CNY, I can use only free resources, and I have 45 minutes daily. The final deliverable is a working CRUD API. I know basic Python.",
-        persona={"project": "The CRUD API manages a local task list with create, read, update, and delete endpoints using SQLite."},
+        persona={"project": "The CRUD API manages a local task list with create, read, update, and delete endpoints using PostgreSQL."},
     ),
     Scenario(
         "multi_turn",
@@ -85,7 +85,7 @@ SCENARIOS = (
     Scenario(
         "plan_revision",
         "In eight weeks I want to improve Python engineering skills, investing eight hours per week, and deliver one complete demonstrable project. I already know Python basics.",
-        persona={"project": "Build a tested FastAPI service with SQLite, authentication, and a clear README."},
+        persona={"project": "Build a tested FastAPI service with PostgreSQL, authentication, and a clear README."},
         final_revision="Split the second task into two tasks, but do not change any other task or the eight-week duration.",
     ),
     Scenario(

@@ -5,7 +5,7 @@ import re
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from ...db import get_conn
+from ...db import get_conn, jsonb
 from ..contracts import UserModelMemory, UserModelMemoryDraft
 
 
@@ -18,7 +18,9 @@ def _key(category: str, statement: str) -> str:
     return f"{category}:{normalized}"[:700]
 
 
-def _list(value: str) -> list[str]:
+def _list(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
     try:
         parsed = json.loads(value or "[]")
     except (TypeError, json.JSONDecodeError):
@@ -47,7 +49,7 @@ class UserModelMemoryRepository:
         statement_key = _key(draft.category, draft.statement)
         with get_conn() as conn:
             row = conn.execute(
-                "SELECT * FROM user_model_memories WHERE statement_key = ?",
+                "SELECT * FROM user_model_memories WHERE statement_key = %s",
                 (statement_key,),
             ).fetchone()
             if row:
@@ -66,15 +68,15 @@ class UserModelMemoryRepository:
                 conn.execute(
                     """
                     UPDATE user_model_memories
-                    SET domain_scope_json = ?, evidence_json = ?, contradiction_json = ?,
-                        observation_count = ?, confidence = ?, status = ?,
-                        last_validated_at = ?, expires_at = ?
-                    WHERE id = ?
+                    SET domain_scope_json = %s, evidence_json = %s, contradiction_json = %s,
+                        observation_count = %s, confidence = %s, status = %s,
+                        last_validated_at = %s, expires_at = %s
+                    WHERE id = %s
                     """,
                     (
-                        json.dumps(domains, ensure_ascii=False),
-                        json.dumps(evidence, ensure_ascii=False),
-                        json.dumps(contradictions, ensure_ascii=False),
+                        jsonb(domains),
+                        jsonb(evidence),
+                        jsonb(contradictions),
                         count,
                         confidence,
                         status,
@@ -93,24 +95,24 @@ class UserModelMemoryRepository:
                       id, category, statement, statement_key, domain_scope_json,
                       evidence_json, contradiction_json, observation_count, confidence,
                       status, source, first_observed_at, last_validated_at, expires_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'ai_inference', ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s, %s, 'ai_inference', %s, %s, %s)
                     """,
                     (
                         memory_id,
                         draft.category,
                         draft.statement,
                         statement_key,
-                        json.dumps(draft.domain_scope, ensure_ascii=False),
-                        json.dumps([draft.evidence] if positive and draft.evidence else [], ensure_ascii=False),
-                        json.dumps([draft.evidence] if not positive and draft.evidence else [], ensure_ascii=False),
+                        jsonb(draft.domain_scope),
+                        jsonb([draft.evidence] if positive and draft.evidence else []),
+                        jsonb([draft.evidence] if not positive and draft.evidence else []),
                         draft.confidence,
                         "tentative" if positive else "conflicted",
                         now,
                         now,
-                        draft.expires_at or "",
+                        draft.expires_at or None,
                     ),
                 )
-            current = conn.execute("SELECT * FROM user_model_memories WHERE id = ?", (memory_id,)).fetchone()
+            current = conn.execute("SELECT * FROM user_model_memories WHERE id = %s", (memory_id,)).fetchone()
         return self._from_row(current)
 
     def relevant(self, domain: str = "", *, limit: int = 20) -> list[UserModelMemory]:
@@ -120,7 +122,7 @@ class UserModelMemoryRepository:
                 SELECT * FROM user_model_memories
                 WHERE status IN ('tentative', 'confirmed')
                 ORDER BY confidence DESC, last_validated_at DESC
-                LIMIT ?
+                LIMIT %s
                 """,
                 (max(1, min(limit * 3, 100)),),
             ).fetchall()
@@ -132,7 +134,7 @@ class UserModelMemoryRepository:
                 try:
                     if datetime.fromisoformat(item.expires_at.replace("Z", "+00:00")) <= now:
                         with get_conn() as conn:
-                            conn.execute("UPDATE user_model_memories SET status = 'expired' WHERE id = ?", (item.id,))
+                            conn.execute("UPDATE user_model_memories SET status = 'expired' WHERE id = %s", (item.id,))
                         continue
                 except ValueError:
                     pass

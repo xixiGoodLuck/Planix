@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
@@ -7,7 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .db import get_db_path
+from .db import close_db_pool, open_db_pool
 from .routers import command, context_settings, health, month_notes, planning, plans, settings
 
 APP_VERSION = "1.1.4"
@@ -52,8 +53,18 @@ def _redact_request_validation_errors(errors: list[dict[str, Any]]) -> list[dict
     return redacted
 
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    open_db_pool()
+    logger.info("Planix PostgreSQL connection pool is ready")
+    try:
+        yield
+    finally:
+        close_db_pool()
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Planix API", version=APP_VERSION)
+    app = FastAPI(title="Planix API", version=APP_VERSION, lifespan=lifespan)
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_error_handler(_request, exc: RequestValidationError) -> JSONResponse:
@@ -92,7 +103,7 @@ def create_app() -> FastAPI:
     app.include_router(settings.router)
     app.include_router(context_settings.router)
 
-    logger.info("Planix API started version=%s db_path=%s", APP_VERSION, get_db_path())
+    logger.info("Planix API configured version=%s database=postgresql", APP_VERSION)
     return app
 
 

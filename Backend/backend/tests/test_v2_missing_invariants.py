@@ -24,7 +24,7 @@ from app.cognitive_planning.planning import (
     UnderstandingReadiness,
     UnderstandingSnapshot,
 )
-from app.db import get_conn, get_db_path
+from app.db import get_conn
 from app.cognitive_planning.persistence import PlanningPersistence, json_object
 from app.cognitive_planning.artifact_audit import PlanningArtifactAuditStore
 from app.cognitive_planning.runtime import CognitiveOSRuntime
@@ -357,10 +357,14 @@ def test_non_requirement_does_not_create_impossible_task_coverage_rule():
 
 def test_database_enforces_artifact_version_and_nonempty_source_key_uniqueness(client):
     with get_conn() as conn:
-        artifact_indexes = conn.execute("PRAGMA index_list(planning_artifacts)").fetchall()
-        plan_indexes = conn.execute("PRAGMA index_list(plans)").fetchall()
-    assert any(row["unique"] and "version" in row["name"] for row in artifact_indexes)
-    assert any(row["unique"] and "source_key" in row["name"] for row in plan_indexes)
+        indexes = {
+            row["indexname"]: row["indexdef"]
+            for row in conn.execute(
+                "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename IN ('planning_artifacts', 'plans')"
+            )
+        }
+    assert "uq_planning_artifact_version" in indexes
+    assert "ux_plans_source_key" in indexes
 
 
 def test_planning_session_uses_backend_calendar_revision_instead_of_forged_context(client):
@@ -420,7 +424,6 @@ def test_api_key_is_not_stored_in_plaintext(client, monkeypatch):
         for table in tables:
             rows = conn.execute(f"SELECT * FROM {table}").fetchall()
             assert secret not in repr([dict(row) for row in rows])
-    assert secret.encode() not in get_db_path().read_bytes()
     assert get_secret_store().get(provider_secret_key("deepseek")) == secret
     public = client.get("/api/ai/settings")
     assert public.status_code == 200
@@ -448,13 +451,13 @@ def test_deleting_command_thread_cascades_its_planning_runtime_data(client):
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO planning_artifacts(id, session_id, owner_agent, artifact_type, version)
-               VALUES ('artifact-delete', ?, 'Understanding Agent', 'understanding_snapshot', 1)""",
+               VALUES ('artifact-delete', %s, 'Understanding Agent', 'understanding_snapshot', 1)""",
             (session_id,),
         )
-        conn.execute("INSERT INTO harness_states(session_id) VALUES (?)", (session_id,))
+        conn.execute("INSERT INTO harness_states(session_id) VALUES (%s)", (session_id,))
         conn.execute(
             """INSERT INTO harness_events(id, session_id, sequence, checkpoint_version, event_type)
-               VALUES ('event-delete', ?, 1, 1, 'created')""",
+               VALUES ('event-delete', %s, 1, 1, 'created')""",
             (session_id,),
         )
     CommandAgentService().delete_thread("thread-delete")
@@ -471,7 +474,7 @@ def test_deleting_command_thread_cascades_its_planning_runtime_data(client):
             "harness_events": ("session_id", session_id),
         }
         for table, (column, value) in checks.items():
-            assert conn.execute(f"SELECT 1 FROM {table} WHERE {column} = ?", (value,)).fetchone() is None
+            assert conn.execute(f"SELECT 1 FROM {table} WHERE {column} = %s", (value,)).fetchone() is None
 
 
 def test_artifact_versions_are_unique_under_concurrent_writers(client):

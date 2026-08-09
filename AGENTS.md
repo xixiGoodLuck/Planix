@@ -45,7 +45,7 @@ Canonical Artifacts are `UnderstandingSnapshot`, `UnderstandingPatch`, `Constrai
 
 ## Required boundaries
 
-- LangGraph coordinates nodes; typed contracts, SQLite Artifacts, Harness policy, and deterministic validators own product decisions.
+- LangGraph coordinates nodes; typed contracts, PostgreSQL Artifacts, Harness policy, and deterministic validators own product decisions.
 - Planning models use only `planning_understanding`, `planning_plan`, `planning_review`, and `planning_learning` routes.
 - A formal model failure preserves valid Artifacts, sets `status="MODEL_UNAVAILABLE"` and `runtimeStatus="blocked_model"`, and resumes only the failed native node. Never use a template, mock plan, alternate graph, or legacy runtime as fallback.
 - A new formal Session stores lifecycle fields in `planning_sessions`; all planning bodies live only in `planning_artifacts`.

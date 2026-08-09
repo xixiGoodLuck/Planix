@@ -31,9 +31,6 @@ __pycache__/
 .pytest-*/
 *.pyc
 data/
-.tmp-deepseek-*.db
-.tmp-deepseek-*.db-*
-.tmp-deepseek-*.db.init.lock
 
 # Desktop / packaging
 build/

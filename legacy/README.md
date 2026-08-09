@@ -12,4 +12,4 @@ Legacy storage keys observed during migration:
 - `planix_preferences`: AI preference text
 - `note_{year}_{month}`: monthly notes
 
-The old implementation files were already removed before Phase 1 started. Future migration work should preserve compatibility by importing these localStorage keys into the new SQLite data model rather than silently dropping user data.
+The old implementation files were already removed before Phase 1 started. This directory is historical only and is not imported into the current PostgreSQL schema.

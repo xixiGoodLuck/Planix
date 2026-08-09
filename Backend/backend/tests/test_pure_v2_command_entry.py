@@ -95,7 +95,7 @@ def _run_fresh_goal(client, monkeypatch, *, message: str, ready: bool):
     assert model.calls == ["understanding"]
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT thread_id, user_input FROM planning_sessions WHERE id = ?",
+            "SELECT thread_id, user_input FROM planning_sessions WHERE id = %s",
             (started["sessionId"],),
         ).fetchone()
     assert row is not None

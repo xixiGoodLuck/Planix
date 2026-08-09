@@ -71,7 +71,14 @@ fn proxy_api(req: ProxyRequest) -> Result<ProxyResponse, String> {
             }
             builder
         }
-        "DELETE" => client.delete(&url),
+        "DELETE" => {
+            let mut builder = client.delete(&url);
+            if !req.body.is_empty() {
+                builder = builder.header("Content-Type", "application/json");
+                builder = builder.body(req.body);
+            }
+            builder
+        }
         other => return Err(format!("unsupported method: {other}")),
     };
 
@@ -543,6 +550,15 @@ fn main() {
 
             let port = api_port();
             write_log(&log_path, format!("PLANIX_API_PORT={port}"));
+            let database_url = match std::env::var("DATABASE_URL") {
+                Ok(value) if value.starts_with("postgresql://") => value,
+                _ => {
+                    let message = "Planix requires DATABASE_URL with a postgresql:// connection string.";
+                    write_log(&log_path, message);
+                    show_error("Planix", message);
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, message).into());
+                }
+            };
 
             let already_running = match get_api_health(&port) {
                 Ok(info) => {
@@ -633,10 +649,16 @@ fn main() {
 
             let mut sidecar = Command::new(&sidecar_path);
             sidecar
-                .env("PLANIX_ENV", "desktop")
                 .env("PLANIX_API_PORT", port.clone())
+                .env("DATABASE_URL", database_url)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+
+            for pool_name in ["PLANIX_DB_POOL_MIN", "PLANIX_DB_POOL_MAX", "PLANIX_DB_POOL_TIMEOUT"] {
+                if let Ok(value) = std::env::var(pool_name) {
+                    sidecar.env(pool_name, value);
+                }
+            }
 
             for key_name in [
                 "AI_API_KEY",

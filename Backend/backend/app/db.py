@@ -1,659 +1,185 @@
 import os
-import sqlite3
 import threading
-import time
 from contextlib import contextmanager
-from pathlib import Path
-from typing import Iterator
-from uuid import uuid4
+from datetime import date, datetime, time
+from typing import Any, Iterator
+from urllib.parse import urlsplit
 
-from .desktop_paths import resolve_database_path
-
-
-_BUSY_TIMEOUT_MS = 5_000
-_DATABASE_INIT_LOCK = threading.RLock()
-_initialized_databases: dict[str, tuple[int, int, int, str]] = {}
+from psycopg import Connection
+from psycopg.rows import RowFactory
+from psycopg.types.json import Jsonb
+from psycopg_pool import ConnectionPool
 
 
-def get_db_path() -> Path:
-    return resolve_database_path()
+ALEMBIC_REVISION = "20260809_01"
+REQUIRED_TABLES = {
+    "plans",
+    "month_notes",
+    "planning_sessions",
+    "planning_artifacts",
+    "agent_decisions",
+    "agent_messages",
+    "harness_states",
+    "harness_events",
+    "ai_settings",
+    "ai_provider_configs",
+    "ai_model_routing_rules",
+    "calendar_state",
+    "user_preferences",
+    "user_planning_hypotheses",
+    "user_model_memories",
+    "ai_runs",
+    "command_threads",
+    "command_messages",
+    "command_drafts",
+    "command_actions",
+    "command_approvals",
+}
 
 
-def get_conn() -> sqlite3.Connection:
-    db_path = get_db_path()
-    if str(db_path) == ":memory:":
-        conn = sqlite3.connect(":memory:", timeout=_BUSY_TIMEOUT_MS / 1_000)
-        _configure_connection(conn)
-        init_db(conn)
-        conn.commit()
-        return conn
+class DatabaseConfigurationError(RuntimeError):
+    pass
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=_BUSY_TIMEOUT_MS / 1_000)
+
+class DatabaseUnavailableError(RuntimeError):
+    pass
+
+
+class DatabaseSchemaError(RuntimeError):
+    pass
+
+
+_pool: ConnectionPool | None = None
+_pool_lock = threading.RLock()
+
+
+def get_database_url() -> str:
+    value = os.getenv("DATABASE_URL", "").strip()
+    if not value:
+        raise DatabaseConfigurationError("DATABASE_URL is required; Planix requires PostgreSQL configuration.")
+    if value.startswith("postgresql+psycopg://"):
+        value = "postgresql://" + value.removeprefix("postgresql+psycopg://")
+    if urlsplit(value).scheme != "postgresql":
+        raise DatabaseConfigurationError("DATABASE_URL must use the postgresql:// scheme.")
+    return value
+
+
+def _pool_setting(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = os.getenv(name, str(default)).strip()
     try:
-        _configure_connection(conn)
-        initialized = _ensure_file_database_initialized(conn, db_path)
-        if not initialized:
-            _sync_legacy_provider_config(conn)
-    except Exception:
-        conn.close()
-        raise
-    return conn
+        value = int(raw)
+    except ValueError as exc:
+        raise DatabaseConfigurationError(f"{name} must be an integer.") from exc
+    if value < minimum:
+        raise DatabaseConfigurationError(f"{name} must be at least {minimum}.")
+    return value
 
 
-def _configure_connection(conn: sqlite3.Connection) -> None:
-    conn.row_factory = sqlite3.Row
-    conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
-    conn.execute("PRAGMA foreign_keys = ON")
+def _serialize_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, time):
+        return value.isoformat(timespec="minutes")
+    return value
 
 
-def _ensure_file_database_initialized(conn: sqlite3.Connection, db_path: Path) -> bool:
-    canonical_path = db_path.expanduser().resolve(strict=False)
-    cache_key = os.path.normcase(str(canonical_path))
+def planix_dict_row(cursor) -> RowFactory:
+    if cursor.description is None:
+        return lambda values: values
+    names = [column.name for column in cursor.description]
 
-    # Schema setup contains DDL and data migrations. Serializing it per process and
-    # caching the resulting database identity keeps ordinary connections off that
-    # write-heavy path while still detecting a deleted, replaced, or externally
-    # migrated test database at the same filesystem location.
-    with _DATABASE_INIT_LOCK:
-        with _database_init_file_lock(canonical_path):
-            # Re-read schema/journal state only after the cross-process lock is
-            # held. A Uvicorn reload can briefly overlap its old and new worker;
-            # the second process must observe migrations committed by the first
-            # before deciding whether to execute idempotent schema setup.
-            current_state = _database_state(conn, canonical_path)
-            if _initialized_databases.get(cache_key) == current_state:
-                return False
+    def make_row(values):
+        return {name: _serialize_value(value) for name, value in zip(names, values, strict=True)}
 
-            journal_mode = str(conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]).lower()
-            if journal_mode != "wal":
-                raise sqlite3.OperationalError(
-                    f"could not enable WAL journal mode for SQLite database: {canonical_path}"
-                )
-            init_db(conn)
-            conn.commit()
-            _initialized_databases[cache_key] = _database_state(conn, canonical_path)
-            return True
+    return make_row
+
+
+def jsonb(value: Any) -> Jsonb:
+    return Jsonb(value)
+
+
+def open_db_pool() -> ConnectionPool:
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            return _pool
+        min_size = _pool_setting("PLANIX_DB_POOL_MIN", 1)
+        max_size = _pool_setting("PLANIX_DB_POOL_MAX", 5)
+        timeout = _pool_setting("PLANIX_DB_POOL_TIMEOUT", 10)
+        if max_size < min_size:
+            raise DatabaseConfigurationError("PLANIX_DB_POOL_MAX must be greater than or equal to PLANIX_DB_POOL_MIN.")
+        pool = ConnectionPool(
+            conninfo=get_database_url(),
+            min_size=min_size,
+            max_size=max_size,
+            timeout=timeout,
+            kwargs={"row_factory": planix_dict_row},
+            open=False,
+            name="planix",
+        )
+        try:
+            pool.open(wait=True, timeout=timeout)
+        except Exception as exc:
+            pool.close()
+            raise DatabaseUnavailableError("PostgreSQL unavailable.") from exc
+        _pool = pool
+        try:
+            verify_schema()
+        except Exception:
+            close_db_pool()
+            raise
+        return pool
+
+
+def close_db_pool() -> None:
+    global _pool
+    with _pool_lock:
+        pool, _pool = _pool, None
+        if pool is not None:
+            pool.close()
+
+
+def get_db_pool() -> ConnectionPool:
+    if _pool is None:
+        raise DatabaseUnavailableError("PostgreSQL connection pool is not open.")
+    return _pool
 
 
 @contextmanager
-def _database_init_file_lock(db_path: Path) -> Iterator[None]:
-    """Serialize schema initialization across reload workers and processes."""
-
-    lock_path = Path(f"{db_path}.init.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + (_BUSY_TIMEOUT_MS / 1_000)
-    with lock_path.open("a+b") as handle:
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write(b"\0")
-            handle.flush()
-
-        acquired = False
-        while not acquired:
-            try:
-                handle.seek(0)
-                if os.name == "nt":
-                    import msvcrt
-
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
-            except OSError as exc:
-                if time.monotonic() >= deadline:
-                    raise sqlite3.OperationalError(
-                        f"timed out waiting for SQLite schema initialization: {db_path}"
-                    ) from exc
-                time.sleep(0.05)
-
-        try:
-            yield
-        finally:
-            handle.seek(0)
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+def get_conn() -> Iterator[Connection]:
+    pool = get_db_pool()
+    with pool.connection() as conn:
+        with conn.transaction():
+            yield conn
 
 
-def _database_state(conn: sqlite3.Connection, db_path: Path) -> tuple[int, int, int, str]:
-    stat = db_path.stat()
-    schema_version = int(conn.execute("PRAGMA schema_version").fetchone()[0])
-    journal_mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
-    return (stat.st_dev, stat.st_ino, schema_version, journal_mode)
+def database_health() -> dict[str, object]:
+    try:
+        with get_conn() as conn:
+            conn.execute("SELECT 1").fetchone()
+        return {"available": True, "database": "postgresql"}
+    except Exception:
+        return {"available": False, "database": "postgresql"}
 
 
-def _sync_legacy_provider_config(conn: sqlite3.Connection) -> None:
-    # Older builds wrote a user-supplied key only to ai_settings. Keep that narrow
-    # compatibility path live without rerunning the schema and all data migrations
-    # for every connection. The common path is read-only; a write occurs once only
-    # when a newly written legacy row still lacks its provider config.
-    legacy = conn.execute(
-        """
-        SELECT provider, base_url, model, api_key_encrypted, api_key_source, updated_at
-        FROM ai_settings
-        WHERE id = 'local-default'
-          AND provider != 'mock'
-          AND api_key_source = 'user'
-          AND api_key_encrypted != ''
-          AND NOT EXISTS (
-            SELECT 1
-            FROM ai_provider_configs
-            WHERE ai_provider_configs.provider = ai_settings.provider
-          )
-        """
-    ).fetchone()
-    if legacy is None:
-        return
-
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO ai_provider_configs(
-          provider, base_url, model, api_key_encrypted, api_key_source, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        tuple(legacy),
-    )
-    conn.commit()
+def verify_schema() -> None:
+    pool = get_db_pool()
+    try:
+        with pool.connection() as conn:
+            revision_row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+            table_rows = conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+            ).fetchall()
+    except Exception as exc:
+        raise DatabaseSchemaError("PostgreSQL schema is missing; run Alembic upgrade head.") from exc
+    revision = revision_row["version_num"] if revision_row else ""
+    tables = {row["table_name"] for row in table_rows}
+    missing = REQUIRED_TABLES - tables
+    if revision != ALEMBIC_REVISION or missing:
+        raise DatabaseSchemaError("PostgreSQL schema is outdated; run Alembic upgrade head.")
 
 
-def init_db(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS plans (
-          id TEXT PRIMARY KEY,
-          date TEXT NOT NULL,
-          time TEXT NOT NULL DEFAULT '09:00',
-          content TEXT NOT NULL,
-          done INTEGER NOT NULL DEFAULT 0,
-          result TEXT NOT NULL DEFAULT '',
-          priority TEXT NOT NULL DEFAULT 'medium',
-          estimated_minutes INTEGER NOT NULL DEFAULT 30,
-          source TEXT NOT NULL DEFAULT 'manual',
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_plans_date_time
-          ON plans(date, time);
-
-        CREATE TABLE IF NOT EXISTS month_notes (
-          year INTEGER NOT NULL,
-          month INTEGER NOT NULL,
-          content TEXT NOT NULL DEFAULT '',
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          PRIMARY KEY(year, month)
-        );
-
-        CREATE TABLE IF NOT EXISTS planning_sessions (
-          id TEXT PRIMARY KEY,
-          thread_id TEXT NOT NULL DEFAULT '',
-          entry_point TEXT NOT NULL DEFAULT 'p_mode',
-          status TEXT NOT NULL,
-          business_status TEXT NOT NULL DEFAULT 'goal_clarification',
-          runtime_status TEXT NOT NULL DEFAULT 'idle',
-          user_input TEXT NOT NULL,
-          cognitive_metadata_json TEXT NOT NULL DEFAULT '{}',
-          conversation_history_json TEXT NOT NULL DEFAULT '[]',
-          request_context_json TEXT NOT NULL DEFAULT '{}',
-          repair_count INTEGER NOT NULL DEFAULT 0,
-          schedule_repair_count INTEGER NOT NULL DEFAULT 0,
-          version INTEGER NOT NULL DEFAULT 1,
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_planning_sessions_thread_status
-          ON planning_sessions(thread_id, status, updated_at);
-
-        CREATE TABLE IF NOT EXISTS planning_artifacts (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL,
-          owner_agent TEXT NOT NULL,
-          artifact_type TEXT NOT NULL,
-          version INTEGER NOT NULL DEFAULT 1,
-          status TEXT NOT NULL DEFAULT 'draft',
-          content_json TEXT NOT NULL DEFAULT '{}',
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY(session_id) REFERENCES planning_sessions(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_planning_artifacts_session_type
-          ON planning_artifacts(session_id, artifact_type, version);
-
-        CREATE TABLE IF NOT EXISTS agent_decisions (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL,
-          agent TEXT NOT NULL,
-          decision TEXT NOT NULL,
-          reason TEXT NOT NULL DEFAULT '',
-          confidence REAL NOT NULL DEFAULT 1,
-          input_artifact_ids_json TEXT NOT NULL DEFAULT '[]',
-          output_artifact_ids_json TEXT NOT NULL DEFAULT '[]',
-          user_visible_summary TEXT NOT NULL DEFAULT '',
-          model_usage_json TEXT NOT NULL DEFAULT '{}',
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY(session_id) REFERENCES planning_sessions(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_agent_decisions_session_time
-          ON agent_decisions(session_id, created_at);
-
-        CREATE TABLE IF NOT EXISTS agent_messages (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL,
-          from_agent TEXT NOT NULL,
-          to_agent TEXT NOT NULL,
-          message_type TEXT NOT NULL,
-          reason TEXT NOT NULL DEFAULT '',
-          payload_json TEXT NOT NULL DEFAULT '{}',
-          resolved INTEGER NOT NULL DEFAULT 0,
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY(session_id) REFERENCES planning_sessions(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_agent_messages_session_time
-          ON agent_messages(session_id, created_at);
-
-        CREATE TABLE IF NOT EXISTS harness_states (
-          session_id TEXT PRIMARY KEY,
-          lifecycle TEXT NOT NULL DEFAULT 'active',
-          current_stage TEXT NOT NULL DEFAULT 'session_guard',
-          completed_agents_json TEXT NOT NULL DEFAULT '[]',
-          pending_agent TEXT NOT NULL DEFAULT '',
-          artifact_versions_json TEXT NOT NULL DEFAULT '{}',
-          waiting_state TEXT NOT NULL DEFAULT 'none',
-          errors_json TEXT NOT NULL DEFAULT '[]',
-          recovery_actions_json TEXT NOT NULL DEFAULT '[]',
-          approvals_json TEXT NOT NULL DEFAULT '[]',
-          repair_target TEXT NOT NULL DEFAULT '',
-          checkpoint_version INTEGER NOT NULL DEFAULT 1,
-          checkpoint_json TEXT NOT NULL DEFAULT '{}',
-          last_decision_json TEXT NOT NULL DEFAULT '{}',
-          last_policy_decision_json TEXT NOT NULL DEFAULT '{}',
-          last_event_sequence INTEGER NOT NULL DEFAULT 0,
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY(session_id) REFERENCES planning_sessions(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS harness_events (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL,
-          sequence INTEGER NOT NULL,
-          checkpoint_version INTEGER NOT NULL,
-          event_type TEXT NOT NULL,
-          agent_id TEXT NOT NULL DEFAULT '',
-          decision TEXT NOT NULL DEFAULT '',
-          payload_json TEXT NOT NULL DEFAULT '{}',
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY(session_id) REFERENCES planning_sessions(id) ON DELETE CASCADE,
-          UNIQUE(session_id, sequence)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_harness_events_session_sequence
-          ON harness_events(session_id, sequence);
-
-        CREATE INDEX IF NOT EXISTS idx_harness_events_session_checkpoint
-          ON harness_events(session_id, checkpoint_version);
-
-        CREATE TABLE IF NOT EXISTS ai_settings (
-          id TEXT PRIMARY KEY,
-          provider TEXT NOT NULL DEFAULT 'deepseek',
-          base_url TEXT NOT NULL DEFAULT 'https://api.deepseek.com',
-          model TEXT NOT NULL DEFAULT 'deepseek-v4-flash',
-          api_key_encrypted TEXT NOT NULL DEFAULT '',
-          api_key_source TEXT NOT NULL DEFAULT '',
-          temperature REAL NOT NULL DEFAULT 0.3,
-          timeout_seconds INTEGER NOT NULL DEFAULT 40,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS ai_provider_configs (
-          provider TEXT PRIMARY KEY,
-          base_url TEXT NOT NULL DEFAULT '',
-          model TEXT NOT NULL DEFAULT '',
-          api_key_encrypted TEXT NOT NULL DEFAULT '',
-          api_key_source TEXT NOT NULL DEFAULT '',
-          key_status TEXT NOT NULL DEFAULT 'unchecked',
-          key_error_type TEXT NOT NULL DEFAULT '',
-          last_validated_at TEXT NOT NULL DEFAULT '',
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS ai_model_routing_rules (
-          task_type TEXT PRIMARY KEY,
-          primary_provider TEXT NOT NULL,
-          fallback_providers_json TEXT NOT NULL DEFAULT '[]',
-          local_fallback_enabled INTEGER NOT NULL DEFAULT 1,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS calendar_state (
-          id TEXT PRIMARY KEY,
-          revision INTEGER NOT NULL DEFAULT 0,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-
-        INSERT OR IGNORE INTO calendar_state(id, revision) VALUES ('local', 0);
-
-        CREATE TABLE IF NOT EXISTS user_preferences (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS user_planning_hypotheses (
-          id TEXT PRIMARY KEY,
-          statement TEXT NOT NULL,
-          statement_key TEXT NOT NULL UNIQUE,
-          domain_scope_json TEXT NOT NULL DEFAULT '[]',
-          evidence_count INTEGER NOT NULL DEFAULT 1,
-          positive_evidence_json TEXT NOT NULL DEFAULT '[]',
-          negative_evidence_json TEXT NOT NULL DEFAULT '[]',
-          confidence REAL NOT NULL DEFAULT 0.5,
-          status TEXT NOT NULL DEFAULT 'tentative',
-          first_observed_at TEXT NOT NULL,
-          last_validated_at TEXT NOT NULL,
-          expires_at TEXT NOT NULL DEFAULT ''
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_user_planning_hypotheses_status
-          ON user_planning_hypotheses(status, last_validated_at);
-
-        CREATE TABLE IF NOT EXISTS user_model_memories (
-          id TEXT PRIMARY KEY,
-          category TEXT NOT NULL,
-          statement TEXT NOT NULL,
-          statement_key TEXT NOT NULL UNIQUE,
-          domain_scope_json TEXT NOT NULL DEFAULT '[]',
-          evidence_json TEXT NOT NULL DEFAULT '[]',
-          contradiction_json TEXT NOT NULL DEFAULT '[]',
-          observation_count INTEGER NOT NULL DEFAULT 1,
-          confidence REAL NOT NULL DEFAULT 0.5,
-          status TEXT NOT NULL DEFAULT 'tentative',
-          source TEXT NOT NULL DEFAULT 'ai_inference',
-          first_observed_at TEXT NOT NULL,
-          last_validated_at TEXT NOT NULL,
-          expires_at TEXT NOT NULL DEFAULT ''
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_user_model_memories_category_status
-          ON user_model_memories(category, status, last_validated_at);
-
-        CREATE TABLE IF NOT EXISTS ai_runs (
-          id TEXT PRIMARY KEY,
-          feature TEXT NOT NULL,
-          provider TEXT NOT NULL DEFAULT 'mock',
-          model TEXT NOT NULL DEFAULT 'local-rule',
-          input_summary TEXT NOT NULL DEFAULT '',
-          output_summary TEXT NOT NULL DEFAULT '',
-          success INTEGER NOT NULL DEFAULT 1,
-          error TEXT NOT NULL DEFAULT '',
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS command_threads (
-          id TEXT PRIMARY KEY,
-          title TEXT NOT NULL DEFAULT '',
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS command_messages (
-          id TEXT PRIMARY KEY,
-          thread_id TEXT NOT NULL,
-          role TEXT NOT NULL,
-          content TEXT NOT NULL DEFAULT '',
-          kind TEXT NOT NULL DEFAULT 'text',
-          payload_json TEXT NOT NULL DEFAULT '{}',
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY(thread_id) REFERENCES command_threads(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_command_messages_thread_time
-          ON command_messages(thread_id, created_at);
-
-        CREATE TABLE IF NOT EXISTS command_drafts (
-          id TEXT PRIMARY KEY,
-          thread_id TEXT NOT NULL,
-          kind TEXT NOT NULL DEFAULT 'calendar_plan',
-          version INTEGER NOT NULL DEFAULT 1,
-          status TEXT NOT NULL DEFAULT 'current',
-          title TEXT NOT NULL DEFAULT '',
-          summary TEXT NOT NULL DEFAULT '',
-          payload_json TEXT NOT NULL DEFAULT '{}',
-          source_run_id TEXT NOT NULL DEFAULT '',
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY(thread_id) REFERENCES command_threads(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_command_drafts_thread_status
-          ON command_drafts(thread_id, kind, status);
-
-        CREATE TABLE IF NOT EXISTS command_actions (
-          id TEXT PRIMARY KEY,
-          thread_id TEXT NOT NULL,
-          draft_id TEXT NOT NULL DEFAULT '',
-          target TEXT NOT NULL,
-          operation TEXT NOT NULL,
-          risk TEXT NOT NULL,
-          status TEXT NOT NULL,
-          reason TEXT NOT NULL DEFAULT '',
-          payload_json TEXT NOT NULL DEFAULT '{}',
-          result_json TEXT NOT NULL DEFAULT '{}',
-          error_message TEXT NOT NULL DEFAULT '',
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY(thread_id) REFERENCES command_threads(id) ON DELETE CASCADE,
-          FOREIGN KEY(draft_id) REFERENCES command_drafts(id) ON DELETE SET DEFAULT
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_command_actions_thread_status
-          ON command_actions(thread_id, status, created_at);
-
-        CREATE TABLE IF NOT EXISTS command_approvals (
-          id TEXT PRIMARY KEY,
-          thread_id TEXT NOT NULL,
-          action_id TEXT NOT NULL,
-          permission TEXT NOT NULL,
-          decision TEXT NOT NULL,
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY(thread_id) REFERENCES command_threads(id) ON DELETE CASCADE,
-          FOREIGN KEY(action_id) REFERENCES command_actions(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_command_approvals_action
-          ON command_approvals(action_id, created_at);
-
-        """
-    )
-    ensure_column(conn, "command_messages", "kind", "TEXT NOT NULL DEFAULT 'text'")
-    ensure_column(conn, "command_messages", "payload_json", "TEXT NOT NULL DEFAULT '{}'")
-    ensure_column(conn, "command_drafts", "source_run_id", "TEXT NOT NULL DEFAULT ''")
-    ensure_column(conn, "command_actions", "draft_id", "TEXT NOT NULL DEFAULT ''")
-    ensure_column(conn, "command_actions", "error_message", "TEXT NOT NULL DEFAULT ''")
-    ensure_column(conn, "command_approvals", "decision", "TEXT NOT NULL DEFAULT 'pending'")
-    ensure_column(conn, "planning_sessions", "cognitive_metadata_json", "TEXT NOT NULL DEFAULT '{}'")
-    business_status_added = ensure_column(
-        conn,
-        "planning_sessions",
-        "business_status",
-        "TEXT NOT NULL DEFAULT 'goal_clarification'",
-    )
-    runtime_status_added = ensure_column(
-        conn,
-        "planning_sessions",
-        "runtime_status",
-        "TEXT NOT NULL DEFAULT 'idle'",
-    )
-    ensure_column(conn, "planning_sessions", "conversation_history_json", "TEXT NOT NULL DEFAULT '[]'")
-    ensure_column(conn, "planning_sessions", "request_context_json", "TEXT NOT NULL DEFAULT '{}'")
-    ensure_column(conn, "planning_sessions", "repair_count", "INTEGER NOT NULL DEFAULT 0")
-    ensure_column(conn, "harness_states", "approvals_json", "TEXT NOT NULL DEFAULT '[]'")
-    ensure_column(conn, "harness_states", "last_policy_decision_json", "TEXT NOT NULL DEFAULT '{}'")
-    if business_status_added:
-        conn.execute(
-            """
-            UPDATE planning_sessions
-            SET business_status = CASE
-              WHEN status = 'written_to_calendar' THEN 'completed'
-              WHEN status = 'cancelled' THEN 'cancelled'
-              WHEN status = 'waiting_calendar_write_approval' THEN 'calendar_pending'
-              WHEN status IN ('planning', 'final_revision', 'waiting_final_review', 'learning_from_feedback') THEN 'planning'
-              WHEN status = 'ARCHIVED' THEN 'blocked'
-              ELSE 'goal_clarification'
-            END
-            """
-        )
-    else:
-        conn.execute(
-            """
-            UPDATE planning_sessions
-            SET business_status = CASE
-              WHEN status = 'written_to_calendar' THEN 'completed'
-              WHEN status = 'cancelled' THEN 'cancelled'
-              WHEN status = 'waiting_calendar_write_approval' THEN 'calendar_pending'
-              WHEN status IN ('planning', 'final_revision', 'waiting_final_review', 'learning_from_feedback') THEN 'planning'
-              WHEN status = 'ARCHIVED' THEN 'blocked'
-              ELSE 'goal_clarification'
-            END
-            WHERE business_status IS NULL
-               OR TRIM(business_status) = ''
-               OR (
-                 business_status = 'goal_clarification'
-                 AND (
-                   status IN (
-                     'written_to_calendar', 'cancelled', 'waiting_calendar_write_approval',
-                     'planning', 'final_revision', 'waiting_final_review',
-                     'learning_from_feedback', 'ARCHIVED'
-                   )
-                 )
-               )
-            """
-        )
-    if runtime_status_added:
-        conn.execute(
-            """
-            UPDATE planning_sessions
-            SET runtime_status = CASE
-              WHEN status = 'MODEL_UNAVAILABLE' THEN 'blocked_model'
-              ELSE 'idle'
-            END
-            """
-        )
-    else:
-        conn.execute(
-            """
-            UPDATE planning_sessions
-            SET runtime_status = CASE
-              WHEN status = 'MODEL_UNAVAILABLE' THEN 'blocked_model'
-              ELSE 'idle'
-            END
-            WHERE runtime_status IS NULL
-               OR TRIM(runtime_status) = ''
-               OR (runtime_status = 'idle' AND status = 'MODEL_UNAVAILABLE')
-            """
-        )
-    action_columns = {row["name"] for row in conn.execute("PRAGMA table_info(command_actions)").fetchall()}
-    if {"error", "error_message"} <= action_columns:
-        conn.execute(
-            """
-            UPDATE command_actions
-            SET error_message = error
-            WHERE error_message = '' AND error != ''
-            """
-        )
-    ensure_column(conn, "ai_settings", "temperature", "REAL NOT NULL DEFAULT 0.3")
-    ensure_column(conn, "ai_settings", "timeout_seconds", "INTEGER NOT NULL DEFAULT 40")
-    ensure_column(conn, "ai_settings", "api_key_source", "TEXT NOT NULL DEFAULT 'legacy'")
-    ensure_column(conn, "ai_provider_configs", "key_status", "TEXT NOT NULL DEFAULT 'unchecked'")
-    ensure_column(conn, "ai_provider_configs", "key_error_type", "TEXT NOT NULL DEFAULT ''")
-    ensure_column(conn, "ai_provider_configs", "last_validated_at", "TEXT NOT NULL DEFAULT ''")
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO ai_provider_configs(
-          provider, base_url, model, api_key_encrypted, api_key_source, updated_at
-        )
-        SELECT provider, base_url, model, api_key_encrypted, api_key_source, updated_at
-        FROM ai_settings
-        WHERE id = 'local-default'
-          AND provider != 'mock'
-          AND api_key_source = 'user'
-          AND api_key_encrypted != ''
-        """
-    )
-    ensure_column(conn, "plans", "source_key", "TEXT NOT NULL DEFAULT ''")
-    ensure_column(conn, "planning_sessions", "schedule_repair_count", "INTEGER NOT NULL DEFAULT 0")
-    _ensure_unique_planning_versions(conn)
-    _ensure_unique_plan_source_keys(conn)
-
-
-def _ensure_unique_planning_versions(conn: sqlite3.Connection) -> None:
-    groups = conn.execute(
-        """SELECT session_id, artifact_type FROM planning_artifacts
-           GROUP BY session_id, artifact_type HAVING COUNT(*) != COUNT(DISTINCT version)"""
-    ).fetchall()
-    for group in groups:
-        rows = conn.execute(
-            """SELECT id FROM planning_artifacts WHERE session_id = ? AND artifact_type = ?
-               ORDER BY created_at, id""",
-            (group["session_id"], group["artifact_type"]),
-        ).fetchall()
-        for version, row in enumerate(rows, start=1):
-            conn.execute("UPDATE planning_artifacts SET version = ? WHERE id = ?", (version, row["id"]))
-    conn.execute(
-        """CREATE UNIQUE INDEX IF NOT EXISTS uq_planning_artifacts_session_type_version
-           ON planning_artifacts(session_id, artifact_type, version)"""
-    )
-
-
-def _ensure_unique_plan_source_keys(conn: sqlite3.Connection) -> None:
-    duplicates = conn.execute(
-        """SELECT source_key FROM plans WHERE source_key <> ''
-           GROUP BY source_key HAVING COUNT(*) > 1"""
-    ).fetchall()
-    for duplicate in duplicates:
-        rows = conn.execute(
-            "SELECT id FROM plans WHERE source_key = ? ORDER BY created_at, id",
-            (duplicate["source_key"],),
-        ).fetchall()
-        for row in rows[1:]:
-            conn.execute("UPDATE plans SET source_key = '' WHERE id = ?", (row["id"],))
-    conn.execute(
-        """CREATE UNIQUE INDEX IF NOT EXISTS uq_plans_nonempty_source_key
-           ON plans(source_key) WHERE source_key <> ''"""
-    )
-
-
-def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> bool:
-    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-    if column not in columns:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-        return True
-    return False
-
-
-def row_to_dict(row: sqlite3.Row | None) -> dict[str, object] | None:
-    return dict(row) if row else None
-
-
-def save_event(kind: str, payload: str) -> None:
-    with get_conn() as conn:
-        conn.execute(
-            """
-            INSERT INTO ai_runs(id, feature, input_summary, output_summary)
-            VALUES (?, ?, ?, ?)
-            """,
-            (str(uuid4()), kind, payload[:4000], payload[:4000]),
-        )
+def row_to_dict(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    return dict(row) if row is not None else None

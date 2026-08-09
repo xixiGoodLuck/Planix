@@ -1,5 +1,5 @@
 def test_plan_crud(client):
-    created = client.post("/api/plans", json={"date": "2026-06-30", "time": "09:00", "content": "Build SQLite plan API", "priority": "high", "estimatedMinutes": 90})
+    created = client.post("/api/plans", json={"date": "2026-06-30", "time": "09:00", "content": "Build PostgreSQL plan API", "priority": "high", "estimatedMinutes": 90})
     assert created.status_code == 200
     plan = created.json()
     assert client.get("/api/plans", params={"date": "2026-06-30"}).json()[0]["id"] == plan["id"]

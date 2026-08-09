@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 from ..cognitive_planning import get_planning_orchestrator
 from ..cognitive_planning.control_intent import detect_planning_control_intent
-from ..db import get_conn
+from ..db import get_conn, jsonb
 from ..schemas import (
     CommandApproveRequest,
     CommandChatRequest,
@@ -36,7 +36,9 @@ def _ndjson(event: dict[str, Any]) -> str:
     return json.dumps(event, ensure_ascii=False) + "\n"
 
 
-def _json_object(text: str) -> dict[str, Any]:
+def _json_object(text: Any) -> dict[str, Any]:
+    if isinstance(text, dict):
+        return text
     try:
         value = json.loads(text or "{}")
     except json.JSONDecodeError:
@@ -95,15 +97,15 @@ class CommandAgentService:
     def ensure_thread(self, thread_id: str | None = None, title: str = "") -> str:
         if thread_id:
             with get_conn() as conn:
-                row = conn.execute("SELECT id FROM command_threads WHERE id = ?", (thread_id,)).fetchone()
+                row = conn.execute("SELECT id FROM command_threads WHERE id = %s", (thread_id,)).fetchone()
                 if row:
-                    conn.execute("UPDATE command_threads SET updated_at = ? WHERE id = ?", (_now(), thread_id))
+                    conn.execute("UPDATE command_threads SET updated_at = %s WHERE id = %s", (_now(), thread_id))
                     return thread_id
         new_id = thread_id or str(uuid4())
         now = _now()
         with get_conn() as conn:
             conn.execute(
-                "INSERT INTO command_threads(id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                "INSERT INTO command_threads(id, title, created_at, updated_at) VALUES (%s, %s, %s, %s)",
                 (new_id, (title or "Planix Planning").strip()[:160], now, now),
             )
         return new_id
@@ -123,11 +125,11 @@ class CommandAgentService:
             conn.execute(
                 """
                 INSERT INTO command_messages(id, thread_id, role, content, kind, payload_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (message_id, thread_id, role, content, kind, json.dumps(payload or {}, ensure_ascii=False), created_at),
+                (message_id, thread_id, role, content, kind, jsonb(payload or {}), created_at),
             )
-            conn.execute("UPDATE command_threads SET updated_at = ? WHERE id = ?", (created_at, thread_id))
+            conn.execute("UPDATE command_threads SET updated_at = %s WHERE id = %s", (created_at, thread_id))
         return CommandMessageOut(
             id=message_id,
             threadId=thread_id,
@@ -148,7 +150,7 @@ class CommandAgentService:
                 LEFT JOIN command_messages m ON m.thread_id = t.id
                 GROUP BY t.id
                 ORDER BY t.updated_at DESC
-                LIMIT ?
+                LIMIT %s
                 """,
                 (safe_limit,),
             ).fetchall()
@@ -165,26 +167,26 @@ class CommandAgentService:
 
     def delete_thread(self, thread_id: str) -> dict[str, int]:
         with get_conn() as conn:
-            existing = conn.execute("SELECT id FROM command_threads WHERE id = ?", (thread_id,)).fetchone()
+            existing = conn.execute("SELECT id FROM command_threads WHERE id = %s", (thread_id,)).fetchone()
             if not existing:
                 raise HTTPException(status_code=404, detail="Thread not found")
-            conn.execute("DELETE FROM planning_sessions WHERE thread_id = ?", (thread_id,))
-            conn.execute("DELETE FROM command_approvals WHERE thread_id = ?", (thread_id,))
-            conn.execute("DELETE FROM command_actions WHERE thread_id = ?", (thread_id,))
-            conn.execute("DELETE FROM command_drafts WHERE thread_id = ?", (thread_id,))
-            conn.execute("DELETE FROM command_messages WHERE thread_id = ?", (thread_id,))
-            conn.execute("DELETE FROM command_threads WHERE id = ?", (thread_id,))
+            conn.execute("DELETE FROM planning_sessions WHERE thread_id = %s", (thread_id,))
+            conn.execute("DELETE FROM command_approvals WHERE thread_id = %s", (thread_id,))
+            conn.execute("DELETE FROM command_actions WHERE thread_id = %s", (thread_id,))
+            conn.execute("DELETE FROM command_drafts WHERE thread_id = %s", (thread_id,))
+            conn.execute("DELETE FROM command_messages WHERE thread_id = %s", (thread_id,))
+            conn.execute("DELETE FROM command_threads WHERE id = %s", (thread_id,))
         return {"deleted": 1}
 
     def get_thread(self, thread_id: str) -> CommandThreadOut:
         with get_conn() as conn:
-            thread = conn.execute("SELECT * FROM command_threads WHERE id = ?", (thread_id,)).fetchone()
+            thread = conn.execute("SELECT * FROM command_threads WHERE id = %s", (thread_id,)).fetchone()
             if not thread:
                 raise HTTPException(status_code=404, detail="Thread not found")
             messages = [
                 _row_to_message(row)
                 for row in conn.execute(
-                    "SELECT * FROM command_messages WHERE thread_id = ? ORDER BY created_at ASC",
+                    "SELECT * FROM command_messages WHERE thread_id = %s ORDER BY created_at ASC",
                     (thread_id,),
                 ).fetchall()
             ]
@@ -232,7 +234,7 @@ class CommandAgentService:
             rows = conn.execute(
                 """
                 SELECT kind, payload_json FROM command_messages
-                WHERE thread_id = ? AND role = 'card' AND kind IN ('agent_decision', 'agent_message')
+                WHERE thread_id = %s AND role = 'card' AND kind IN ('agent_decision', 'agent_message')
                 """,
                 (thread_id,),
             ).fetchall()
@@ -461,14 +463,14 @@ class CommandAgentService:
                 INSERT INTO command_drafts(
                   id, thread_id, kind, version, status, title, summary, payload_json,
                   source_run_id, created_at, updated_at
-                ) VALUES (?, ?, 'calendar_plan', 1, 'current', ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, 'calendar_plan', 1, 'current', %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     draft_id,
                     thread_id,
                     "Planix V2 Calendar Proposal",
                     "Version-bound Calendar approval transport",
-                    json.dumps(anchor, ensure_ascii=False),
+                    jsonb(anchor),
                     session.session_id,
                     now,
                     now,
@@ -479,14 +481,14 @@ class CommandAgentService:
                 INSERT INTO command_actions(
                   id, thread_id, draft_id, target, operation, risk, status, reason,
                   payload_json, result_json, error_message, created_at, updated_at
-                ) VALUES (?, ?, ?, 'calendar', 'create_or_update_plans', 'write', 'waiting_approval', ?, ?, '{}', '', ?, ?)
+                ) VALUES (%s, %s, %s, 'calendar', 'create_or_update_plans', 'write', 'waiting_approval', %s, %s, '{}'::jsonb, '', %s, %s)
                 """,
                 (
                     action_id,
                     thread_id,
                     draft_id,
                     f"Write {len(items)} approved Planix V2 events to Calendar",
-                    json.dumps(payload, ensure_ascii=False),
+                    jsonb(payload),
                     now,
                     now,
                 ),
@@ -550,24 +552,24 @@ class CommandAgentService:
 
     def _load_action(self, action_id: str):
         with get_conn() as conn:
-            return conn.execute("SELECT * FROM command_actions WHERE id = ?", (action_id,)).fetchone()
+            return conn.execute("SELECT * FROM command_actions WHERE id = %s", (action_id,)).fetchone()
 
     def _update_action(self, action_id: str, *, status: str, result: dict[str, Any] | None = None, error: str = "") -> None:
         with get_conn() as conn:
             conn.execute(
                 """
                 UPDATE command_actions
-                SET status = ?, result_json = COALESCE(?, result_json), error_message = ?, updated_at = ?
-                WHERE id = ?
+                SET status = %s, result_json = COALESCE(%s, result_json), error_message = %s, updated_at = %s
+                WHERE id = %s
                 """,
-                (status, json.dumps(result, ensure_ascii=False) if result is not None else None, error, _now(), action_id),
+                (status, jsonb(result) if result is not None else None, error, _now(), action_id),
             )
 
     def _claim_calendar_action(self, action_id: str) -> None:
         with get_conn() as conn:
             cursor = conn.execute(
-                """UPDATE command_actions SET status = 'running', updated_at = ?
-                   WHERE id = ? AND status = 'waiting_approval'""",
+                """UPDATE command_actions SET status = 'running', updated_at = %s
+                   WHERE id = %s AND status = 'waiting_approval'""",
                 (_now(), action_id),
             )
             if cursor.rowcount != 1:
@@ -576,7 +578,7 @@ class CommandAgentService:
     def _record_approval(self, thread_id: str, action_id: str, permission: CommandPermission, decision: str) -> None:
         with get_conn() as conn:
             conn.execute(
-                "INSERT INTO command_approvals(id, thread_id, action_id, permission, decision, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO command_approvals(id, thread_id, action_id, permission, decision, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
                 (str(uuid4()), thread_id, action_id, permission, decision, _now()),
             )
 
@@ -587,7 +589,7 @@ class CommandAgentService:
             row = conn.execute(
                 """
                 SELECT id, version FROM planning_artifacts
-                WHERE session_id = ? AND artifact_type = ?
+                WHERE session_id = %s AND artifact_type = %s
                 ORDER BY version DESC, created_at DESC, id DESC LIMIT 1
                 """,
                 (session_id, expected_kind),
@@ -602,7 +604,7 @@ class CommandAgentService:
     def _calendar_action_is_approved(self, action_id: str) -> bool:
         with get_conn() as conn:
             row = conn.execute(
-                "SELECT decision FROM command_approvals WHERE action_id = ? ORDER BY rowid DESC LIMIT 1",
+                "SELECT decision FROM command_approvals WHERE action_id = %s ORDER BY created_at DESC, id DESC LIMIT 1",
                 (action_id,),
             ).fetchone()
         return bool(row and row["decision"] == "approve")
@@ -617,7 +619,7 @@ class CommandAgentService:
         description = str(item.get("description") or "")
         estimated_minutes = max(1, int(item.get("estimatedMinutes") or 30))
         with get_conn() as conn:
-            row = conn.execute("SELECT id FROM plans WHERE source_key = ? LIMIT 1", (source_key,)).fetchone()
+            row = conn.execute("SELECT id FROM plans WHERE source_key = %s LIMIT 1", (source_key,)).fetchone()
         if row:
             plan = update_plan(
                 row["id"],

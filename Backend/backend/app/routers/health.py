@@ -1,7 +1,9 @@
 import os
 from datetime import UTC, datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+
+from ..db import database_health
 
 router = APIRouter()
 
@@ -18,6 +20,9 @@ FEATURES = {
 @router.get("/health")
 @router.get("/api/health")
 def health() -> dict[str, object]:
+    db = database_health()
+    if not db["available"]:
+        raise HTTPException(status_code=503, detail="PostgreSQL unavailable")
     return {
         "status": "ok",
         "name": "planix-api",
@@ -26,4 +31,5 @@ def health() -> dict[str, object]:
         "version": APP_VERSION,
         "startupTime": STARTUP_TIME,
         "features": FEATURES,
+        "database": "postgresql",
     }

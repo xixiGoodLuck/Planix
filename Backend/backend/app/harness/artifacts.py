@@ -39,7 +39,7 @@ class HarnessArtifactStore:
                 """
                 SELECT *
                 FROM planning_artifacts
-                WHERE session_id = ?
+                WHERE session_id = %s
                 ORDER BY artifact_type ASC, version DESC, created_at DESC, id DESC
                 """,
                 (session_id,),
@@ -65,7 +65,7 @@ class HarnessArtifactStore:
             row = conn.execute(
                 """
                 SELECT * FROM planning_artifacts
-                WHERE id = ? AND session_id = ? AND artifact_type = ? AND version = ?
+                WHERE id = %s AND session_id = %s AND artifact_type = %s AND version = %s
                 """,
                 (ref.id, ref.session_id, ref.kind, ref.version),
             ).fetchone()
@@ -74,7 +74,7 @@ class HarnessArtifactStore:
                 f"artifact ref is missing or stale: {ref.kind}@{ref.version}"
             )
         try:
-            parsed = json.loads(row["content_json"] or "{}")
+            parsed = row["content_json"] if isinstance(row["content_json"], dict) else json.loads(row["content_json"] or "{}")
         except (TypeError, json.JSONDecodeError) as exc:
             raise ArtifactContractViolation(
                 f"artifact body is invalid JSON: {ref.kind}@{ref.version}"

@@ -24,7 +24,7 @@ http://127.0.0.1:5176
 1. `scripts/build-web.ps1` builds `Frontend/dist` and syncs it into `apps/desktop/src-tauri/resources`.
 2. `scripts/build-backend.ps1` packages the FastAPI backend as `planix-api`.
 3. Tauri bundles the web dist and launches the backend through the `planix-api` sidecar.
-4. The sidecar receives `PLANIX_ENV=desktop` and stores SQLite data in the user data directory unless `PLANIX_DB_PATH` is set.
+4. The sidecar requires and forwards `DATABASE_URL` plus optional `PLANIX_DB_POOL_MIN`, `PLANIX_DB_POOL_MAX`, and `PLANIX_DB_POOL_TIMEOUT` values.
 
 ## Windows Installers
 

@@ -191,7 +191,7 @@ Write-Host "OK: plan created id=$($plan.id)" -ForegroundColor Green
 
 $documents = Invoke-Json -Method POST -Uri "$ApiBaseUrl/api/rag/documents" -Body @{
     title = "MSI verification material"
-    content = "Planix verifies calendar, sidecar, SQLite, RAG, and AI settings in a Windows MSI install."
+    content = "Planix verifies calendar, sidecar, PostgreSQL, RAG, and AI settings in a Windows MSI install."
     sourceType = "paste"
 }
 Write-Host "OK: RAG document created id=$($documents.id)" -ForegroundColor Green

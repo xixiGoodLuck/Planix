@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from app.db import get_conn
+from app.db import get_conn, jsonb
 from app.services.ai_settings import EffectiveAiSettings
 from app.services.ai_settings import ModelRoutingRuleConfig
 from app.services import llm as llm_module
@@ -21,13 +21,7 @@ from app.services.model_provider import (
     provider_default_model,
     usage_from_response,
 )
-
-
-@pytest.fixture(autouse=True)
-def isolate_model_provider_database(tmp_path, monkeypatch):
-    """Never let router unit tests overwrite the user's saved provider keys."""
-
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'model-provider-test.db'}")
+from app.services.secret_store import get_secret_store, provider_secret_key
 
 
 def _settings(
@@ -908,28 +902,28 @@ def test_model_router_auto_policy_user_order_can_change_balanced_choice(monkeypa
             conn.execute(
                 """
                 INSERT INTO ai_provider_configs(
-                  provider, base_url, model, api_key_encrypted, api_key_source, updated_at
+                  provider, base_url, model, api_key_source, updated_at
                 )
-                VALUES (?, ?, ?, ?, 'user', CURRENT_TIMESTAMP)
+                VALUES (%s, %s, %s, 'secret_store', CURRENT_TIMESTAMP)
                 ON CONFLICT(provider)
                 DO UPDATE SET
                   base_url = excluded.base_url,
                   model = excluded.model,
-                  api_key_encrypted = excluded.api_key_encrypted,
                   api_key_source = excluded.api_key_source,
                   updated_at = CURRENT_TIMESTAMP
                 """,
-                (provider, provider_default_base_url(provider), provider_default_model(provider), f"{provider}-key"),
+                (provider, provider_default_base_url(provider), provider_default_model(provider)),
             )
+            get_secret_store().set(provider_secret_key(provider), f"{provider}-key")
         conn.execute(
             """
             INSERT INTO user_preferences(key, value, updated_at)
-            VALUES ('ai.autoModelPolicy', ?, CURRENT_TIMESTAMP)
+            VALUES ('ai.autoModelPolicy', %s, CURRENT_TIMESTAMP)
             ON CONFLICT(key)
             DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
             """,
             (
-                json.dumps(
+                jsonb(
                     {
                         "autoProviderOrder": ["kimi", "deepseek", "zhipu_glm", "openai", "custom"],
                         "taskStrategy": {"chat": "balanced"},
@@ -942,7 +936,7 @@ def test_model_router_auto_policy_user_order_can_change_balanced_choice(monkeypa
             INSERT INTO ai_model_routing_rules(
               task_type, primary_provider, fallback_providers_json, local_fallback_enabled, updated_at
             )
-            VALUES ('chat', 'auto', '["deepseek"]', 1, CURRENT_TIMESTAMP)
+            VALUES ('chat', 'auto', '["deepseek"]'::jsonb, TRUE, CURRENT_TIMESTAMP)
             ON CONFLICT(task_type)
             DO UPDATE SET
               primary_provider = excluded.primary_provider,

@@ -11,7 +11,7 @@ def _to_month_note(row, year: int, month: int) -> MonthNoteOut:
 def get_month_note(year: int, month: int) -> MonthNoteOut:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT content, updated_at FROM month_notes WHERE year = ? AND month = ?",
+            "SELECT content, updated_at FROM month_notes WHERE year = %s AND month = %s",
             (year, month),
         ).fetchone()
     return _to_month_note(row, year, month)
@@ -22,7 +22,7 @@ def upsert_month_note(payload: MonthNotePut) -> MonthNoteOut:
         row = conn.execute(
             """
             INSERT INTO month_notes(year, month, content, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT(year, month)
             DO UPDATE SET content = excluded.content, updated_at = CURRENT_TIMESTAMP
             RETURNING content, updated_at

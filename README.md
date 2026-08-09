@@ -19,6 +19,15 @@ Calendar、Settings 和桌面打包是独立产品能力，不是正式规划的
 
 ## 启动
 
+Planix requires PostgreSQL. Start the pinned local service and apply the Alembic schema first:
+
+```powershell
+docker compose up -d postgres
+$env:DATABASE_URL="postgresql://planix:planix@127.0.0.1:5432/planix"
+cd Backend
+..\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
 ```powershell
 cd Backend
 ..\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --env-file ..\.env --port 8003

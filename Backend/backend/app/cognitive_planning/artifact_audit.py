@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-import time
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel
 
-from ..db import get_conn
+from ..db import get_conn, jsonb
 from ..schemas import AgentDecision, AgentMessage, ModelUsage, PlanningArtifact, PlanningBlackboard
 
 
@@ -41,7 +39,9 @@ def _dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def _object(value: str) -> dict[str, Any]:
+def _object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
     try:
         parsed = json.loads(value or "{}")
     except (TypeError, json.JSONDecodeError):
@@ -49,7 +49,9 @@ def _object(value: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _list(value: str) -> list[str]:
+def _list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
     try:
         parsed = json.loads(value or "[]")
     except (TypeError, json.JSONDecodeError):
@@ -82,35 +84,24 @@ class PlanningArtifactAuditStore:
             raise ValueError(f"{owner_agent} cannot modify {artifact_type}")
         now = _now()
         artifact_id = str(uuid4())
-        last_error: Exception | None = None
-        for attempt in range(3):
-            try:
-                with get_conn() as conn:
-                    conn.execute("BEGIN IMMEDIATE")
-                    version_row = conn.execute(
-                        "SELECT COALESCE(MAX(version), 0) + 1 AS next_version "
-                        "FROM planning_artifacts WHERE session_id = ? AND artifact_type = ?",
-                        (session_id, artifact_type),
-                    ).fetchone()
-                    version = int(version_row["next_version"] or 1)
-                    conn.execute(
-                        """
-                        INSERT INTO planning_artifacts(
-                          id, session_id, owner_agent, artifact_type, version, status,
-                          content_json, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (artifact_id, session_id, owner_agent, artifact_type, version, status, _dump(_content(content)), now, now),
-                    )
-                    row = conn.execute("SELECT * FROM planning_artifacts WHERE id = ?", (artifact_id,)).fetchone()
-                break
-            except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
-                last_error = exc
-                if attempt == 2 or (isinstance(exc, sqlite3.OperationalError) and "locked" not in str(exc).casefold()):
-                    raise
-                time.sleep(0.01 * (attempt + 1))
-        else:  # pragma: no cover - the final attempt always raises
-            raise RuntimeError("artifact version allocation failed") from last_error
+        with get_conn() as conn:
+            conn.execute("SELECT id FROM planning_sessions WHERE id = %s FOR UPDATE", (session_id,))
+            version_row = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) + 1 AS next_version "
+                "FROM planning_artifacts WHERE session_id = %s AND artifact_type = %s",
+                (session_id, artifact_type),
+            ).fetchone()
+            version = int(version_row["next_version"] or 1)
+            conn.execute(
+                """
+                INSERT INTO planning_artifacts(
+                  id, session_id, owner_agent, artifact_type, version, status,
+                  content_json, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (artifact_id, session_id, owner_agent, artifact_type, version, status, jsonb(_content(content)), now, now),
+            )
+            row = conn.execute("SELECT * FROM planning_artifacts WHERE id = %s", (artifact_id,)).fetchone()
         return self._artifact(row)
 
     def record_decision(
@@ -135,12 +126,12 @@ class PlanningArtifactAuditStore:
                   id, session_id, agent, decision, reason, confidence,
                   input_artifact_ids_json, output_artifact_ids_json,
                   user_visible_summary, model_usage_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (decision_id, session_id, agent, decision, reason, confidence,
-                 _dump(input_artifact_ids or []), _dump(output_artifact_ids or []), summary, _dump(usage)),
+                 jsonb(input_artifact_ids or []), jsonb(output_artifact_ids or []), summary, jsonb(usage)),
             )
-            row = conn.execute("SELECT * FROM agent_decisions WHERE id = ?", (decision_id,)).fetchone()
+            row = conn.execute("SELECT * FROM agent_decisions WHERE id = %s", (decision_id,)).fetchone()
         return self._decision(row)
 
     def record_message(
@@ -160,17 +151,17 @@ class PlanningArtifactAuditStore:
                 """
                 INSERT INTO agent_messages(
                   id, session_id, from_agent, to_agent, message_type, reason, payload_json, resolved
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (message_id, session_id, from_agent, to_agent, message_type, reason, _dump(payload or {}), int(resolved)),
+                (message_id, session_id, from_agent, to_agent, message_type, reason, jsonb(payload or {}), resolved),
             )
-            row = conn.execute("SELECT * FROM agent_messages WHERE id = ?", (message_id,)).fetchone()
+            row = conn.execute("SELECT * FROM agent_messages WHERE id = %s", (message_id,)).fetchone()
         return self._message(row)
 
     def list_artifacts(self, session_id: str) -> list[PlanningArtifact]:
         with get_conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM planning_artifacts WHERE session_id = ? ORDER BY created_at, version",
+                "SELECT * FROM planning_artifacts WHERE session_id = %s ORDER BY created_at, version",
                 (session_id,),
             ).fetchall()
         return [self._artifact(row) for row in rows]
@@ -178,7 +169,7 @@ class PlanningArtifactAuditStore:
     def list_decisions(self, session_id: str) -> list[AgentDecision]:
         with get_conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM agent_decisions WHERE session_id = ? ORDER BY created_at, id",
+                "SELECT * FROM agent_decisions WHERE session_id = %s ORDER BY created_at, id",
                 (session_id,),
             ).fetchall()
         return [self._decision(row) for row in rows]
@@ -186,7 +177,7 @@ class PlanningArtifactAuditStore:
     def list_messages(self, session_id: str) -> list[AgentMessage]:
         with get_conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM agent_messages WHERE session_id = ? ORDER BY created_at, id",
+                "SELECT * FROM agent_messages WHERE session_id = %s ORDER BY created_at, id",
                 (session_id,),
             ).fetchall()
         return [self._message(row) for row in rows]

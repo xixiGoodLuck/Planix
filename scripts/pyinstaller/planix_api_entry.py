@@ -23,9 +23,7 @@ def write_log(message: str) -> None:
 
 
 def main() -> None:
-    os.environ.setdefault("PLANIX_ENV", "desktop")
-    if os.getenv("PLANIX_ENV") == "desktop":
-        os.environ.setdefault("USE_REAL_LLM", "1")
+    os.environ.setdefault("USE_REAL_LLM", "1")
     port = int(os.getenv("PLANIX_API_PORT", "8003"))
     write_log(f"Starting Planix API sidecar on 127.0.0.1:{port}")
     try:

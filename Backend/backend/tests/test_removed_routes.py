@@ -38,6 +38,9 @@ def test_openapi_and_fresh_database_exclude_retired_rag_and_generic_memory(clien
     assert not [path for path in paths if path.startswith("/api/memory")]
 
     with get_conn() as conn:
-        tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master").fetchall()}
+        tables = {
+            row["table_name"]
+            for row in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'").fetchall()
+        }
     assert tables.isdisjoint({"documents", "document_chunks", "document_chunks_fts", "memories", "memories_fts"})
     assert {"user_model_memories", "user_planning_hypotheses"} <= tables

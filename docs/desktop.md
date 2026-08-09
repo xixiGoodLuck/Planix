@@ -12,7 +12,7 @@ flowchart LR
   W --> A["http://127.0.0.1:8003/api"]
   T --> S["planix-api sidecar"]
   S --> F["FastAPI backend"]
-  F --> D["%APPDATA%/Planix/planix.db"]
+  F --> D["PostgreSQL via DATABASE_URL"]
 ```
 
 The release app should bundle:
@@ -64,17 +64,13 @@ If a user sees `asset not found: index.html`, the installer was built incorrectl
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PLANIX_ENV` | unset | Set to `desktop` for packaged desktop mode |
 | `PLANIX_API_PORT` | `8003` | Port used by the FastAPI sidecar |
-| `PLANIX_DB_PATH` | unset | Optional explicit SQLite path |
+| `DATABASE_URL` | required | PostgreSQL connection string forwarded to the sidecar |
+| `PLANIX_DB_POOL_MIN` | `1` | Minimum backend connection pool size |
+| `PLANIX_DB_POOL_MAX` | `5` | Maximum backend connection pool size |
+| `PLANIX_DB_POOL_TIMEOUT` | `10` | Pool acquisition/startup timeout in seconds |
 
-When `PLANIX_ENV=desktop`, the backend resolves SQLite to:
-
-```text
-%APPDATA%\Planix\planix.db
-```
-
-If `PLANIX_DB_PATH` is set, it wins over the desktop default.
+The desktop sidecar fails clearly when `DATABASE_URL` is absent or is not a `postgresql://` URL. It never creates a local embedded database.
 
 ## Required Toolchain
 

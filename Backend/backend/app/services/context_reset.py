@@ -1,20 +1,19 @@
-import sqlite3
 from collections.abc import Callable
+from typing import Any
 
 from ..db import get_conn
 
 
 class ContextResetService:
-    def __init__(self, connection_factory: Callable[[], sqlite3.Connection] = get_conn):
+    def __init__(self, connection_factory: Callable[[], Any] = get_conn):
         self._connection_factory = connection_factory
 
     @staticmethod
-    def _count(conn: sqlite3.Connection, table: str) -> int:
-        return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    def _count(conn, table: str) -> int:
+        return int(conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"])
 
     def stats(self) -> dict[str, int]:
-        conn = self._connection_factory()
-        try:
+        with self._connection_factory() as conn:
             return {
                 "conversations": self._count(conn, "command_threads"),
                 "planning_sessions": self._count(conn, "planning_sessions"),
@@ -22,13 +21,9 @@ class ContextResetService:
                 "memories": self._count(conn, "user_model_memories")
                 + self._count(conn, "user_planning_hypotheses"),
             }
-        finally:
-            conn.close()
 
     def reset(self, *, clear_memory: bool = False) -> dict[str, int]:
-        conn = self._connection_factory()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
+        with self._connection_factory() as conn:
             deleted = {
                 "deleted_threads": self._count(conn, "command_threads"),
                 "deleted_sessions": self._count(conn, "planning_sessions"),
@@ -61,10 +56,4 @@ class ContextResetService:
                 conn.execute("DELETE FROM user_model_memories")
                 conn.execute("DELETE FROM user_planning_hypotheses")
 
-            conn.commit()
             return deleted
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()

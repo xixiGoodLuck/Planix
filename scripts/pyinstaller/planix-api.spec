@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules, copy_metadata
 
 
 ROOT = Path.cwd()
@@ -14,15 +14,16 @@ hiddenimports = [
     "backend.app.routers.plans",
     "backend.app.routers.month_notes",
     "backend.app.routers.settings",
-    "backend.app.routers.agent",
     "backend.app.routers.planning",
-    "backend.app.routers.rag",
-    "backend.app.routers.preferences",
+    "backend.app.routers.command",
+    "backend.app.routers.context_settings",
 ]
 hiddenimports += collect_submodules("uvicorn")
 hiddenimports += collect_submodules("fastapi")
 hiddenimports += collect_submodules("pydantic")
 hiddenimports += collect_submodules("pydantic_core")
+hiddenimports += collect_submodules("psycopg")
+hiddenimports += collect_submodules("psycopg_pool")
 
 # brotli - httpx uses it for response decompression
 try:
@@ -34,11 +35,12 @@ datas = []
 datas += copy_metadata("fastapi")
 datas += copy_metadata("uvicorn")
 datas += copy_metadata("pydantic")
+binaries = collect_dynamic_libs("psycopg_binary")
 
 a = Analysis(
     [str(entry)],
     pathex=[str(ROOT / "Backend")],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

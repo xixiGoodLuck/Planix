@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from ..db import get_conn
+from ..db import get_conn, jsonb
 from .contracts import ConversationTurn
 
 
@@ -14,6 +14,8 @@ def now_iso() -> str:
 
 
 def json_object(value: str | None) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
     try:
         parsed = json.loads(value or "{}")
     except json.JSONDecodeError:
@@ -22,6 +24,8 @@ def json_object(value: str | None) -> dict[str, Any]:
 
 
 def json_list(value: str | None) -> list[Any]:
+    if isinstance(value, list):
+        return value
     try:
         parsed = json.loads(value or "[]")
     except json.JSONDecodeError:
@@ -33,6 +37,10 @@ def dump(value: Any) -> str:
     if hasattr(value, "model_dump"):
         value = value.model_dump(by_alias=True, exclude_none=True)
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def json_value(value: Any) -> Any:
+    return json.loads(dump(value))
 
 
 class PlanningPersistence:
@@ -52,16 +60,16 @@ class PlanningPersistence:
                   id, thread_id, entry_point, status, business_status, runtime_status,
                   user_input, conversation_history_json, request_context_json,
                   cognitive_metadata_json, repair_count, version, created_at, updated_at
-                ) VALUES (?, ?, 'p_mode', 'needs_goal_clarification', 'goal_clarification',
-                          'running', ?, ?, ?, '{}', 0, 1, ?, ?)
+                ) VALUES (%s, %s, 'p_mode', 'needs_goal_clarification', 'goal_clarification',
+                          'running', %s, %s, %s, '{}'::jsonb, 0, 1, %s, %s)
                 """,
-                (session_id, thread_id, user_input, dump(history), dump(request_context), now, now),
+                (session_id, thread_id, user_input, jsonb(history), jsonb(request_context), now, now),
             )
         return session_id
 
     def get_row(self, session_id: str):
         with get_conn() as conn:
-            return conn.execute("SELECT * FROM planning_sessions WHERE id = ?", (session_id,)).fetchone()
+            return conn.execute("SELECT * FROM planning_sessions WHERE id = %s", (session_id,)).fetchone()
 
     def latest_active(self, thread_id: str):
         active = {
@@ -76,7 +84,7 @@ class PlanningPersistence:
         }
         with get_conn() as conn:
             row = conn.execute(
-                "SELECT * FROM planning_sessions WHERE thread_id = ? ORDER BY updated_at DESC LIMIT 1",
+                "SELECT * FROM planning_sessions WHERE thread_id = %s ORDER BY updated_at DESC LIMIT 1",
                 (thread_id,),
             ).fetchone()
         return row if row and row["status"] in active else None
@@ -104,8 +112,8 @@ class PlanningPersistence:
         combined = "\n".join(turn.content for turn in history if turn.role == "user")
         with get_conn() as conn:
             conn.execute(
-                "UPDATE planning_sessions SET user_input = ?, conversation_history_json = ?, version = version + 1, updated_at = ? WHERE id = ?",
-                (combined, dump([item.model_dump(by_alias=True) for item in history]), now_iso(), session_id),
+                "UPDATE planning_sessions SET user_input = %s, conversation_history_json = %s, version = version + 1, updated_at = %s WHERE id = %s",
+                (combined, jsonb([item.model_dump(by_alias=True) for item in history]), now_iso(), session_id),
             )
         return history
 
@@ -119,8 +127,8 @@ class PlanningPersistence:
         history.append(ConversationTurn(role="assistant", content=text))
         with get_conn() as conn:
             conn.execute(
-                "UPDATE planning_sessions SET conversation_history_json = ?, version = version + 1, updated_at = ? WHERE id = ?",
-                (dump([item.model_dump(by_alias=True) for item in history]), now_iso(), session_id),
+                "UPDATE planning_sessions SET conversation_history_json = %s, version = version + 1, updated_at = %s WHERE id = %s",
+                (jsonb([item.model_dump(by_alias=True) for item in history]), now_iso(), session_id),
             )
         return history
 
@@ -144,22 +152,22 @@ class PlanningPersistence:
             ("runtime_status", runtime_status),
         ):
             if value is not None:
-                assignments.append(f"{column} = ?")
+                assignments.append(f"{column} = %s")
                 params.append(value)
         if repair_count is not None:
-            assignments.append("repair_count = ?")
+            assignments.append("repair_count = %s")
             params.append(max(0, min(int(repair_count), 2)))
         if schedule_repair_count is not None:
-            assignments.append("schedule_repair_count = ?")
+            assignments.append("schedule_repair_count = %s")
             params.append(max(0, min(int(schedule_repair_count), 2)))
         if cognitive_metadata is not None:
-            assignments.append("cognitive_metadata_json = ?")
-            params.append(dump(cognitive_metadata))
-        assignments.extend(["version = version + 1", "updated_at = ?"])
+            assignments.append("cognitive_metadata_json = %s")
+            params.append(jsonb(json_value(cognitive_metadata)))
+        assignments.extend(["version = version + 1", "updated_at = %s"])
         params.extend([now_iso(), session_id])
-        where = "id = ?"
+        where = "id = %s"
         if expected_version is not None:
-            where += " AND version = ?"
+            where += " AND version = %s"
             params.append(expected_version)
         with get_conn() as conn:
             cursor = conn.execute(f"UPDATE planning_sessions SET {', '.join(assignments)} WHERE {where}", params)

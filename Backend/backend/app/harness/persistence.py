@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from ..db import get_conn
+from ..db import get_conn, jsonb
 from .contracts import HarnessEvent, HarnessEventType
 from .state import PersistentCognitiveState
 
@@ -30,7 +30,13 @@ def _dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def _json_object(value: str | None) -> dict[str, Any]:
+def _jsonb(value: Any):
+    return jsonb(json.loads(_dump(value)))
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
     try:
         parsed = json.loads(value or "{}")
     except (TypeError, json.JSONDecodeError):
@@ -38,7 +44,9 @@ def _json_object(value: str | None) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _json_list(value: str | None) -> list[Any]:
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
     try:
         parsed = json.loads(value or "[]")
     except (TypeError, json.JSONDecodeError):
@@ -70,7 +78,7 @@ class HarnessCheckpointResult:
 class HarnessStateRepository:
     """Durable source of truth for scheduler state and its audit event stream.
 
-    A checkpoint and its corresponding event are committed in the same SQLite
+    A checkpoint and its corresponding event are committed in the same PostgreSQL
     transaction. ``checkpoint_version`` is an optimistic-lock token, while
     ``sequence`` is monotonic within one planning session.
     """
@@ -78,7 +86,7 @@ class HarnessStateRepository:
     def load(self, session_id: str) -> PersistentCognitiveState | None:
         with get_conn() as conn:
             row = conn.execute(
-                "SELECT * FROM harness_states WHERE session_id = ?",
+                "SELECT * FROM harness_states WHERE session_id = %s",
                 (session_id,),
             ).fetchone()
         return self._state_from_row(row) if row else None
@@ -101,14 +109,14 @@ class HarnessStateRepository:
 
         with get_conn() as conn:
             row = conn.execute(
-                "SELECT * FROM harness_states WHERE session_id = ?",
+                "SELECT * FROM harness_states WHERE session_id = %s",
                 (session_id,),
             ).fetchone()
             if row:
                 return self._state_from_row(row)
 
             session = conn.execute(
-                "SELECT id FROM planning_sessions WHERE id = ?",
+                "SELECT id FROM planning_sessions WHERE id = %s",
                 (session_id,),
             ).fetchone()
             if not session:
@@ -124,18 +132,19 @@ class HarnessStateRepository:
             )
             conn.execute(
                 """
-                INSERT OR IGNORE INTO harness_states(
+                INSERT INTO harness_states(
                   session_id, lifecycle, current_stage, completed_agents_json,
                   pending_agent, artifact_versions_json, waiting_state,
                   errors_json, recovery_actions_json, approvals_json, repair_target,
                   checkpoint_version, checkpoint_json, last_decision_json,
                   last_policy_decision_json, last_event_sequence, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, %s)
+                ON CONFLICT (session_id) DO NOTHING
                 """,
                 self._state_values(seeded),
             )
             row = conn.execute(
-                "SELECT * FROM harness_states WHERE session_id = ?",
+                "SELECT * FROM harness_states WHERE session_id = %s",
                 (session_id,),
             ).fetchone()
         if not row:
@@ -157,7 +166,7 @@ class HarnessStateRepository:
 
         with get_conn() as conn:
             current = conn.execute(
-                "SELECT * FROM harness_states WHERE session_id = ?",
+                "SELECT * FROM harness_states WHERE session_id = %s",
                 (state.session_id,),
             ).fetchone()
             if not current:
@@ -175,40 +184,38 @@ class HarnessStateRepository:
             cursor = conn.execute(
                 """
                 UPDATE harness_states
-                SET lifecycle = ?,
-                    current_stage = ?,
-                    completed_agents_json = ?,
-                    pending_agent = ?,
-                    artifact_versions_json = ?,
-                    waiting_state = ?,
-                    errors_json = ?,
-                    recovery_actions_json = ?,
-                    approvals_json = ?,
-                    repair_target = ?,
-                    checkpoint_version = ?,
-                    checkpoint_json = ?,
-                    last_decision_json = ?,
-                    last_policy_decision_json = ?,
+                SET lifecycle = %s,
+                    current_stage = %s,
+                    completed_agents_json = %s,
+                    pending_agent = %s,
+                    artifact_versions_json = %s,
+                    waiting_state = %s,
+                    errors_json = %s,
+                    recovery_actions_json = %s,
+                    approvals_json = %s,
+                    repair_target = %s,
+                    checkpoint_version = %s,
+                    checkpoint_json = %s,
+                    last_decision_json = %s,
+                    last_policy_decision_json = %s,
                     last_event_sequence = last_event_sequence + 1,
-                    created_at = ?,
-                    updated_at = ?
-                WHERE session_id = ? AND checkpoint_version = ?
+                    created_at = %s,
+                    updated_at = %s
+                WHERE session_id = %s AND checkpoint_version = %s
+                RETURNING last_event_sequence
                 """,
                 (*values[1:], state.session_id, expected),
             )
-            if cursor.rowcount != 1:
+            updated = cursor.fetchone()
+            if not updated:
                 latest = conn.execute(
-                    "SELECT checkpoint_version FROM harness_states WHERE session_id = ?",
+                    "SELECT checkpoint_version FROM harness_states WHERE session_id = %s",
                     (state.session_id,),
                 ).fetchone()
                 latest_version = int(latest["checkpoint_version"] or 1) if latest else actual
                 raise HarnessCheckpointConflict(state.session_id, expected, latest_version)
 
-            sequence_row = conn.execute(
-                "SELECT last_event_sequence FROM harness_states WHERE session_id = ?",
-                (state.session_id,),
-            ).fetchone()
-            sequence = int(sequence_row["last_event_sequence"] or 0)
+            sequence = int(updated["last_event_sequence"] or 0)
             event = HarnessEvent(
                 id=str(uuid4()),
                 sessionId=state.session_id,
@@ -224,7 +231,7 @@ class HarnessStateRepository:
                 INSERT INTO harness_events(
                   id, session_id, sequence, checkpoint_version, event_type,
                   agent_id, decision, payload_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     event.id,
@@ -234,7 +241,7 @@ class HarnessStateRepository:
                     event.event_type,
                     event.agent_id or "",
                     event.decision,
-                    _dump(event.payload),
+                    jsonb(event.payload),
                     event.created_at,
                 ),
             )
@@ -252,9 +259,9 @@ class HarnessStateRepository:
             rows = conn.execute(
                 """
                 SELECT * FROM harness_events
-                WHERE session_id = ? AND sequence > ?
+                WHERE session_id = %s AND sequence > %s
                 ORDER BY sequence ASC
-                LIMIT ?
+                LIMIT %s
                 """,
                 (session_id, max(0, int(after_sequence)), safe_limit),
             ).fetchall()
@@ -263,7 +270,7 @@ class HarnessStateRepository:
     def latest_event_sequence(self, session_id: str) -> int:
         with get_conn() as conn:
             row = conn.execute(
-                "SELECT last_event_sequence FROM harness_states WHERE session_id = ?",
+                "SELECT last_event_sequence FROM harness_states WHERE session_id = %s",
                 (session_id,),
             ).fetchone()
         if not row:
@@ -294,18 +301,18 @@ class HarnessStateRepository:
             state.session_id,
             state.lifecycle,
             state.current_stage,
-            _dump(state.completed_agents),
+            _jsonb(state.completed_agents),
             state.pending_agent or "",
-            _dump(state.artifact_versions),
+            _jsonb(state.artifact_versions),
             state.waiting_state,
-            _dump(state.errors),
-            _dump(state.recovery_actions),
-            _dump(state.approvals),
+            _jsonb(state.errors),
+            _jsonb(state.recovery_actions),
+            _jsonb(state.approvals),
             state.repair_target or "",
             state.checkpoint_version,
-            _dump(state.checkpoint),
-            _dump(state.last_decision) if state.last_decision else "{}",
-            _dump(state.last_policy_decision) if state.last_policy_decision else "{}",
+            _jsonb(state.checkpoint),
+            _jsonb(state.last_decision) if state.last_decision else jsonb({}),
+            _jsonb(state.last_policy_decision) if state.last_policy_decision else jsonb({}),
             state.created_at,
             state.updated_at,
         )

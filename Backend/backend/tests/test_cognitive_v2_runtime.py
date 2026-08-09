@@ -295,11 +295,11 @@ def test_rejected_repair_consumes_budget_without_blocking_harness(client):
     assert result.cognitive_metadata.repair_count == 2
     with get_conn() as conn:
         harness = conn.execute(
-            "SELECT lifecycle, errors_json FROM harness_states WHERE session_id = ?",
+            "SELECT lifecycle, errors_json FROM harness_states WHERE session_id = %s",
             (started.session_id,),
         ).fetchone()
     assert harness["lifecycle"] == "waiting"
-    assert harness["errors_json"] == "[]"
+    assert harness["errors_json"] == []
 
 
 def test_execution_feedback_uses_learning_route_and_keeps_outcome_evidence(client):
@@ -463,7 +463,7 @@ def test_concurrent_calendar_approval_executes_exactly_once(client, monkeypatch)
     assert sum(any(item.get("type") == "calendar_write_result" for item in result) for result in results) == 1
     assert sum(any(item.get("type") == "error" for item in result) for result in results) == 1
     with get_conn() as conn:
-        action = conn.execute("SELECT status FROM command_actions WHERE id = ?", (action_id,)).fetchone()
+        action = conn.execute("SELECT status FROM command_actions WHERE id = %s", (action_id,)).fetchone()
         duplicates = conn.execute(
             """SELECT source_key, COUNT(*) AS count FROM plans
                WHERE source_key <> '' GROUP BY source_key HAVING COUNT(*) > 1"""
@@ -476,11 +476,19 @@ def test_concurrent_calendar_approval_executes_exactly_once(client, monkeypatch)
 
 def test_fresh_schema_keeps_session_lifecycle_separate_from_artifacts(client):
     with get_conn() as conn:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(planning_sessions)")}
+        columns = {
+            row["column_name"]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'planning_sessions'"
+            )
+        }
         shadow_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'planning_shadow_runs'"
+            "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'planning_shadow_runs'"
         ).fetchone()
-        tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        tables = {
+            row["table_name"]
+            for row in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
+        }
     assert {
         "id",
         "thread_id",

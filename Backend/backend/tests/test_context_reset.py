@@ -63,7 +63,7 @@ def _seed_memories() -> None:
 
 def _counts(*tables: str) -> dict[str, int]:
     with get_conn() as conn:
-        return {table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) for table in tables}
+        return {table: int(conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"]) for table in tables}
 
 
 def test_context_reset_deletes_all_runtime_context(client):
@@ -101,29 +101,29 @@ def test_context_reset_deletes_all_runtime_context(client):
         "memories": 0,
     }
     with get_conn() as conn:
-        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute("SELECT 1 FROM planning_artifacts a LEFT JOIN planning_sessions s ON s.id = a.session_id WHERE s.id IS NULL").fetchall() == []
 
 
 def test_context_reset_preserves_ai_configuration(client):
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO ai_settings(id, provider, api_key_encrypted, api_key_source)
-            VALUES ('local-default', 'deepseek', 'settings-cipher', 'user')
+            INSERT INTO ai_settings(id, provider, api_key_source)
+            VALUES ('local-default', 'deepseek', 'secret_store')
             """
         )
         conn.execute(
             """
-            INSERT INTO ai_provider_configs(provider, model, api_key_encrypted, api_key_source)
-            VALUES ('deepseek', 'deepseek-chat', 'provider-cipher', 'user')
+            INSERT INTO ai_provider_configs(provider, model, api_key_source)
+            VALUES ('deepseek', 'deepseek-chat', 'secret_store')
             """
         )
 
     assert client.request("DELETE", "/api/settings/context", json={"clearMemory": False}).status_code == 200
     assert _counts("ai_settings", "ai_provider_configs") == {"ai_settings": 1, "ai_provider_configs": 1}
     with get_conn() as conn:
-        assert conn.execute("SELECT api_key_encrypted FROM ai_settings").fetchone()[0] == "settings-cipher"
-        assert conn.execute("SELECT api_key_encrypted FROM ai_provider_configs").fetchone()[0] == "provider-cipher"
+        assert conn.execute("SELECT api_key_source FROM ai_settings").fetchone()["api_key_source"] == "secret_store"
+        assert conn.execute("SELECT api_key_source FROM ai_provider_configs").fetchone()["api_key_source"] == "secret_store"
 
 
 def test_context_reset_preserves_saved_plans(client):
@@ -170,13 +170,14 @@ def test_context_reset_rolls_back_every_delete_on_failure(client):
     with get_conn() as conn:
         conn.execute(
             """
-            CREATE TRIGGER fail_context_reset
-            BEFORE DELETE ON planning_sessions
+            CREATE FUNCTION fail_context_reset() RETURNS trigger AS $$
             BEGIN
-              SELECT RAISE(ABORT, 'forced reset failure');
-            END
+              RAISE EXCEPTION 'forced reset failure';
+            END;
+            $$ LANGUAGE plpgsql
             """
         )
+        conn.execute("CREATE TRIGGER fail_context_reset BEFORE DELETE ON planning_sessions FOR EACH STATEMENT EXECUTE FUNCTION fail_context_reset()")
 
     response = client.request("DELETE", "/api/settings/context", json={"clearMemory": False})
 
@@ -187,3 +188,6 @@ def test_context_reset_rolls_back_every_delete_on_failure(client):
         "planning_sessions": 1,
         "planning_artifacts": 1,
     }
+    with get_conn() as conn:
+        conn.execute("DROP TRIGGER fail_context_reset ON planning_sessions")
+        conn.execute("DROP FUNCTION fail_context_reset()")

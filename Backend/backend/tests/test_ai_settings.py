@@ -35,12 +35,8 @@ def test_v2_routing_save_is_idempotent_and_does_not_validate_keys(client, monkey
 def test_retired_routes_are_removed_without_touching_provider_config(client):
     with get_conn() as conn:
         conn.execute(
-            """INSERT INTO ai_provider_configs(provider, base_url, model, api_key_encrypted, updated_at)
-               VALUES ('custom', 'http://example.invalid/v1', 'custom-model', 'encrypted-value', CURRENT_TIMESTAMP)"""
-        )
-        conn.execute(
-            """INSERT INTO ai_model_routing_rules(task_type, primary_provider, fallback_providers_json, local_fallback_enabled, updated_at)
-               VALUES ('goal_understanding', 'custom', '[]', 0, CURRENT_TIMESTAMP)"""
+            """INSERT INTO ai_provider_configs(provider, base_url, model, updated_at)
+               VALUES ('custom', 'http://example.invalid/v1', 'custom-model', CURRENT_TIMESTAMP)"""
         )
         before = dict(conn.execute("SELECT * FROM ai_provider_configs WHERE provider = 'custom'").fetchone())
 
