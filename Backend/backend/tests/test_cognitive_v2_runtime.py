@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import pytest
@@ -26,7 +28,8 @@ from app.cognitive_planning.contracts import (
 from app.cognitive_planning.memory import UserModelMemoryRepository
 from app.cognitive_planning.runtime import CognitiveOSRuntime
 from app.db import get_conn
-from app.schemas import CreatePlanningSessionRequest, PlanningExecutionFeedbackRequest, PlanningSessionTextRequest
+from app.schemas import CommandApproveRequest, CreatePlanningSessionRequest, PlanningExecutionFeedbackRequest, PlanningSessionTextRequest
+from app.services.command_agent import CommandAgentService
 
 
 def _quality_issue(severity: str) -> QualityIssue:
@@ -397,6 +400,7 @@ def test_unrelated_audit_event_does_not_stale_final_approval(client):
         ("plan_quality_report", "Plan Quality Reviewer", "plan_quality_report"),
         ("schedule_blueprint", "Schedule Agent", "schedule_blueprint"),
         ("schedule_quality_report", "Schedule Quality Reviewer", "schedule_quality_report"),
+        ("calendar_proposal", "Calendar Materializer", "calendar_proposal"),
     ],
 )
 def test_protected_artifact_change_stales_final_approval(client, artifact_type, owner, response_field):
@@ -432,6 +436,42 @@ def test_consumed_final_approval_cannot_be_replayed(client):
     runtime.mark_calendar_written(session_id, final_approval_ref=final_ref)
     with pytest.raises((HTTPException, ValueError)):
         runtime.approve_calendar_write(session_id, final_approval_ref=final_ref)
+
+
+def test_concurrent_calendar_approval_executes_exactly_once(client, monkeypatch):
+    runtime, session_id, _ = _approved_runtime()
+    service = CommandAgentService()
+    session = runtime.get_session(session_id)
+    with get_conn() as conn:
+        conn.execute("INSERT INTO command_threads(id, title) VALUES ('approval-thread', 'Concurrent approval')")
+    refs = service._artifact_refs(session)
+    action_id, _ = service._create_calendar_action(
+        "approval-thread",
+        session,
+        service._calendar_items(session),
+        refs,
+    )
+    monkeypatch.setattr("app.services.command_agent.get_planning_orchestrator", lambda: runtime)
+    payload = CommandApproveRequest(threadId="approval-thread", actionId=action_id, decision="approve", permission="low")
+
+    def approve() -> list[dict]:
+        return [json.loads(line) for line in service.stream_approve(payload)]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: approve(), range(2)))
+
+    assert sum(any(item.get("type") == "calendar_write_result" for item in result) for result in results) == 1
+    assert sum(any(item.get("type") == "error" for item in result) for result in results) == 1
+    with get_conn() as conn:
+        action = conn.execute("SELECT status FROM command_actions WHERE id = ?", (action_id,)).fetchone()
+        duplicates = conn.execute(
+            """SELECT source_key, COUNT(*) AS count FROM plans
+               WHERE source_key <> '' GROUP BY source_key HAVING COUNT(*) > 1"""
+        ).fetchall()
+        written = conn.execute("SELECT COUNT(*) AS count FROM plans WHERE source_key <> ''").fetchone()["count"]
+    assert action["status"] == "success"
+    assert duplicates == []
+    assert written == len(session.calendar_proposal["events"])
 
 
 def test_fresh_schema_keeps_session_lifecycle_separate_from_artifacts(client):
@@ -480,6 +520,45 @@ def test_final_review_plan_feedback_creates_a_real_version_bound_revision(client
     assert revised.plan_blueprint["artifactId"] != before["artifactId"]
     assert revised.plan_blueprint["version"] == before["version"] + 1
     assert revised.plan_blueprint["tasks"][0]["title"] == "Build the concise demo"
+    assert revised.status == "waiting_final_review"
+
+
+def test_final_review_retries_a_rejected_user_revision_instead_of_silently_continuing(client):
+    class RetrySplitModel(DeterministicV2Model):
+        repair_attempts = 0
+
+        def complete_contract(self, *, stage, contract_type, **kwargs):
+            if contract_type is not RepairProposal:
+                return super().complete_contract(stage=stage, contract_type=contract_type, **kwargs)
+            issue = kwargs["payload"]["currentIssue"]
+            if not str(issue["issueId"]).startswith("final-review:"):
+                return super().complete_contract(stage=stage, contract_type=contract_type, **kwargs)
+            self.calls.append(stage)
+            self.repair_attempts += 1
+            plan = kwargs["payload"]["currentPlan"]
+            original = PlanTask.model_validate(plan["tasks"][0])
+            target_id = "missing-task" if self.repair_attempts == 1 else original.id
+            payload = {"title": "Build the revised demo"}
+            return AgentResult(
+                artifact=RepairProposal(
+                    artifactId=plan["artifactId"],
+                    artifactVersion=plan["version"],
+                    issueId=issue["issueId"],
+                    operations=[RepairOperation(operation="update_task", targetId=target_id, payload=payload)],
+                ),
+                model_usage={"provider": "test", "model": "v2", "mode": "llm", "taskType": "planning_plan"},
+            )
+
+    model = RetrySplitModel()
+    runtime = CognitiveOSRuntime(model_client=model)
+    started = runtime.create_session(CreatePlanningSessionRequest(threadId="revision-retry", userInput="Build a portfolio demo"))
+    planned = runtime.confirm_understanding(started.session_id)
+    revised = runtime.revise_final(started.session_id, PlanningSessionTextRequest(text="Revise the first task."))
+
+    assert model.repair_attempts == 2, [issue["description"] for issue in revised.plan_quality_report["issues"]]
+    assert revised.plan_blueprint["version"] == planned.plan_blueprint["version"] + 1
+    assert revised.plan_blueprint["tasks"][0]["id"] == "task-1"
+    assert revised.plan_blueprint["tasks"][0]["title"] == "Build the revised demo"
     assert revised.status == "waiting_final_review"
 
 

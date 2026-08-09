@@ -467,6 +467,14 @@ class CognitiveOSRuntime:
                 "semantic_review_completed": False,
             }
         )
+        rejected_user_revision = next(
+            (issue for issue in (previous.issues if previous else []) if issue.rule_id == "repair_rejected"),
+            None,
+        )
+        if state.get("user_revision_issue") and rejected_user_revision:
+            quality = quality.model_copy(
+                update={"hard_rules_passed": False, "issues": [*quality.issues, rejected_user_revision]}
+            )
         state["plan_quality_report"] = self._record_planning_artifact(
             state,
             agent="Plan Quality Reviewer",
@@ -535,7 +543,12 @@ class CognitiveOSRuntime:
         if not plan or not quality or not constraints or not context or not snapshot:
             return state
         user_revision = state.get("user_revision_issue")
-        if not user_revision and int(state.get("repair_count", 0)) >= 2:
+        if user_revision:
+            attempts = int(state.get("user_revision_attempts", 0))
+            if attempts >= 2:
+                return state
+            state["user_revision_attempts"] = attempts + 1
+        elif int(state.get("repair_count", 0)) >= 2:
             return state
         issue = user_revision or next((item for item in quality.issues if item.severity in {"blocker", "major"}), None)
         if issue is None:
@@ -574,6 +587,10 @@ class CognitiveOSRuntime:
             return self._block_model(state, agent=self.plan_generator.name, error=exc.error)
         except ValueError as exc:
             self._record_rejected_repair(state, issue=issue, reason=str(exc), model_usage=result.model_usage)
+            if user_revision:
+                state["user_revision_issue"] = user_revision.model_copy(
+                    update={"description": f"{user_revision.description}\nPrevious repair rejected: {exc}"}
+                )
             invalid = QualityIssue(
                 issueId=f"repair:{issue.issue_id}",
                 category=issue.category,
@@ -589,21 +606,44 @@ class CognitiveOSRuntime:
             state["plan_quality_report"] = quality.model_copy(
                 update={"issues": [*quality.issues, invalid], "repair_round": min(2, int(state.get("repair_count", 0)) + 1)}
             )
-            state["repair_count"] = min(2, int(state.get("repair_count", 0)) + 1)
-            self.persistence.update(state["session_id"], repair_count=state["repair_count"], runtime_status="running")
+            if not user_revision:
+                state["repair_count"] = min(2, int(state.get("repair_count", 0)) + 1)
+                self.persistence.update(state["session_id"], repair_count=state["repair_count"], runtime_status="running")
+            elif int(state.get("user_revision_attempts", 0)) < 2:
+                return self.repair_plan_node(state)
             return state
         if not repair.accepted:
             self._record_rejected_repair(state, issue=issue, reason=repair.reason, model_usage=result.model_usage)
-            state["repair_count"] = min(2, int(state.get("repair_count", 0)) + 1)
-            self.persistence.update(state["session_id"], repair_count=state["repair_count"], runtime_status="running")
+            rejected = QualityIssue(
+                issueId=f"repair:{issue.issue_id}",
+                category=issue.category,
+                severity="blocker",
+                ruleId="repair_rejected",
+                targetType=issue.target_type,
+                targetId=issue.target_id,
+                description=repair.reason,
+                evidenceRefs=[issue.issue_id],
+                allowedOperations=[],
+                repairBasis="patch_guard",
+            )
+            state["plan_quality_report"] = quality.model_copy(update={"issues": [*quality.issues, rejected]})
+            if user_revision:
+                state["user_revision_issue"] = user_revision.model_copy(
+                    update={"description": f"{user_revision.description}\nPrevious repair rejected: {repair.reason}"}
+                )
+            else:
+                state["repair_count"] = min(2, int(state.get("repair_count", 0)) + 1)
+                self.persistence.update(state["session_id"], repair_count=state["repair_count"], runtime_status="running")
             self.agent_runtime.record_message(
                 state["session_id"],
                 from_agent="Plan Generator",
                 to_agent="Plan Quality Reviewer",
                 message_type="revision_request",
                 reason=repair.reason,
-                payload={"issueId": issue.issue_id, "repairAttempt": state["repair_count"]},
+                payload={"issueId": issue.issue_id, "repairAttempt": state.get("user_revision_attempts") if user_revision else state["repair_count"]},
             )
+            if user_revision and int(state.get("user_revision_attempts", 0)) < 2:
+                return self.repair_plan_node(state)
             return state
         if not user_revision:
             state["repair_count"] = min(2, int(state.get("repair_count", 0)) + 1)
@@ -619,7 +659,7 @@ class CognitiveOSRuntime:
             model_usage=result.model_usage,
         )
         self.persistence.update(state["session_id"], repair_count=int(state.get("repair_count", 0)), runtime_status="running")
-        state.pop("user_revision_issue", None)
+        state["user_revision_issue"] = None
         return state
 
     def generate_schedule_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
@@ -861,6 +901,7 @@ class CognitiveOSRuntime:
                     allowedOperations=operations,
                     repairBasis="user_final_review",
                 )
+                state["user_revision_attempts"] = 0
         state["next_node"] = {
             "understanding_change": "understanding",
             "plan_change": "repair_plan",

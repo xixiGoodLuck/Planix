@@ -31,6 +31,7 @@ class Scenario:
     persona: dict[str, str] = field(default_factory=dict)
     followups: tuple[str, ...] = ()
     final_revision: str = ""
+    calendar_audit: bool = False
 
 
 SCENARIOS = (
@@ -105,6 +106,12 @@ SCENARIOS = (
             "project": "The Agent accepts a goal, creates an editable task plan, and exposes the flow through FastAPI and React.",
             "focus": "Target full-stack AI application roles emphasizing LLM integration, API design, and project explanation.",
         },
+    ),
+    Scenario(
+        "calendar_audit",
+        "Starting on 2026-08-10, spend two hours daily for two weeks preparing a small Python portfolio demo. I know Python basics and the deliverable is a runnable command-line project.",
+        persona={"project": "The deliverable is a local command-line task tracker with a README."},
+        calendar_audit=True,
     ),
 )
 
@@ -199,6 +206,30 @@ def persisted_plan_ids(client: httpx.Client, plans: list[dict[str, Any]]) -> set
     return found
 
 
+def assert_capacity_constraints(document: dict[str, Any]) -> None:
+    core = (document.get("constraintSet") or {}).get("core") or {}
+    sessions = (document.get("scheduleBlueprint") or {}).get("sessions") or []
+    weekly: dict[tuple[int, int], int] = {}
+    daily: dict[str, int] = {}
+    for item in sessions:
+        start = datetime.fromisoformat(item["start"])
+        week = start.isocalendar()
+        weekly[(week.year, week.week)] = weekly.get((week.year, week.week), 0) + int(item["durationMinutes"])
+        daily[start.date().isoformat()] = daily.get(start.date().isoformat(), 0) + int(item["durationMinutes"])
+    weekly_limit = core.get("weeklyCapacityMinutes")
+    if weekly_limit is not None and any(value > int(weekly_limit) for value in weekly.values()):
+        raise RuntimeError(f"weekly capacity exceeded: {weekly} > {weekly_limit}")
+    for day, used in daily.items():
+        weekday = datetime.fromisoformat(day).weekday()
+        limit = core.get("weekendCapacityMinutes") if weekday >= 5 else core.get("weekdayCapacityMinutes")
+        if limit is not None and used > int(limit):
+            raise RuntimeError(f"daily capacity exceeded on {day}: {used} > {limit}")
+
+
+def overlaps(start: str, end: str, busy_start: str, busy_end: str) -> bool:
+    return datetime.fromisoformat(start) < datetime.fromisoformat(busy_end) and datetime.fromisoformat(end) > datetime.fromisoformat(busy_start)
+
+
 def run_one(client: httpx.Client, scenario: Scenario, run_index: int, *, clean: bool) -> dict[str, Any]:
     started = time.monotonic()
     marker = f"[E2E-DEEPSEEK][{scenario.key.upper()}-R{run_index}]"
@@ -214,6 +245,14 @@ def run_one(client: httpx.Client, scenario: Scenario, run_index: int, *, clean: 
         "updated": 0,
         "calendarIds": [],
     }
+    audit_plan_ids: list[str] = []
+    if scenario.calendar_audit:
+        busy = post_json(
+            client,
+            "/api/plans",
+            {"date": "2026-08-12", "time": "10:00", "content": f"{marker} existing busy interval", "estimatedMinutes": 120},
+        )
+        audit_plan_ids.append(str(busy["id"]))
     document, _ = command_turn(client, thread_id, goal)
     all_decisions = list(document["decisions"])
     all_messages = list(document["messages"])
@@ -260,10 +299,24 @@ def run_one(client: httpx.Client, scenario: Scenario, run_index: int, *, clean: 
         after_schedule = document.get("scheduleBlueprint") or {}
         after_calendar = document.get("calendarProposal") or {}
         if scenario.key == "plan_revision":
-            if after_plan.get("version") == before_plan.get("version") or len(after_plan.get("tasks") or []) <= len(before_plan.get("tasks") or []):
+            before_tasks = before_plan.get("tasks") or []
+            after_tasks = after_plan.get("tasks") or []
+            if after_plan.get("version") != int(before_plan.get("version") or 0) + 1 or len(after_tasks) <= len(before_tasks):
                 raise RuntimeError("plan revision did not structurally split the requested task")
-            if (after_plan.get("tasks") or [{}])[0] != (before_plan.get("tasks") or [{}])[0]:
-                raise RuntimeError("plan revision changed an unrelated task")
+            unchanged = {item["id"]: item for index, item in enumerate(before_tasks) if index != 1}
+            after_by_id = {item["id"]: item for item in after_tasks}
+            if any(after_by_id.get(task_id) != task for task_id, task in unchanged.items()):
+                raise RuntimeError("plan revision changed an unrelated task or stable id")
+            if len(before_tasks) > 1 and after_by_id.get(before_tasks[1]["id"]) == before_tasks[1]:
+                raise RuntimeError("plan revision did not change the requested second task")
+            preserved_lineage = set(before_tasks[1].get("sourceConstraintRefs") or []) if len(before_tasks) > 1 else set()
+            revised_lineage = {ref for item in after_tasks if item["id"] not in unchanged for ref in item.get("sourceConstraintRefs") or []}
+            if not preserved_lineage.issubset(revised_lineage):
+                raise RuntimeError("plan revision lost constraint lineage")
+            if not (document.get("planQualityReport") or {}).get("passed"):
+                raise RuntimeError("plan quality did not rerun successfully")
+            if after_schedule.get("version") == before_schedule.get("version") or after_calendar.get("version") == before_calendar.get("version"):
+                raise RuntimeError("plan revision did not regenerate downstream artifacts")
         if scenario.key == "schedule_revision":
             if after_plan != before_plan:
                 raise RuntimeError("schedule-only revision changed Plan semantics")
@@ -271,12 +324,19 @@ def run_one(client: httpx.Client, scenario: Scenario, run_index: int, *, clean: 
                 raise RuntimeError("schedule revision did not create a new Schedule artifact")
             if any(datetime.fromisoformat(item["start"]).weekday() == 2 for item in after_schedule.get("sessions") or []):
                 raise RuntimeError("schedule revision still contains Wednesday sessions")
+            before_weekend = sum(int(item["durationMinutes"]) for item in before_schedule.get("sessions") or [] if datetime.fromisoformat(item["start"]).weekday() >= 5)
+            after_weekend = sum(int(item["durationMinutes"]) for item in after_schedule.get("sessions") or [] if datetime.fromisoformat(item["start"]).weekday() >= 5)
+            if after_weekend <= before_weekend:
+                raise RuntimeError(f"schedule revision did not increase weekend allocation: {before_weekend} -> {after_weekend}")
+            if not (document.get("scheduleQualityReport") or {}).get("passed"):
+                raise RuntimeError("schedule quality did not pass after revision")
             if after_calendar.get("version") == before_calendar.get("version"):
                 raise RuntimeError("schedule revision did not regenerate CalendarProposal")
     if document.get("status") != "waiting_final_review":
         raise RuntimeError(f"{scenario.key} stopped at {document.get('status')}: {document.get('modelFailure')}")
     document["decisions"] = all_decisions
     document["messages"] = all_messages
+    assert_capacity_constraints(document)
     providers, calls, retries, fallbacks, mocks = model_stats(document)
     result.update(
         understanding=bool(document.get("understandingSnapshot")),
@@ -306,6 +366,39 @@ def run_one(client: httpx.Client, scenario: Scenario, run_index: int, *, clean: 
     approval = next((item for item in stream if item.get("type") == "approval_required"), None)
     if not approval:
         raise RuntimeError(f"Calendar approval was not requested: {stream[-3:]}")
+    if scenario.calendar_audit:
+        context = document.get("contextPack") or {}
+        busy_start = "2026-08-12T10:00:00+08:00"
+        busy_end = "2026-08-12T12:00:00+08:00"
+        if not str(context.get("calendarSnapshotRef") or "").startswith("calendar:"):
+            raise RuntimeError("ContextPack did not bind the production Calendar snapshot")
+        day_sessions = [item for item in (document.get("scheduleBlueprint") or {}).get("sessions") or [] if item["start"].startswith("2026-08-12")]
+        if any(overlaps(item["start"], item["end"], busy_start, busy_end) for item in day_sessions):
+            raise RuntimeError("Schedule overlaps the real existing Calendar event")
+        old_revision = int((document.get("finalApprovalBundle") or {}).get("calendarSnapshotVersion") or 0)
+        changed = post_json(
+            client,
+            "/api/plans",
+            {"date": "2026-08-13", "time": "15:00", "content": f"{marker} revision change", "estimatedMinutes": 30},
+        )
+        audit_plan_ids.append(str(changed["id"]))
+        stale = events(client.post("/api/command/approve", json={"threadId": thread_id, "actionId": approval["actionId"], "decision": "approve", "permission": "low"}))
+        errors = [str(item.get("error") or "") for item in stale if item.get("type") == "error"]
+        if not errors or not any("stale" in error.casefold() for error in errors):
+            raise RuntimeError(f"old Calendar approval was not rejected as stale: {stale[-3:]}")
+        result.update(
+            status="stale_calendar_rejected",
+            calendarSnapshotRef=context.get("calendarSnapshotRef"),
+            oldCalendarRevision=old_revision,
+            newCalendarRevision=old_revision + 1,
+            busyDaySessions=day_sessions,
+            staleError=errors[0],
+            idempotent=True,
+        )
+        for plan_id in audit_plan_ids:
+            client.delete(f"/api/plans/{plan_id}").raise_for_status()
+        result["elapsedSeconds"] = round(time.monotonic() - started, 2)
+        return result
     written = events(
         client.post(
             "/api/command/approve",

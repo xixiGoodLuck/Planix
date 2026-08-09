@@ -101,6 +101,7 @@ class CognitivePlanningState(TypedDict, total=False):
     feedback_route: FeedbackRoute
     final_revision_patch: FinalRevisionPatch
     user_revision_issue: QualityIssue
+    user_revision_attempts: int
     final_approval_bundle: FinalApprovalBundle
     execution_outcomes: list[ExecutionOutcome]
     replan_proposal: ReplanProposal

@@ -222,8 +222,9 @@ class UnderstandingContextCompactor:
 
 
 class ConstraintCompiler:
-    _minutes = re.compile(r"(?P<value>\d+)\s*(?:分钟|minutes?|mins?)", re.I)
-    _hours = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s*(?:小时|hours?|hrs?)", re.I)
+    _number = r"\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
+    _minutes = re.compile(rf"(?P<value>{_number})\s*(?:分钟|minutes?|mins?)", re.I)
+    _hours = re.compile(rf"(?P<value>{_number})\s*(?:小时|hours?|hrs?)", re.I)
     _budget = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s*(?:元|CNY|RMB)", re.I)
     _date = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
     _relative_horizon = re.compile(
@@ -258,8 +259,8 @@ class ConstraintCompiler:
                 hours = self._hours.search(clause)
                 minutes = self._minutes.search(clause)
                 duration = (
-                    int(float(hours.group("value")) * 60)
-                    if hours else int(minutes.group("value")) if minutes else None
+                    int(self._numeric_value(hours.group("value")) * 60)
+                    if hours else int(self._numeric_value(minutes.group("value"))) if minutes else None
                 )
                 if duration is None:
                     continue
@@ -328,6 +329,14 @@ class ConstraintCompiler:
             semantic=semantic,
             sourceConstraintIds=[item.id for item in snapshot.constraints],
         )
+
+    @staticmethod
+    def _numeric_value(value: str) -> float:
+        words = {
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+            "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+        }
+        return float(words.get(value.casefold(), value))
 
     @classmethod
     def _relative_horizon_days(cls, statement: str) -> int | None:

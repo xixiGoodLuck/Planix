@@ -18,6 +18,21 @@ def _decision(
     return SchedulerDecision(action=action, next_node=next_node, reason_code=reason, agent_id=agent_id)
 
 
+def _can_repair_plan(state: CognitivePlanningState) -> bool:
+    if state.get("user_revision_issue"):
+        return int(state.get("user_revision_attempts", 0)) < 2
+    return int(state.get("repair_count", 0)) < 2
+
+
+def _user_revision_rejected(state: CognitivePlanningState) -> bool:
+    quality = state.get("plan_quality_report")
+    return bool(
+        state.get("user_revision_issue")
+        and quality
+        and any(issue.rule_id == "repair_rejected" for issue in quality.issues)
+    )
+
+
 def _from_guard(state: CognitivePlanningState) -> SchedulerDecision:
     action = str(state.get("user_action") or "create")
     if action in {"create", "answer_question", "restart"}:
@@ -102,37 +117,43 @@ def build_planning_graph(runtime, *, scheduler=None):
     )), {"validate_plan": "validate_plan", "__end__": END})
     graph.add_conditional_edges("validate_plan", route(lambda state: _decision(
         "semantic_review" if state.get("plan_quality_report") and state["plan_quality_report"].hard_rules_passed
-        else "repair_plan" if int(state.get("repair_count", 0)) < 2
+        else "repair_plan" if _can_repair_plan(state)
         else "wait_for_final_review",
         "plan_hard_validation",
         action=SchedulerAction.INVOKE_AGENT if state.get("plan_quality_report") and state["plan_quality_report"].hard_rules_passed
-        else SchedulerAction.REPAIR if int(state.get("repair_count", 0)) < 2
+        else SchedulerAction.REPAIR if _can_repair_plan(state)
         else SchedulerAction.WAIT_USER,
         agent_id="plan_reviewer" if state.get("plan_quality_report") and state["plan_quality_report"].hard_rules_passed
-        else "plan_generator" if int(state.get("repair_count", 0)) < 2 else None,
+        else "plan_generator" if _can_repair_plan(state) else None,
     )), {"semantic_review": "semantic_review", "repair_plan": "repair_plan", "wait_for_final_review": "wait_for_final_review", "__end__": END})
     graph.add_conditional_edges("semantic_review", route(lambda state: _decision(
         "__end__" if _model_blocked(state)
         else "generate_schedule" if state.get("plan_quality_report") and state["plan_quality_report"].passed
-        else "repair_plan" if int(state.get("repair_count", 0)) < 2
+        else "repair_plan" if _can_repair_plan(state)
         else "wait_for_final_review",
         "semantic_plan_review",
         action=SchedulerAction.INVOKE_CONTROLLER if state.get("plan_quality_report") and state["plan_quality_report"].passed
-        else SchedulerAction.REPAIR if int(state.get("repair_count", 0)) < 2
+        else SchedulerAction.REPAIR if _can_repair_plan(state)
         else SchedulerAction.WAIT_USER,
-        agent_id="plan_generator" if state.get("plan_quality_report") and not state["plan_quality_report"].passed and int(state.get("repair_count", 0)) < 2 else None,
+        agent_id="plan_generator" if state.get("plan_quality_report") and not state["plan_quality_report"].passed and _can_repair_plan(state) else None,
     )), {"generate_schedule": "generate_schedule", "repair_plan": "repair_plan", "wait_for_final_review": "wait_for_final_review", "__end__": END})
     graph.add_conditional_edges("repair_plan", route(lambda state: _decision(
-        "__end__" if _model_blocked(state) else "validate_repaired_plan",
-        "model_failure_checkpoint" if _model_blocked(state) else "plan_repair_complete",
-    )), {"validate_repaired_plan": "validate_repaired_plan", "__end__": END})
+        "__end__" if _model_blocked(state)
+        else "repair_plan" if _user_revision_rejected(state) and int(state.get("user_revision_attempts", 0)) < 2
+        else "wait_for_final_review" if _user_revision_rejected(state)
+        else "validate_repaired_plan",
+        "model_failure_checkpoint" if _model_blocked(state)
+        else "user_revision_retry" if _user_revision_rejected(state) and int(state.get("user_revision_attempts", 0)) < 2
+        else "user_revision_budget_exhausted" if _user_revision_rejected(state)
+        else "plan_repair_complete",
+    )), {"repair_plan": "repair_plan", "validate_repaired_plan": "validate_repaired_plan", "wait_for_final_review": "wait_for_final_review", "__end__": END})
     graph.add_conditional_edges("validate_repaired_plan", route(lambda state: _decision(
         "semantic_review" if state.get("plan_quality_report") and state["plan_quality_report"].hard_rules_passed
-        else "repair_plan" if int(state.get("repair_count", 0)) < 2
+        else "repair_plan" if _can_repair_plan(state)
         else "wait_for_final_review",
         "repair_regression_validation",
         action=SchedulerAction.INVOKE_AGENT if state.get("plan_quality_report") and state["plan_quality_report"].hard_rules_passed
-        else SchedulerAction.REPAIR if int(state.get("repair_count", 0)) < 2
+        else SchedulerAction.REPAIR if _can_repair_plan(state)
         else SchedulerAction.WAIT_USER,
         agent_id="plan_reviewer" if state.get("plan_quality_report") and state["plan_quality_report"].hard_rules_passed else "plan_generator",
     )), {"semantic_review": "semantic_review", "repair_plan": "repair_plan", "wait_for_final_review": "wait_for_final_review", "__end__": END})
