@@ -21,7 +21,7 @@ from ..schemas import (
     PlanningSessionTextRequest,
     PlanUpdate,
 )
-from .plans import create_plan, update_plan
+from .plans import create_plan, update_plan, upsert_calendar_plans
 
 
 def _now() -> str:
@@ -168,6 +168,7 @@ class CommandAgentService:
             existing = conn.execute("SELECT id FROM command_threads WHERE id = ?", (thread_id,)).fetchone()
             if not existing:
                 raise HTTPException(status_code=404, detail="Thread not found")
+            conn.execute("DELETE FROM planning_sessions WHERE thread_id = ?", (thread_id,))
             conn.execute("DELETE FROM command_approvals WHERE thread_id = ?", (thread_id,))
             conn.execute("DELETE FROM command_actions WHERE thread_id = ?", (thread_id,))
             conn.execute("DELETE FROM command_drafts WHERE thread_id = ?", (thread_id,))
@@ -562,6 +563,16 @@ class CommandAgentService:
                 (status, json.dumps(result, ensure_ascii=False) if result is not None else None, error, _now(), action_id),
             )
 
+    def _claim_calendar_action(self, action_id: str) -> None:
+        with get_conn() as conn:
+            cursor = conn.execute(
+                """UPDATE command_actions SET status = 'running', updated_at = ?
+                   WHERE id = ? AND status = 'waiting_approval'""",
+                (_now(), action_id),
+            )
+            if cursor.rowcount != 1:
+                raise HTTPException(status_code=409, detail="Calendar action is already running or consumed")
+
     def _record_approval(self, thread_id: str, action_id: str, permission: CommandPermission, decision: str) -> None:
         with get_conn() as conn:
             conn.execute(
@@ -653,15 +664,16 @@ class CommandAgentService:
             raise HTTPException(status_code=409, detail="Calendar approval is stale")
         orchestrator = get_planning_orchestrator()
         orchestrator.assert_calendar_write_allowed(session_id, final_approval_ref=final_ref)
-        self._update_action(action_id, status="running")
+        self._claim_calendar_action(action_id)
         created = 0
         updated = 0
         plans: list[dict[str, Any]] = []
         try:
-            for item in payload.get("plans") or []:
-                if not isinstance(item, dict):
-                    continue
-                state, plan = self._upsert_calendar_plan(item)
+            session = orchestrator.get_session(session_id)
+            expected_revision = int((session.final_approval_bundle or {}).get("calendarSnapshotVersion") or 0)
+            raw_items = [item for item in (payload.get("plans") or []) if isinstance(item, dict)]
+            written, new_revision = upsert_calendar_plans(raw_items, expected_revision=expected_revision)
+            for item, (state, plan) in zip(raw_items, written):
                 created += int(state == "created")
                 updated += int(state == "updated")
                 plans.append(
@@ -685,7 +697,7 @@ class CommandAgentService:
                 "errors": [],
                 "plans": plans,
             }
-            orchestrator.mark_calendar_written(session_id, final_approval_ref=final_ref)
+            orchestrator.mark_calendar_written(session_id, final_approval_ref=final_ref, mutation_revision=new_revision)
             self._update_action(action_id, status="success", result=result)
             return result
         except Exception as exc:

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
+from app.cognitive_planning.agents import AgentResult, UnderstandingAgent
+from app.cognitive_planning.contracts import ConversationTurn
 from app.cognitive_planning.planning import (
     SemanticItem,
     SemanticMergeService,
@@ -13,13 +17,14 @@ from app.cognitive_planning.planning import (
 )
 
 
-def semantic(key: str, statement: str, source_ref: str = "turn-1") -> SemanticItem:
+def semantic(key: str, statement: str, source_ref: str = "turn-1", blocking_category: str = "important") -> SemanticItem:
     return SemanticItem(
         id=f"item-{key}",
         key=key,
         statement=statement,
         sourceType="user_confirmed",
         sourceRef=source_ref,
+        blockingCategory=blocking_category,
     )
 
 
@@ -31,12 +36,13 @@ def snapshot() -> UnderstandingSnapshot:
         constraints=[semantic("deadline", "四周内完成")],
         preferences=[semantic("style", "项目驱动")],
         successSignals=[semantic("success:1", "完成可运行作品")],
-        unknowns=[semantic("unknown:safety", "是否存在安全限制")],
+        unknowns=[semantic("unknown:safety", "是否存在安全限制", blocking_category="safety")],
         nextQuestion=UnderstandingQuestion(
             question="作品主要用于什么？",
             whyThisQuestionMatters="用途会改变项目范围。",
             expectedDecisionImpact="决定任务和验收标准。",
             priority="blocking",
+            targetUnknownKey="unknown:safety",
         ),
         readiness=UnderstandingReadiness(
             questionRoundsUsed=1,
@@ -145,3 +151,53 @@ def test_safety_unknown_still_blocks_after_question_budget():
     assert assessed.readiness.ready_for_confirmation is False
     assert assessed.readiness.blocking_reasons
     assert assessed.unknowns
+
+
+class PatchModel:
+    def __init__(self, patch: UnderstandingPatch):
+        self.patch = patch
+        self.payload = None
+
+    def complete_contract(self, **kwargs):
+        self.payload = kwargs["payload"]
+        return AgentResult(self.patch, {"taskType": "planning_understanding"})
+
+
+def test_understanding_agent_uses_version_bound_patch_and_preserves_unrelated_facts():
+    current = snapshot()
+    model = PatchModel(
+        UnderstandingPatch(
+            baseArtifactId=current.artifact_id,
+            baseVersion=current.version,
+            userMessageRef="turn:2",
+            operations=[
+                SemanticOperation(
+                    operation="replace_item",
+                    section="facts",
+                    key="availability",
+                    item=semantic("availability", "Weekends only", "turn:2"),
+                )
+            ],
+            readyForConfirmation=True,
+        )
+    )
+    history = [ConversationTurn(role="user", content=f"turn {index}") for index in range(6)]
+    result = UnderstandingAgent(model).run(history, previous=current).artifact
+
+    assert result.facts[0].statement == "Weekends only"
+    assert result.constraints == current.constraints
+    assert len(model.payload["understandingContext"]["recentMessages"]) == 4
+
+
+def test_understanding_agent_rejects_stale_model_patch():
+    current = snapshot()
+    stale = UnderstandingPatch(
+        baseArtifactId=current.artifact_id,
+        baseVersion=current.version + 1,
+        userMessageRef="turn:2",
+    )
+    with pytest.raises(ValueError, match="stale"):
+        UnderstandingAgent(PatchModel(stale)).run(
+            [ConversationTurn(role="user", content="update")],
+            previous=current,
+        )

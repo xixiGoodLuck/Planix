@@ -368,6 +368,7 @@ class HarnessRuntime:
 
         def wrapped(state: dict[str, Any]) -> dict[str, Any]:
             persistent = self.bootstrap(state)
+            previous_repair_count = int(state.get("repair_count", 0))
             contract = self.registry.get(agent_id)
             missing = list(dict.fromkeys([
                 *self.registry.missing_inputs(agent_id, state),
@@ -435,7 +436,11 @@ class HarnessRuntime:
                 if contract.output_artifact
                 else None
             )
-            if contract.output_artifact and (
+            rejected_repair_was_counted = (
+                node_name == "repair_plan"
+                and int(result_state.get("repair_count", 0)) > previous_repair_count
+            )
+            if contract.output_artifact and not rejected_repair_was_counted and (
                 output is None
                 or (
                     previous_output
@@ -695,7 +700,7 @@ class HarnessRuntime:
             category="planning_hypothesis",
             statement=observation.statement,
             evidence="; ".join(observation.source_refs),
-            domainScope=[],
+            domainScope=observation.domain_scope,
             confidence=0.6,
             evidencePolarity="positive",
         )

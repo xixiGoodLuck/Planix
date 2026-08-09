@@ -10,7 +10,7 @@ export interface CommandThreadMessage {
   status?: 'running' | 'success' | 'error'; title?: string; draftId?: string; actionId?: string;
   payload?: Record<string, unknown>; streaming?: boolean;
 }
-export type CommandWorkspaceStatus = 'idle' | 'running' | 'waiting_clarification' | 'waiting_confirmation' | 'blocked_model' | 'accepted' | 'unconfirmed' | 'failed';
+export type CommandWorkspaceStatus = 'idle' | 'running' | 'waiting_clarification' | 'waiting_confirmation' | 'waiting_permission' | 'blocked_model' | 'accepted' | 'unconfirmed' | 'failed';
 export interface CommandWorkspaceSummary { id: string; threadId?: string; title: string; messageCount: number; status: CommandWorkspaceStatus; sending: boolean; updatedAt: number; error?: string; }
 type Workspace = CommandWorkspaceSummary & { messages: CommandThreadMessage[]; loading: boolean };
 type State = {
@@ -61,13 +61,21 @@ function eventCard(event: CommandChatEvent, t: (key: string) => string): Omit<Co
   if (event.type === 'execution_result') return { role: 'card', kind: 'execution_result', status: event.status === 'success' ? 'success' : 'error', content: event.text, actionId: event.actionId, payload: { ...event } };
   return null;
 }
+export function workspaceStatusFor(status: string, runtimeStatus = ''): CommandWorkspaceStatus {
+  if (runtimeStatus === 'blocked_model') return 'blocked_model';
+  if (status === 'needs_goal_clarification' || status === 'waiting_understanding_input') return 'waiting_clarification';
+  if (status === 'waiting_understanding_confirmation' || status === 'waiting_final_review') return 'waiting_confirmation';
+  if (status === 'waiting_calendar_write_approval') return 'waiting_permission';
+  if (status === 'written_to_calendar') return 'accepted';
+  return 'running';
+}
 function applyEvent(workspaceId: string, event: CommandChatEvent, t: (key: string) => string) {
   if (event.type === 'thread') update((current) => updateWorkspace(current, workspaceId, (workspace) => ({ ...workspace, threadId: event.threadId })));
   const card = eventCard(event, t); if (card) addMessage(workspaceId, card);
   if (event.type === 'planning_session_status') {
     const runtime = String(event.runtimeStatus || event.data?.runtimeStatus || '');
     const status = String(event.status || '');
-    update((current) => updateWorkspace(current, workspaceId, (workspace) => ({ ...workspace, status: runtime === 'blocked_model' ? 'blocked_model' : status.includes('waiting_understanding') ? 'waiting_clarification' : status === 'waiting_final_review' ? 'waiting_confirmation' : status === 'written_to_calendar' ? 'accepted' : 'running' })));
+    update((current) => updateWorkspace(current, workspaceId, (workspace) => ({ ...workspace, status: workspaceStatusFor(status, runtime) })));
   }
 }
 function streamHandler(workspaceId: string, t: (key: string) => string) {
@@ -93,7 +101,7 @@ function sendCommand(input: string, t: (key: string) => string): false | Promise
   const text = input.trim(); const workspaceId = state.activeWorkspaceId; const workspace = state.workspaces[workspaceId];
   if (!text || !state.canSend || !workspace) return false;
   addMessage(workspaceId, { role: 'user', content: text }); update((current) => updateWorkspace(current, workspaceId, (item) => ({ ...item, title: item.title || text, sending: true, status: 'running', error: undefined })));
-  return (async () => { const stream = streamHandler(workspaceId, t); try { await runCommandChat({ threadId: workspace.threadId, message: text, permission: state.permission, context: { date: todayISO() } }, stream); stream.finish(); if (!stream.sawOutput) addMessage(workspaceId, { role: 'assistant', content: t('command.emptyReply') }); } catch (error) { stream.finish(); const message = error instanceof Error ? error.message : String(error); addMessage(workspaceId, { role: 'card', kind: 'error', status: 'error', content: message }); update((current) => updateWorkspace(current, workspaceId, (item) => ({ ...item, status: 'failed', error: message }))); } finally { update((current) => updateWorkspace(current, workspaceId, (item) => ({ ...item, sending: false }))); void refreshThreads(); } return true as const; })();
+  return (async () => { const stream = streamHandler(workspaceId, t); try { await runCommandChat({ threadId: workspace.threadId, message: text, permission: state.permission, context: { date: todayISO(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone } }, stream); stream.finish(); if (!stream.sawOutput) addMessage(workspaceId, { role: 'assistant', content: t('command.emptyReply') }); } catch (error) { stream.finish(); const message = error instanceof Error ? error.message : String(error); addMessage(workspaceId, { role: 'card', kind: 'error', status: 'error', content: message }); update((current) => updateWorkspace(current, workspaceId, (item) => ({ ...item, status: 'failed', error: message }))); } finally { update((current) => updateWorkspace(current, workspaceId, (item) => ({ ...item, sending: false }))); void refreshThreads(); } return true as const; })();
 }
 function approveAction(actionId: string, decision: 'approve' | 'reject', t: (key: string) => string): false | Promise<true> {
   const workspaceId = state.activeWorkspaceId; const workspace = state.workspaces[workspaceId]; if (!workspace || workspace.sending) return false;

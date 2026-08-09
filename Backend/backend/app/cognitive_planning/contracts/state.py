@@ -12,8 +12,10 @@ from .planning import (
     ExecutionOutcome,
     FeedbackRoute,
     FinalApprovalBundle,
+    FinalRevisionPatch,
     LearningObservation,
     PlanBlueprint,
+    QualityIssue,
     QualityReport,
     ReplanProposal,
     ScheduleBlueprint,
@@ -97,6 +99,8 @@ class CognitivePlanningState(TypedDict, total=False):
     schedule_quality_report: QualityReport
     calendar_proposal: CalendarProposal
     feedback_route: FeedbackRoute
+    final_revision_patch: FinalRevisionPatch
+    user_revision_issue: QualityIssue
     final_approval_bundle: FinalApprovalBundle
     execution_outcomes: list[ExecutionOutcome]
     replan_proposal: ReplanProposal

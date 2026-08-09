@@ -21,7 +21,7 @@ Repair nodes execute only when required and have a maximum of two rounds. `Quali
 
 ## Persistence and safety
 
-New sessions store lifecycle state in `planning_sessions`; versioned bodies live in `planning_artifacts`. Existing retired database tables and columns are preserved but production code does not read or write them. Final approval binds the current Understanding, Constraint, Context, Plan, quality, Schedule, Calendar proposal, Calendar snapshot, and checkpoint versions. Calendar writes additionally require Command approval, Harness policy, permission checks, current versions, and idempotent `sourceKey` writes.
+New sessions store lifecycle state in `planning_sessions`; versioned bodies live in `planning_artifacts`. Existing retired database tables and columns are preserved but production code does not read or write them. Final approval binds the current Understanding, Constraint, Context, Plan, quality, Schedule, Calendar proposal, and Calendar snapshot versions. Its checkpoint version is an immutable audit anchor; protected Artifact freshness is enforced by the exact bound version set rather than comparing the approval-creation checkpoint with later audit-only checkpoints. Calendar writes additionally require Command approval, Harness policy, permission checks, current versions, and idempotent `sourceKey` writes.
 
 ## Models
 

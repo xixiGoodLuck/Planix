@@ -1291,7 +1291,7 @@ select:focus {
 
 .calendar-collapsible {
   display: grid;
-  max-height: 760px;
+  max-height: 1200px;
   overflow: hidden;
   opacity: 1;
   transform: translateY(0);
@@ -1500,6 +1500,7 @@ select:focus {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) 34px;
   gap: 12px;
+  align-items: start;
   padding: 14px;
   border-radius: 12px;
   background: rgba(15, 23, 42, 0.7);
@@ -1519,6 +1520,25 @@ select:focus {
   border: 1px solid rgba(148, 163, 184, 0.28);
   background: rgba(17, 24, 39, 0.86);
   color: #86efac;
+}
+
+.calendar-delete-button {
+  align-self: start;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #94a3b8;
+}
+
+.calendar-delete-button:hover {
+  background: rgba(248, 113, 113, 0.16);
+  color: #fda4af;
 }
 
 .plan-main {
@@ -1628,7 +1648,7 @@ select:focus {
   resize: vertical;
 }
 
-.add-row {
+.calendar-plan-add-row {
   display: grid;
   grid-template-columns: 112px minmax(0, 1fr) 44px;
   gap: 10px;
@@ -1636,22 +1656,40 @@ select:focus {
   align-items: stretch;
 }
 
-.time-input,
-.add-row textarea {
+.calendar-time-input {
+  width: 112px;
+  min-width: 112px;
+  height: 44px;
   min-height: 44px;
-  padding: 10px 12px;
+  padding: 0 10px;
 }
 
-.add-row textarea {
-  resize: vertical;
+.calendar-time-input::-webkit-calendar-picker-indicator {
+  opacity: 0.65;
+  cursor: pointer;
 }
 
-.primary-icon {
+.calendar-plan-input {
+  min-width: 0;
+  height: 44px;
+  min-height: 44px;
+  padding: 0 12px;
+}
+
+.calendar-add-button {
   display: grid;
   place-items: center;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
   border-radius: 10px;
   background: #6d5ef6;
   color: #ffffff;
+}
+
+.calendar-add-button:hover {
+  background: #7c6ff7;
 }
 
 .ai-grid {
@@ -3886,11 +3924,11 @@ select:focus {
     min-height: 0;
   }
 
-  .add-row {
+  .calendar-plan-add-row {
     grid-template-columns: 1fr 44px;
   }
 
-  .time-input {
+  .calendar-time-input {
     grid-column: 1 / -1;
   }
 }

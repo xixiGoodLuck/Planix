@@ -6,7 +6,7 @@
 4. Plan and Schedule repair are issue-scoped, stable-ID preserving, regression-validated, and limited to two rounds.
 5. `QualityReport.passed` depends on hard rules and issue severity, never score.
 6. Model failure preserves valid Artifacts, records `MODEL_UNAVAILABLE` / `blocked_model`, and resumes only the failed native node.
-7. Final approval binds every current Artifact and checkpoint version.
+7. Final approval binds every protected current Artifact and Calendar revision; checkpointVersion is an audit anchor and unrelated later audit events do not invalidate an otherwise current approval.
 8. Calendar mutation requires the current approval and proposal, explicit Command approval, Harness Calendar permission, version checks, and idempotency.
 9. Durable learning requires a versioned observation, independent evaluation, and fail-closed policy.
 10. Public model routing returns exactly the four V2 task types; removed HTTP routes return 404.

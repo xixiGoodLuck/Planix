@@ -205,6 +205,7 @@ def init_db(conn: sqlite3.Connection) -> None:
           conversation_history_json TEXT NOT NULL DEFAULT '[]',
           request_context_json TEXT NOT NULL DEFAULT '{}',
           repair_count INTEGER NOT NULL DEFAULT 0,
+          schedule_repair_count INTEGER NOT NULL DEFAULT 0,
           version INTEGER NOT NULL DEFAULT 1,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -336,6 +337,14 @@ def init_db(conn: sqlite3.Connection) -> None:
           local_fallback_enabled INTEGER NOT NULL DEFAULT 1,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS calendar_state (
+          id TEXT PRIMARY KEY,
+          revision INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        INSERT OR IGNORE INTO calendar_state(id, revision) VALUES ('local', 0);
 
         CREATE TABLE IF NOT EXISTS user_preferences (
           key TEXT PRIMARY KEY,
@@ -585,6 +594,46 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
     ensure_column(conn, "plans", "source_key", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "planning_sessions", "schedule_repair_count", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_unique_planning_versions(conn)
+    _ensure_unique_plan_source_keys(conn)
+
+
+def _ensure_unique_planning_versions(conn: sqlite3.Connection) -> None:
+    groups = conn.execute(
+        """SELECT session_id, artifact_type FROM planning_artifacts
+           GROUP BY session_id, artifact_type HAVING COUNT(*) != COUNT(DISTINCT version)"""
+    ).fetchall()
+    for group in groups:
+        rows = conn.execute(
+            """SELECT id FROM planning_artifacts WHERE session_id = ? AND artifact_type = ?
+               ORDER BY created_at, id""",
+            (group["session_id"], group["artifact_type"]),
+        ).fetchall()
+        for version, row in enumerate(rows, start=1):
+            conn.execute("UPDATE planning_artifacts SET version = ? WHERE id = ?", (version, row["id"]))
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS uq_planning_artifacts_session_type_version
+           ON planning_artifacts(session_id, artifact_type, version)"""
+    )
+
+
+def _ensure_unique_plan_source_keys(conn: sqlite3.Connection) -> None:
+    duplicates = conn.execute(
+        """SELECT source_key FROM plans WHERE source_key <> ''
+           GROUP BY source_key HAVING COUNT(*) > 1"""
+    ).fetchall()
+    for duplicate in duplicates:
+        rows = conn.execute(
+            "SELECT id FROM plans WHERE source_key = ? ORDER BY created_at, id",
+            (duplicate["source_key"],),
+        ).fetchall()
+        for row in rows[1:]:
+            conn.execute("UPDATE plans SET source_key = '' WHERE id = ?", (row["id"],))
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS uq_plans_nonempty_source_key
+           ON plans(source_key) WHERE source_key <> ''"""
+    )
 
 
 def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> bool:

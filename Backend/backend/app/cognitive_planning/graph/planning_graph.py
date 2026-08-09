@@ -44,6 +44,10 @@ def _from_guard(state: CognitivePlanningState) -> SchedulerDecision:
     return _decision("wait_for_understanding", "wait_current_phase", action=SchedulerAction.WAIT_USER)
 
 
+def _model_blocked(state: CognitivePlanningState) -> bool:
+    return state.get("status") == "MODEL_UNAVAILABLE" or state.get("runtime_status") == "blocked_model"
+
+
 def build_planning_graph(runtime, *, scheduler=None):
     harness = runtime.harness
 
@@ -84,12 +88,18 @@ def build_planning_graph(runtime, *, scheduler=None):
         "calendar_gate": "calendar_gate",
         "__end__": END,
     })
-    graph.add_edge("understanding", "understanding_readiness")
+    graph.add_conditional_edges("understanding", route(lambda state: _decision(
+        "__end__" if _model_blocked(state) else "understanding_readiness",
+        "model_failure_checkpoint" if _model_blocked(state) else "understanding_complete",
+    )), {"understanding_readiness": "understanding_readiness", "__end__": END})
     graph.add_edge("understanding_readiness", "wait_for_understanding")
     graph.add_edge("wait_for_understanding", END)
     graph.add_edge("compile_constraints", "build_context")
     graph.add_edge("build_context", "generate_plan")
-    graph.add_edge("generate_plan", "validate_plan")
+    graph.add_conditional_edges("generate_plan", route(lambda state: _decision(
+        "__end__" if _model_blocked(state) else "validate_plan",
+        "model_failure_checkpoint" if _model_blocked(state) else "plan_generated",
+    )), {"validate_plan": "validate_plan", "__end__": END})
     graph.add_conditional_edges("validate_plan", route(lambda state: _decision(
         "semantic_review" if state.get("plan_quality_report") and state["plan_quality_report"].hard_rules_passed
         else "repair_plan" if int(state.get("repair_count", 0)) < 2
@@ -102,7 +112,8 @@ def build_planning_graph(runtime, *, scheduler=None):
         else "plan_generator" if int(state.get("repair_count", 0)) < 2 else None,
     )), {"semantic_review": "semantic_review", "repair_plan": "repair_plan", "wait_for_final_review": "wait_for_final_review", "__end__": END})
     graph.add_conditional_edges("semantic_review", route(lambda state: _decision(
-        "generate_schedule" if state.get("plan_quality_report") and state["plan_quality_report"].passed
+        "__end__" if _model_blocked(state)
+        else "generate_schedule" if state.get("plan_quality_report") and state["plan_quality_report"].passed
         else "repair_plan" if int(state.get("repair_count", 0)) < 2
         else "wait_for_final_review",
         "semantic_plan_review",
@@ -111,7 +122,10 @@ def build_planning_graph(runtime, *, scheduler=None):
         else SchedulerAction.WAIT_USER,
         agent_id="plan_generator" if state.get("plan_quality_report") and not state["plan_quality_report"].passed and int(state.get("repair_count", 0)) < 2 else None,
     )), {"generate_schedule": "generate_schedule", "repair_plan": "repair_plan", "wait_for_final_review": "wait_for_final_review", "__end__": END})
-    graph.add_edge("repair_plan", "validate_repaired_plan")
+    graph.add_conditional_edges("repair_plan", route(lambda state: _decision(
+        "__end__" if _model_blocked(state) else "validate_repaired_plan",
+        "model_failure_checkpoint" if _model_blocked(state) else "plan_repair_complete",
+    )), {"validate_repaired_plan": "validate_repaired_plan", "__end__": END})
     graph.add_conditional_edges("validate_repaired_plan", route(lambda state: _decision(
         "semantic_review" if state.get("plan_quality_report") and state["plan_quality_report"].hard_rules_passed
         else "repair_plan" if int(state.get("repair_count", 0)) < 2
@@ -149,7 +163,10 @@ def build_planning_graph(runtime, *, scheduler=None):
         "wait_for_final_review": "wait_for_final_review",
         "__end__": END,
     })
-    graph.add_edge("record_learning", "wait_for_final_review")
+    graph.add_conditional_edges("record_learning", route(lambda state: _decision(
+        "__end__" if _model_blocked(state) else "wait_for_final_review",
+        "model_failure_checkpoint" if _model_blocked(state) else "learning_recorded",
+    )), {"wait_for_final_review": "wait_for_final_review", "__end__": END})
     graph.add_edge("calendar_gate", END)
     return graph.compile()
 

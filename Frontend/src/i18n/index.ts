@@ -10,6 +10,7 @@ export type I18nNamespace = {
   shell: Record<string, string>;
   command: Record<string, string>;
   inspector: Record<string, string>;
+  calendar: Record<string, string>;
   legacy: Record<string, string>;
 };
 

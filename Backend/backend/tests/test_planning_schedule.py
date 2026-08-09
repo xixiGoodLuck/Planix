@@ -123,7 +123,7 @@ def test_schedule_validator_rejects_calendar_conflict_without_deleting_task():
         calendar_busy=busy,
     )
     assert "calendar_conflict" in {value.rule_id for value in report.issues}
-    assert len(schedule.sessions) == 2
+    assert {session.task_id for session in schedule.sessions} == {"task-1", "task-2"}
 
 
 def test_calendar_materialization_is_deterministic_and_idempotent_by_source_key():

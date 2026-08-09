@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, NotebookPen, Trash2 } from 'lucide-react';
 import type { AppData, Lang } from '../types';
-import { getMonthDays, monthKey, todayISO } from '../utils/date';
+import { getMonthDays, todayISO } from '../utils/date';
 import { weekdayLabels } from '../i18n';
 
 interface CalendarPanelProps {
@@ -55,15 +55,15 @@ export function CalendarPanel(props: CalendarPanelProps) {
   async function clearSelectedDayPlans() {
     const plans = data[selectedDate]?.plans ?? [];
     if (!plans.length || clearingSelected) return;
-    const confirmed = window.confirm(t('legacy.confirmClearDayPlans'));
+    const confirmed = window.confirm(t('calendar.confirmClearDayPlans'));
     if (!confirmed) return;
     setClearingSelected(true);
     setClearStatus('');
     try {
       const result = await onClearSelectedDayPlans(selectedDate);
-      setClearStatus(`${t('legacy.clearDayPlansDone')}: ${t('legacy.deletedCount')} ${result.deleted}, ${t('legacy.failedCount')} ${result.failed}`);
+      setClearStatus(`${t('calendar.clearDayPlansDone')}: ${t('calendar.deletedCount')} ${result.deleted}, ${t('calendar.failedCount')} ${result.failed}`);
     } catch {
-      setClearStatus(t('legacy.clearDayPlansFailed'));
+      setClearStatus(t('calendar.clearDayPlansFailed'));
     } finally {
       setClearingSelected(false);
     }
@@ -71,16 +71,16 @@ export function CalendarPanel(props: CalendarPanelProps) {
 
   async function clearAllCalendarPlans() {
     if (clearingAll) return;
-    const confirmed = window.confirm(t('legacy.confirmClearAllPlans'));
+    const confirmed = window.confirm(t('calendar.confirmClearAllPlans'));
     if (!confirmed) return;
     setClearingAll(true);
     setClearStatus('');
     try {
       const result = await onClearAllPlans();
-      const failedPart = result.failed > 0 ? `, ${t('legacy.failedCount')} ${result.failed}` : '';
-      setClearStatus(`${t('legacy.clearAllPlansDone')}: ${t('legacy.deletedCount')} ${result.deleted}${failedPart}`);
+      const failedPart = result.failed > 0 ? `, ${t('calendar.failedCount')} ${result.failed}` : '';
+      setClearStatus(`${t('calendar.clearAllPlansDone')}: ${t('calendar.deletedCount')} ${result.deleted}${failedPart}`);
     } catch {
-      setClearStatus(t('legacy.clearAllPlansFailed'));
+      setClearStatus(t('calendar.clearAllPlansFailed'));
     } finally {
       setClearingAll(false);
     }
@@ -91,8 +91,8 @@ export function CalendarPanel(props: CalendarPanelProps) {
       <button
         className="calendar-collapse-toggle"
         onClick={() => setIsCalendarOpen((current) => !current)}
-        aria-label={isCalendarOpen ? t('legacy.collapseCalendar') : t('legacy.expandCalendar')}
-        title={isCalendarOpen ? t('legacy.collapseCalendar') : t('legacy.expandCalendar')}
+        aria-label={isCalendarOpen ? t('calendar.collapseCalendar') : t('calendar.expandCalendar')}
+        title={isCalendarOpen ? t('calendar.collapseCalendar') : t('calendar.expandCalendar')}
       >
         {isCalendarOpen ? <ChevronDown size={22} /> : <ChevronUp size={22} />}
       </button>
@@ -100,14 +100,14 @@ export function CalendarPanel(props: CalendarPanelProps) {
       <div className="calendar-collapsible" aria-hidden={!isCalendarOpen}>
         <div className="section-head">
           <div>
-            <span className="eyebrow">{t('legacy.calendar')}</span>
+            <span className="eyebrow">{t('calendar.calendar')}</span>
             <h2>{monthTitle}</h2>
           </div>
           <div className="icon-row">
-            <button className="icon-button" onClick={() => shiftMonth(-1)} aria-label={t('legacy.previousMonth')}>
+            <button className="icon-button" onClick={() => shiftMonth(-1)} aria-label={t('calendar.previousMonth')}>
               <ChevronLeft size={18} />
             </button>
-            <button className="icon-button" onClick={() => shiftMonth(1)} aria-label={t('legacy.nextMonth')}>
+            <button className="icon-button" onClick={() => shiftMonth(1)} aria-label={t('calendar.nextMonth')}>
               <ChevronRight size={18} />
             </button>
           </div>
@@ -120,7 +120,7 @@ export function CalendarPanel(props: CalendarPanelProps) {
             disabled={!(data[selectedDate]?.plans ?? []).length || clearingSelected}
           >
             <Trash2 size={15} />
-            {clearingSelected ? t('legacy.clearingDayPlans') : t('legacy.clearSelectedDayPlans')}
+            {clearingSelected ? t('calendar.clearingDayPlans') : t('calendar.clearSelectedDayPlans')}
           </button>
           <button
             type="button"
@@ -129,7 +129,7 @@ export function CalendarPanel(props: CalendarPanelProps) {
             disabled={clearingAll}
           >
             <Trash2 size={15} />
-            {clearingAll ? t('legacy.clearingAllPlans') : t('legacy.clearAllPlans')}
+            {clearingAll ? t('calendar.clearingAllPlans') : t('calendar.clearAllPlans')}
           </button>
         </div>
         {clearStatus && <p className="inline-status calendar-clear-status">{clearStatus}</p>}
@@ -154,8 +154,8 @@ export function CalendarPanel(props: CalendarPanelProps) {
           ))}
         </div>
         <label className="note-box">
-          <span><NotebookPen size={16} />{t('legacy.monthNote')} · {monthKey(viewDate)}</span>
-          <textarea value={monthNote} onChange={(event) => onMonthNoteChange(event.target.value)} placeholder={t('legacy.monthNotePlaceholder')} />
+          <span><NotebookPen size={16} />{t('calendar.monthNote')} · {monthTitle}</span>
+          <textarea value={monthNote} onChange={(event) => onMonthNoteChange(event.target.value)} placeholder={t('calendar.monthNotePlaceholder')} aria-label={t('calendar.monthNote')} />
         </label>
       </div>
     </section>

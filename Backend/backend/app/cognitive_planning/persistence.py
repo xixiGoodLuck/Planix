@@ -39,9 +39,12 @@ class PlanningPersistence:
     """Lifecycle persistence; planning artifacts live only in planning_artifacts."""
 
     def create(self, *, thread_id: str, user_input: str, context: dict[str, Any] | None = None) -> str:
+        from ..services.calendar_snapshot import calendar_snapshot
+
         session_id = str(uuid4())
         now = now_iso()
         history = [ConversationTurn(role="user", content=user_input).model_dump(by_alias=True)]
+        request_context = {**(context or {}), **calendar_snapshot(str((context or {}).get("timezone") or "Asia/Shanghai"))}
         with get_conn() as conn:
             conn.execute(
                 """
@@ -52,7 +55,7 @@ class PlanningPersistence:
                 ) VALUES (?, ?, 'p_mode', 'needs_goal_clarification', 'goal_clarification',
                           'running', ?, ?, ?, '{}', 0, 1, ?, ?)
                 """,
-                (session_id, thread_id, user_input, dump(history), dump(context or {}), now, now),
+                (session_id, thread_id, user_input, dump(history), dump(request_context), now, now),
             )
         return session_id
 
@@ -129,7 +132,9 @@ class PlanningPersistence:
         business_status: str | None = None,
         runtime_status: str | None = None,
         repair_count: int | None = None,
+        schedule_repair_count: int | None = None,
         cognitive_metadata: Any | None = None,
+        expected_version: int | None = None,
     ) -> None:
         assignments: list[str] = []
         params: list[Any] = []
@@ -144,13 +149,22 @@ class PlanningPersistence:
         if repair_count is not None:
             assignments.append("repair_count = ?")
             params.append(max(0, min(int(repair_count), 2)))
+        if schedule_repair_count is not None:
+            assignments.append("schedule_repair_count = ?")
+            params.append(max(0, min(int(schedule_repair_count), 2)))
         if cognitive_metadata is not None:
             assignments.append("cognitive_metadata_json = ?")
             params.append(dump(cognitive_metadata))
         assignments.extend(["version = version + 1", "updated_at = ?"])
         params.extend([now_iso(), session_id])
+        where = "id = ?"
+        if expected_version is not None:
+            where += " AND version = ?"
+            params.append(expected_version)
         with get_conn() as conn:
-            conn.execute(f"UPDATE planning_sessions SET {', '.join(assignments)} WHERE id = ?", params)
+            cursor = conn.execute(f"UPDATE planning_sessions SET {', '.join(assignments)} WHERE {where}", params)
+            if expected_version is not None and cursor.rowcount != 1:
+                raise ValueError("planning session version changed")
 
     def mark_written(self, session_id: str) -> None:
         self.update(session_id, status="written_to_calendar", business_status="completed", runtime_status="idle")

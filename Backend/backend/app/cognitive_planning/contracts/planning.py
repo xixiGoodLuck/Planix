@@ -36,6 +36,7 @@ MutationPolicy = Literal[
     "user_confirmation_required",
 ]
 SemanticStatus = Literal["active", "superseded", "removed"]
+BlockingCategory = Literal["core_goal", "safety", "feasibility", "hard_constraint", "important", "optional"]
 
 
 class SemanticItem(CognitiveContract):
@@ -48,6 +49,7 @@ class SemanticItem(CognitiveContract):
     mutation_policy: MutationPolicy = "user_confirmation_required"
     supersedes: str | None = None
     status: SemanticStatus = "active"
+    blocking_category: BlockingCategory = "important"
 
 
 class UnderstandingQuestion(CognitiveContract):
@@ -56,6 +58,7 @@ class UnderstandingQuestion(CognitiveContract):
     expected_decision_impact: str = Field(min_length=1)
     priority: Literal["blocking", "important", "optional"]
     answer_options: list[str] = Field(default_factory=list, max_length=4)
+    target_unknown_key: str | None = None
 
 
 class UnderstandingReadiness(CognitiveContract):
@@ -131,8 +134,10 @@ class UnderstandingPatch(CognitiveContract):
     id: str = Field(default_factory=lambda: new_artifact_id("understanding-patch"))
     base_artifact_id: str
     base_version: int = Field(ge=1)
-    operations: list[SemanticOperation] = Field(min_length=1)
+    operations: list[SemanticOperation] = Field(default_factory=list)
     user_message_ref: str
+    next_question: UnderstandingQuestion | None = None
+    ready_for_confirmation: bool | None = None
     created_at: str = Field(default_factory=utc_now)
 
 
@@ -148,6 +153,7 @@ class UnderstandingContext(CognitiveContract):
 class CoreConstraints(CognitiveContract):
     planning_horizon: str | None = None
     deadline: str | None = None
+    weekly_capacity_minutes: int | None = Field(default=None, ge=0)
     weekday_capacity_minutes: int | None = Field(default=None, ge=0)
     weekend_capacity_minutes: int | None = Field(default=None, ge=0)
     excluded_dates: list[str] = Field(default_factory=list)
@@ -175,6 +181,7 @@ class ConstraintSet(CognitiveContract):
     understanding_version: int = Field(ge=1)
     core: CoreConstraints = Field(default_factory=CoreConstraints)
     semantic: list[SemanticConstraint] = Field(default_factory=list)
+    source_constraint_ids: list[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=utc_now)
 
 
@@ -295,6 +302,7 @@ class QualityReport(CognitiveContract):
         return bool(
             self.hard_rules_passed
             and not any(issue.severity in {"blocker", "major"} for issue in self.issues)
+            and (not self.semantic_review_required or self.semantic_review_completed)
         )
 
 
@@ -317,9 +325,11 @@ RepairOperationType = Literal[
     "replace_resource",
     "update_effort",
     "add_success_coverage",
+    "add_constraint_coverage",
     "update_schedule_session",
     "move_schedule_session",
     "split_schedule_session",
+    "update_calendar_presentation",
 ]
 
 
@@ -424,6 +434,16 @@ class FeedbackRoute(CognitiveContract):
     reason: str
 
 
+class FinalRevisionPatch(CognitiveContract):
+    id: str = Field(default_factory=lambda: new_artifact_id("final-revision"))
+    category: FeedbackCategory
+    feedback: str = Field(min_length=1)
+    base_artifact_id: str
+    base_version: int = Field(ge=1)
+    operations: list[RepairOperation] = Field(default_factory=list)
+    created_at: str = Field(default_factory=utc_now)
+
+
 class FinalApprovalBundle(CognitiveContract):
     id: str = Field(default_factory=lambda: new_artifact_id("final-approval"))
     session_id: str
@@ -479,6 +499,13 @@ class LearningObservation(CognitiveContract):
     category: str
     statement: str
     source_refs: list[str]
+    execution_outcome_ref: str | None = None
+    status: TaskExecutionStatus | None = None
+    actual_minutes: int | None = Field(default=None, ge=0)
+    completion_evidence: list[str] = Field(default_factory=list)
+    blocker_reason: str | None = None
+    failure_reason: str | None = None
+    domain_scope: list[str] = Field(default_factory=list)
     observed_at: str = Field(default_factory=utc_now)
 
 

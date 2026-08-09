@@ -46,6 +46,7 @@ PlanningArtifactType = Literal[
     "schedule_quality_report",
     "calendar_proposal",
     "final_approval_bundle",
+    "final_revision_patch",
     "execution_outcome",
     "replan_proposal",
     "learning_observation",
@@ -386,7 +387,6 @@ class CreatePlanningSessionRequest(BaseModel):
 
 class PlanningSessionTextRequest(BaseModel):
     text: str = Field(default="", max_length=4000)
-    accept_missing_resources: bool = Field(default=False, alias="acceptMissingResources")
 
     model_config = ConfigDict(populate_by_name=True)
 

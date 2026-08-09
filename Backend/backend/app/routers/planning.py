@@ -32,8 +32,8 @@ def revise_planning_understanding(session_id: str, payload: PlanningSessionTextR
 
 
 @router.post("/sessions/{session_id}/approve-final", response_model=PlanningSessionResponse)
-def approve_planning_final(session_id: str, payload: PlanningSessionTextRequest | None = None) -> PlanningSessionResponse:
-    return get_planning_orchestrator().approve_final(session_id, accept_missing_resources=bool(payload and payload.accept_missing_resources))
+def approve_planning_final(session_id: str) -> PlanningSessionResponse:
+    return get_planning_orchestrator().approve_final(session_id)
 
 
 @router.post("/sessions/{session_id}/revise-final", response_model=PlanningSessionResponse)

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from ..db import get_conn
 from ..schemas import AiAutoModelPolicy, AiModelRoutingRule, AiModelRoutingUpdate, AiProvider, AiSavedProvider, AiSettingsOut, AiSettingsUpdate
+from .secret_store import get_secret_store, provider_secret_key
 
 
 SETTINGS_ID = "local-default"
@@ -196,12 +197,13 @@ def _row_to_provider_config(row) -> ProviderConfig | None:
     if not row:
         return None
     provider = row["provider"]
+    api_key = get_secret_store().get(provider_secret_key(provider)) if row["api_key_source"] in {"user", "secret_store"} else ""
     return ProviderConfig(
         provider=provider,
         base_url=row["base_url"] or _default_base_url(provider),
         model=row["model"] or _default_model(provider),
-        api_key=row["api_key_encrypted"] if row["api_key_source"] == "user" else "",
-        api_key_source=row["api_key_source"],
+        api_key=api_key,
+        api_key_source="user" if api_key else "",
         updated_at=row["updated_at"],
         key_status=row["key_status"] if row["key_status"] in KEY_STATUS_VALUES else "unchecked",
         key_error_type=row["key_error_type"] or "",
@@ -210,11 +212,13 @@ def _row_to_provider_config(row) -> ProviderConfig | None:
 
 
 def _config_for_provider(conn, provider: str) -> ProviderConfig | None:
+    _migrate_plaintext_secrets(conn)
     row = conn.execute("SELECT * FROM ai_provider_configs WHERE provider = ?", (provider,)).fetchone()
     return _row_to_provider_config(row)
 
 
 def _saved_provider_rows(conn) -> list[AiSavedProvider]:
+    _migrate_plaintext_secrets(conn)
     rows = conn.execute("SELECT * FROM ai_provider_configs").fetchall()
     configs = [_row_to_provider_config(row) for row in rows]
     configs = [config for config in configs if config and config.provider in KEYED_PROVIDERS]
@@ -258,16 +262,17 @@ def _normalize_task_strategies(value: object) -> dict[str, str]:
 
 
 def _saved_key_provider_order(conn) -> list[str]:
-    rows = conn.execute("SELECT provider, api_key_encrypted, api_key_source, key_status FROM ai_provider_configs").fetchall()
+    _migrate_plaintext_secrets(conn)
+    rows = conn.execute("SELECT * FROM ai_provider_configs").fetchall()
     saved = {
-        row["provider"]
-        for row in rows
-        if row["provider"] in KEYED_PROVIDERS
+        config.provider
+        for row in rows if (config := _row_to_provider_config(row))
+        if config.provider in KEYED_PROVIDERS
         and (
-            row["provider"] == "local"
-            or (row["api_key_source"] == "user" and (row["api_key_encrypted"] or "").strip())
+            config.provider == "local"
+            or config.has_api_key
         )
-        and row["key_status"] != "invalid"
+        and config.key_status != "invalid"
     }
     ordered = [provider for provider in AUTO_PROVIDER_DEFAULT_ORDER if provider in saved]
     ordered.extend(provider for provider in AUTO_PROVIDER_DEFAULT_ORDER if provider not in ordered)
@@ -487,8 +492,8 @@ def _effective_from_rows(settings_row, config: ProviderConfig | None) -> Effecti
         api_key = config.api_key if config.has_api_key else ""
         key_status = config.key_status
         key_error_type = config.key_error_type
-    elif settings_row["api_key_source"] == "user":
-        api_key = settings_row["api_key_encrypted"]
+    elif settings_row["api_key_source"] in {"user", "secret_store"}:
+        api_key = get_secret_store().get(provider_secret_key(provider))
     return EffectiveAiSettings(
         provider=provider,
         base_url=base_url,
@@ -574,10 +579,10 @@ def mark_provider_key_valid(provider: str, attempted_api_key: str) -> None:
             UPDATE ai_provider_configs
             SET key_status = 'valid', key_error_type = '',
                 last_validated_at = CURRENT_TIMESTAMP
-            WHERE provider = ? AND api_key_source = 'user' AND api_key_encrypted = ?
+            WHERE provider = ? AND api_key_source = 'secret_store'
               AND key_status != 'valid'
             """,
-            (provider, attempted_api_key),
+            (provider,),
         )
 
 
@@ -590,9 +595,9 @@ def mark_provider_key_invalid(provider: str, attempted_api_key: str, error_type:
             UPDATE ai_provider_configs
             SET key_status = 'invalid', key_error_type = ?,
                 last_validated_at = CURRENT_TIMESTAMP
-            WHERE provider = ? AND api_key_source = 'user' AND api_key_encrypted = ?
+            WHERE provider = ? AND api_key_source = 'secret_store'
             """,
-            (error_type, provider, attempted_api_key),
+            (error_type, provider),
         )
 
 
@@ -739,6 +744,12 @@ def _validate_provider_config(candidate: PendingProviderConfig, *, temperature: 
 
 
 def _upsert_provider_config(conn, candidate: PendingProviderConfig) -> tuple[str, str]:
+    store = get_secret_store()
+    if candidate.api_key:
+        store.set(provider_secret_key(candidate.provider), candidate.api_key)
+    else:
+        store.delete(provider_secret_key(candidate.provider))
+    stored_source = "secret_store" if candidate.api_key else ""
     conn.execute(
         """
         INSERT INTO ai_provider_configs(
@@ -761,15 +772,15 @@ def _upsert_provider_config(conn, candidate: PendingProviderConfig) -> tuple[str
             candidate.provider,
             candidate.base_url,
             candidate.model,
-            candidate.api_key,
-            candidate.api_key_source,
+            "",
+            stored_source,
             "valid" if candidate.should_validate else candidate.key_status,
             "" if candidate.should_validate else candidate.key_error_type,
             int(candidate.should_validate),
             candidate.last_validated_at,
         ),
     )
-    return candidate.api_key, candidate.api_key_source
+    return "", stored_source
 
 
 def save_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
@@ -787,7 +798,8 @@ def save_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
                     temperature=payload.temperature,
                     timeout_seconds=payload.timeout_seconds,
                 )
-            api_key, api_key_source = _upsert_provider_config(conn, candidate)
+            _db_api_key, api_key_source = _upsert_provider_config(conn, candidate)
+            api_key = ""
             base_url = candidate.base_url
             model = candidate.model
 
@@ -879,6 +891,7 @@ def save_model_routing_rules(payload: AiModelRoutingUpdate) -> AiSettingsOut:
 def delete_provider_api_key(provider: AiProvider | str) -> AiSettingsOut:
     if provider not in SUPPORTED_PROVIDERS:
         raise ValueError(f"Unsupported provider: {provider}")
+    get_secret_store().delete(provider_secret_key(str(provider)))
     with get_conn() as conn:
         if provider == "local":
             conn.execute("DELETE FROM ai_provider_configs WHERE provider = ?", (provider,))
@@ -925,3 +938,32 @@ def delete_provider_api_key(provider: AiProvider | str) -> AiSettingsOut:
                     (SETTINGS_ID,),
                 )
     return get_public_ai_settings()
+
+
+def _migrate_plaintext_secrets(conn) -> None:
+    rows = conn.execute(
+        """SELECT provider, api_key_encrypted FROM ai_provider_configs
+           WHERE api_key_source = 'user' AND api_key_encrypted <> ''"""
+    ).fetchall()
+    settings = conn.execute(
+        """SELECT provider, api_key_encrypted FROM ai_settings
+           WHERE id = ? AND api_key_source = 'user' AND api_key_encrypted <> ''""",
+        (SETTINGS_ID,),
+    ).fetchone()
+    values = {row["provider"]: row["api_key_encrypted"] for row in rows}
+    if settings:
+        values.setdefault(settings["provider"], settings["api_key_encrypted"])
+    if not values:
+        return
+    store = get_secret_store()
+    for provider, secret in values.items():
+        store.set(provider_secret_key(provider), secret)
+    conn.execute(
+        """UPDATE ai_provider_configs SET api_key_encrypted = '', api_key_source = 'secret_store'
+           WHERE api_key_source = 'user' AND api_key_encrypted <> ''"""
+    )
+    conn.execute(
+        """UPDATE ai_settings SET api_key_encrypted = '', api_key_source = 'secret_store'
+           WHERE id = ? AND api_key_source = 'user' AND api_key_encrypted <> ''""",
+        (SETTINGS_ID,),
+    )

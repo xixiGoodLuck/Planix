@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import time
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -22,6 +24,7 @@ ARTIFACT_OWNERS: dict[str, set[str]] = {
     "schedule_quality_report": {"Schedule Quality Reviewer"},
     "calendar_proposal": {"Calendar Materializer"},
     "final_approval_bundle": {"Final Review Controller"},
+    "final_revision_patch": {"Final Review Controller"},
     "execution_outcome": {"Execution Feedback Evaluator"},
     "replan_proposal": {"Execution Feedback Evaluator"},
     "learning_observation": {"Learning Observer"},
@@ -79,23 +82,35 @@ class PlanningArtifactAuditStore:
             raise ValueError(f"{owner_agent} cannot modify {artifact_type}")
         now = _now()
         artifact_id = str(uuid4())
-        with get_conn() as conn:
-            version_row = conn.execute(
-                "SELECT COALESCE(MAX(version), 0) + 1 AS next_version "
-                "FROM planning_artifacts WHERE session_id = ? AND artifact_type = ?",
-                (session_id, artifact_type),
-            ).fetchone()
-            version = int(version_row["next_version"] or 1)
-            conn.execute(
-                """
-                INSERT INTO planning_artifacts(
-                  id, session_id, owner_agent, artifact_type, version, status,
-                  content_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (artifact_id, session_id, owner_agent, artifact_type, version, status, _dump(_content(content)), now, now),
-            )
-            row = conn.execute("SELECT * FROM planning_artifacts WHERE id = ?", (artifact_id,)).fetchone()
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                with get_conn() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    version_row = conn.execute(
+                        "SELECT COALESCE(MAX(version), 0) + 1 AS next_version "
+                        "FROM planning_artifacts WHERE session_id = ? AND artifact_type = ?",
+                        (session_id, artifact_type),
+                    ).fetchone()
+                    version = int(version_row["next_version"] or 1)
+                    conn.execute(
+                        """
+                        INSERT INTO planning_artifacts(
+                          id, session_id, owner_agent, artifact_type, version, status,
+                          content_json, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (artifact_id, session_id, owner_agent, artifact_type, version, status, _dump(_content(content)), now, now),
+                    )
+                    row = conn.execute("SELECT * FROM planning_artifacts WHERE id = ?", (artifact_id,)).fetchone()
+                break
+            except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
+                last_error = exc
+                if attempt == 2 or (isinstance(exc, sqlite3.OperationalError) and "locked" not in str(exc).casefold()):
+                    raise
+                time.sleep(0.01 * (attempt + 1))
+        else:  # pragma: no cover - the final attempt always raises
+            raise RuntimeError("artifact version allocation failed") from last_error
         return self._artifact(row)
 
     def record_decision(

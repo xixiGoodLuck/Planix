@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import copy
+import math
 import re
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Iterable, Mapping, Sequence
 
 from .contracts.planning import (
@@ -48,7 +49,7 @@ from .contracts.planning import (
 QUESTION_BUDGET = {"quick": 1, "standard": 2, "complex": 3}
 EXTERNAL_FACT_PATTERNS = (
     re.compile(r"https?://", re.I),
-    re.compile(r"(?:price|policy|version|deadline|价格|政策|版本|截止日期)", re.I),
+    re.compile(r"(?:current|latest|as of|当前|最新).{0,24}(?:price|policy|version|deadline|价格|政策|版本|截止日期)", re.I),
 )
 
 
@@ -139,11 +140,7 @@ class UnderstandingReadinessService:
     @staticmethod
     def classify_complexity(snapshot: UnderstandingSnapshot) -> str:
         count = len(snapshot.constraints) + len(snapshot.facts) + len(snapshot.unknowns)
-        if any(
-            token in item.key.casefold() or token in item.statement.casefold()
-            for item in snapshot.unknowns
-            for token in ("safety", "feasibility", "安全", "可行")
-        ):
+        if any(item.blocking_category in {"safety", "feasibility"} for item in snapshot.unknowns):
             return "complex"
         if count <= 2:
             return "quick"
@@ -169,11 +166,8 @@ class UnderstandingReadinessService:
         budget_exhausted = (
             snapshot.readiness.question_rounds_used >= snapshot.readiness.question_budget
         )
-        safety_blocked = any(
-            token in item.key.casefold() or token in item.statement.casefold()
-            for item in blocking
-            for token in ("safety", "feasibility", "安全", "可行")
-        )
+        non_assumable = {"core_goal", "safety", "feasibility", "hard_constraint"}
+        safety_blocked = any(item.blocking_category in non_assumable for item in blocking)
         ready = not reasons
         if budget_exhausted and blocking and not safety_blocked:
             ready = not snapshot.conflicts and bool(snapshot.goal_summary and snapshot.success_signals)
@@ -189,6 +183,8 @@ class UnderstandingReadinessService:
         if budget_exhausted and ready:
             existing = {item.key for item in assumptions}
             for item in blocking:
+                if item.blocking_category in non_assumable:
+                    continue
                 if item.key not in existing:
                     assumptions.append(
                         item.model_copy(
@@ -199,7 +195,7 @@ class UnderstandingReadinessService:
                             }
                         )
                     )
-            unknowns = [item for item in unknowns if item.key not in blocking_keys]
+            unknowns = [item for item in unknowns if item.key not in blocking_keys or item.blocking_category in non_assumable]
         return snapshot.model_copy(
             update={"readiness": readiness, "assumptions": assumptions, "unknowns": unknowns}
         )
@@ -229,30 +225,87 @@ class ConstraintCompiler:
     _minutes = re.compile(r"(?P<value>\d+)\s*(?:分钟|minutes?|mins?)", re.I)
     _hours = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s*(?:小时|hours?|hrs?)", re.I)
     _budget = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s*(?:元|CNY|RMB)", re.I)
+    _date = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+    _relative_horizon = re.compile(
+        r"(?P<value>\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*"
+        r"(?P<unit>days?|weeks?|months?)",
+        re.I,
+    )
+    _weekday_names = {
+        "周一": 0, "星期一": 0, "monday": 0,
+        "周二": 1, "星期二": 1, "tuesday": 1,
+        "周三": 2, "星期三": 2, "wednesday": 2,
+        "周四": 3, "星期四": 3, "thursday": 3,
+        "周五": 4, "星期五": 4, "friday": 4,
+        "周六": 5, "星期六": 5, "saturday": 5,
+        "周日": 6, "星期日": 6, "星期天": 6, "sunday": 6,
+    }
 
-    def compile(self, snapshot: UnderstandingSnapshot) -> ConstraintSet:
+    def compile(self, snapshot: UnderstandingSnapshot, *, today: date | None = None) -> ConstraintSet:
         core = CoreConstraints()
         semantic: list[SemanticConstraint] = []
-        for item in snapshot.constraints:
+        constraint_ids = {item.id for item in snapshot.constraints}
+        items = list({item.id: item for item in [*snapshot.constraints, *snapshot.facts]}.values())
+        anchor = today or date.today()
+        relative_horizon_days: int | None = None
+        for item in items:
             statement = item.statement
-            hours = self._hours.search(statement)
-            minutes = self._minutes.search(statement)
             budget = self._budget.search(statement)
             lower = statement.casefold()
-            lower = (
-                lower.replace("weekdays", "days")
-                .replace("weekday", "day")
-                .replace("weekends", "days")
-                .replace("weekend", "day")
-            )
-            if hours and any(token in lower for token in ("每周", "week")):
-                weekly = int(float(hours.group("value")) * 60)
-                core.weekday_capacity_minutes = weekly
-            elif minutes and any(token in lower for token in ("每周", "week")):
-                core.weekday_capacity_minutes = int(minutes.group("value"))
-            elif budget:
+            compiled = False
+            for clause in re.split(r"[，,、;；]|\band\b|和|以及", statement, flags=re.I):
+                clause_lower = clause.casefold()
+                hours = self._hours.search(clause)
+                minutes = self._minutes.search(clause)
+                duration = (
+                    int(float(hours.group("value")) * 60)
+                    if hours else int(minutes.group("value")) if minutes else None
+                )
+                if duration is None:
+                    continue
+                if any(token in clause_lower for token in ("单次", "每次", "session")):
+                    core.maximum_session_minutes = duration
+                elif any(token in clause_lower for token in ("每周", "一周", "per week", "weekly")):
+                    core.weekly_capacity_minutes = duration
+                elif any(token in clause_lower for token in ("周末", "weekend")):
+                    core.weekend_capacity_minutes = duration
+                elif any(token in clause_lower for token in ("工作日", "weekday")):
+                    core.weekday_capacity_minutes = duration
+                elif any(token in clause_lower for token in ("每天", "每日", "daily", "per day", "a day")):
+                    core.weekday_capacity_minutes = duration
+                    core.weekend_capacity_minutes = duration
+                else:
+                    continue
+                compiled = True
+            dates = self._date.findall(statement)
+            if dates and any(token in lower for token in ("截止", "deadline", "before", "之前")):
+                core.deadline = dates[-1]
+                compiled = True
+            if dates and any(token in lower for token in ("开始", "start", "from")):
+                core.required_start_date = dates[0]
+                compiled = True
+            if dates and any(token in lower for token in ("排除", "不要", "避开", "exclude", "not on")):
+                core.excluded_dates = sorted(set([*core.excluded_dates, *dates]))
+                compiled = True
+            if any(token in lower for token in ("不要安排", "排除", "避开", "exclude", "not on")):
+                excluded = [number for name, number in self._weekday_names.items() if name in lower]
+                if excluded:
+                    core.excluded_weekdays = sorted(set([*core.excluded_weekdays, *excluded]))
+                    compiled = True
+            if any(token in lower for token in ("个月", "周内", "weeks", "months", "planning horizon")):
+                core.planning_horizon = statement
+                compiled = True
+            relative_days = self._relative_horizon_days(statement)
+            if relative_days is not None:
+                relative_horizon_days = max(relative_horizon_days or 0, relative_days)
+                compiled = True
+            if budget:
                 core.budget_limit = float(budget.group("value"))
-            else:
+                compiled = True
+            elif any(token in lower for token in ("零预算", "0预算", "zero budget", "no budget")):
+                core.budget_limit = 0
+                compiled = True
+            if not compiled and item.id in constraint_ids:
                 semantic.append(
                     SemanticConstraint(
                         stableId=item.id,
@@ -263,13 +316,33 @@ class ConstraintCompiler:
                         priority="blocking" if item.mutation_policy == "immutable" else "important",
                     )
                 )
+        if relative_horizon_days is not None:
+            core.planning_horizon = f"{relative_horizon_days} days"
+            if core.deadline is None:
+                core.deadline = (anchor + timedelta(days=relative_horizon_days)).isoformat()
         core.required_deliverables = [item.statement for item in snapshot.success_signals]
         return ConstraintSet(
             understandingRef=snapshot.artifact_id,
             understandingVersion=snapshot.version,
             core=core,
             semantic=semantic,
+            sourceConstraintIds=[item.id for item in snapshot.constraints],
         )
+
+    @classmethod
+    def _relative_horizon_days(cls, statement: str) -> int | None:
+        match = cls._relative_horizon.search(statement)
+        if not match:
+            return None
+        words = {
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+            "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+        }
+        raw = match.group("value").casefold()
+        value = int(raw) if raw.isdigit() else words[raw]
+        unit = match.group("unit").casefold()
+        multiplier = 1 if unit.startswith("day") else 7 if unit.startswith("week") else 30
+        return value * multiplier
 
 
 class ContextBuilder:
@@ -324,18 +397,30 @@ class PlanHardValidator:
         if plan.goal_summary.strip() != snapshot.goal_summary.strip():
             issue("goal_fidelity", "plan", plan.artifact_id, "plan changed the approved goal", [])
         task_ids = [task.id for task in plan.tasks]
+        milestone_ids = [milestone.id for milestone in plan.milestones]
+        if len(milestone_ids) != len(set(milestone_ids)):
+            issue("unique_milestone_id", "plan", plan.artifact_id, "milestone ids must be unique", [])
         if len(task_ids) != len(set(task_ids)):
             issue("unique_task_id", "plan", plan.artifact_id, "task ids must be unique", [])
         normalized_titles = [" ".join(task.title.casefold().split()) for task in plan.tasks]
         if len(normalized_titles) != len(set(normalized_titles)):
             issue("duplicate_task", "plan", plan.artifact_id, "plan contains duplicate task titles", ["update_task", "remove_optional_task"])
         known = set(task_ids)
+        known_milestones = set(milestone_ids)
+        goal_refs = {item.id for item in snapshot.success_signals}
+        constraint_refs = set(constraints.source_constraint_ids) | {item.stable_id for item in constraints.semantic}
         verified_refs = {
-            claim.source_ref
+            ref
             for claim in context.claims
             if claim.verification_status == "verified"
+            for ref in (claim.id, claim.source_ref)
         }
+        for milestone in plan.milestones:
+            if set(milestone.success_signal_refs) - goal_refs:
+                issue("milestone_success_ref_exists", "milestone", milestone.id, "milestone references an unknown success signal", ["add_success_coverage"])
         for task in plan.tasks:
+            if task.milestone_id not in known_milestones:
+                issue("milestone_exists", "task", task.id, "task milestone does not exist", ["move_task"])
             if not task.action_steps:
                 issue("action_steps", "task", task.id, "task has no action steps", ["update_task"])
             if not task.deliverable.strip():
@@ -345,8 +430,16 @@ class PlanHardValidator:
             missing = [item for item in task.dependencies if item not in known]
             if missing:
                 issue("dependency_exists", "task", task.id, f"unknown dependencies: {missing}", ["remove_dependency", "add_task"])
+            if task.id in task.dependencies:
+                issue("dependency_self", "task", task.id, "task cannot depend on itself", ["remove_dependency"])
+            if len(task.dependencies) != len(set(task.dependencies)):
+                issue("dependency_duplicate", "task", task.id, "task contains duplicate dependencies", ["remove_dependency"])
             if not task.source_goal_refs:
                 issue("goal_support", "task", task.id, "task is not traceable to the approved goal", ["add_success_coverage", "remove_optional_task"])
+            elif set(task.source_goal_refs) - goal_refs:
+                issue("goal_ref_exists", "task", task.id, "task references an unknown success signal", ["add_success_coverage"])
+            if set(task.source_constraint_refs) - constraint_refs:
+                issue("constraint_ref_exists", "task", task.id, "task references an unknown constraint", ["update_task"])
             unknown_resources = set(task.resource_refs) - verified_refs
             if unknown_resources:
                 issue("provenance", "task", task.id, f"resource refs are not verified: {sorted(unknown_resources)}", ["replace_resource"])
@@ -367,16 +460,22 @@ class PlanHardValidator:
         immutable = {
             item.stable_id
             for item in constraints.semantic
-            if item.mutation_policy == "immutable"
+            if item.mutation_policy == "immutable" and self._requires_task_coverage(item.statement)
         }
         constraint_coverage = {ref for task in plan.tasks for ref in task.source_constraint_refs}
         for constraint_id in immutable - constraint_coverage:
-            issue("immutable_constraint", "constraint", constraint_id, "immutable constraint is not preserved by any task", ["update_task", "add_task"])
-        capacity = constraints.core.weekday_capacity_minutes
-        if capacity:
+            issue("immutable_constraint", "constraint", constraint_id, "immutable constraint is not preserved by any task", ["add_constraint_coverage", "add_task"])
+        capacity = self._total_usable_capacity(constraints.core)
+        if capacity is not None:
             expected = sum(task.effort_estimate.expected_minutes for task in plan.tasks)
-            if expected > capacity * 12:
-                issue("capacity_order", "plan", plan.artifact_id, "workload is outside the configured capacity order", ["update_effort", "remove_optional_task"])
+            if expected > capacity:
+                issue(
+                    "capacity_order",
+                    "plan",
+                    plan.artifact_id,
+                    f"expected workload {expected} minutes exceeds usable horizon capacity {capacity} minutes",
+                    ["update_effort", "remove_optional_task"],
+                )
         return QualityReport(
             targetArtifactId=plan.artifact_id,
             targetVersion=plan.version,
@@ -384,6 +483,39 @@ class PlanHardValidator:
             issues=issues,
             repairRound=repair_round,
         )
+
+    @staticmethod
+    def _requires_task_coverage(statement: str) -> bool:
+        normalized = " ".join(statement.casefold().split())
+        return not any(
+            marker in normalized
+            for marker in ("not required", "not necessary", "is optional", "无需", "不要求", "非必需", "可选")
+        )
+
+    @staticmethod
+    def _total_usable_capacity(core: CoreConstraints) -> int | None:
+        match = re.fullmatch(r"(?P<days>\d+) days", core.planning_horizon or "")
+        if match:
+            days = int(match.group("days"))
+        elif core.deadline:
+            start = date.fromisoformat(core.required_start_date) if core.required_start_date else date.today() + timedelta(days=1)
+            days = max(1, (date.fromisoformat(core.deadline) - start).days + 1)
+        else:
+            return None
+        limits: list[int] = []
+        if core.weekly_capacity_minutes is not None:
+            limits.append(core.weekly_capacity_minutes * math.ceil(days / 7))
+        if core.weekday_capacity_minutes is not None or core.weekend_capacity_minutes is not None:
+            start = date.fromisoformat(core.required_start_date) if core.required_start_date else date.today() + timedelta(days=1)
+            daily_total = 0
+            for offset in range(days):
+                current = start + timedelta(days=offset)
+                limit = core.weekend_capacity_minutes if current.weekday() >= 5 else core.weekday_capacity_minutes
+                daily_total += int(limit or 0)
+            limits.append(daily_total)
+        if not limits:
+            return None
+        return math.floor(min(limits) * (1 - core.minimum_buffer_ratio))
 
     @staticmethod
     def _has_cycle(tasks: Sequence[PlanTask]) -> bool:
@@ -418,6 +550,7 @@ class PatchGuard:
         "replace_resource",
         "update_effort",
         "add_success_coverage",
+        "add_constraint_coverage",
     }
 
     def apply_plan(
@@ -457,6 +590,13 @@ class PatchGuard:
                 refs.update(str(value) for value in operation.payload.get("sourceGoalRefs", []))
                 tasks[index]["source_goal_refs"] = sorted(refs)
                 continue
+            if operation.operation == "add_constraint_coverage":
+                if index is None:
+                    raise ValueError("repair target task does not exist")
+                refs = set(tasks[index]["source_constraint_refs"])
+                refs.update(str(value) for value in operation.payload.get("sourceConstraintRefs", []))
+                tasks[index]["source_constraint_refs"] = sorted(refs)
+                continue
             if index is None:
                 raise ValueError("repair target task does not exist")
             task = tasks[index]
@@ -481,6 +621,21 @@ class PatchGuard:
                 if forbidden & set(operation.payload):
                     raise ValueError("repair attempted to modify immutable task identity or constraint lineage")
                 task.update(operation.payload)
+            elif operation.operation == "move_task":
+                milestone_id = str(operation.payload.get("milestoneId") or operation.payload.get("milestone_id") or "")
+                if milestone_id not in {value["id"] for value in candidate["milestones"]}:
+                    raise ValueError("repair milestone target does not exist")
+                task["milestone_id"] = milestone_id
+            elif operation.operation == "split_task":
+                raw_parts = operation.payload.get("tasks") or operation.payload.get("newTasks") or []
+                parts = [PlanTask.model_validate(value) for value in raw_parts]
+                if len(parts) < 2 or parts[0].id != task["id"]:
+                    raise ValueError("split_task must preserve the original id on the first part")
+                if sum(value.effort_estimate.expected_minutes for value in parts) != task["effort_estimate"]["expected_minutes"]:
+                    raise ValueError("split_task must preserve total expected effort")
+                if len({value.id for value in parts}) != len(parts):
+                    raise ValueError("split_task produced duplicate task ids")
+                tasks[index:index + 1] = [value.model_dump() for value in parts]
             else:
                 raise ValueError("complex repair operation requires a dedicated deterministic handler")
         candidate.update(
@@ -498,7 +653,11 @@ class PatchGuard:
             context=context,
             repair_round=min(2, issue.severity != "minor"),
         )
-        same_issue = any(value.rule_id == issue.rule_id and value.target_id == issue.target_id for value in report.issues)
+        same_issue = any(
+            value.rule_id == issue.rule_id
+            and (issue.target_type == "plan" or value.target_id == issue.target_id)
+            for value in report.issues
+        )
         if same_issue:
             return plan, RepairResult(accepted=False, reason="regression validation rejected the repair")
         return revised, RepairResult(
@@ -537,6 +696,146 @@ class RepairBudget:
         return report.repair_round + 1
 
 
+class SchedulePatchGuard:
+    """Deterministic, issue-scoped Schedule repair with stable task/session lineage."""
+
+    def apply(
+        self,
+        schedule: ScheduleBlueprint,
+        issue: QualityIssue,
+        *,
+        constraints: ConstraintSet,
+        calendar_busy: Sequence[tuple[datetime, datetime]] = (),
+    ) -> ScheduleBlueprint:
+        sessions = [item.model_copy() for item in schedule.sessions]
+        target_index = next((index for index, item in enumerate(sessions) if item.id == issue.target_id), None)
+        allowed = set(issue.allowed_operations)
+        if issue.rule_id == "maximum_session" and "split_schedule_session" in allowed and target_index is not None:
+            original = sessions[target_index]
+            maximum = constraints.core.maximum_session_minutes or 120
+            start = datetime.fromisoformat(original.start)
+            remaining = original.duration_minutes
+            parts: list[ScheduleSession] = []
+            part = 0
+            while remaining:
+                duration = min(maximum, remaining)
+                end = start + timedelta(minutes=duration)
+                parts.append(original.model_copy(update={
+                    "id": original.id if part == 0 else f"{original.id}-split-{part}",
+                    "start": start.isoformat(), "end": end.isoformat(), "duration_minutes": duration,
+                    "status": "split", "reason": f"Split for {issue.rule_id}.",
+                }))
+                start = end + timedelta(minutes=30)
+                remaining -= duration
+                part += 1
+            sessions[target_index:target_index + 1] = parts
+        elif "move_schedule_session" in allowed:
+            indexes = [target_index] if target_index is not None else list(range(len(sessions) - 1, -1, -1))
+            if not indexes:
+                raise ValueError("schedule repair has no movable session")
+            moved = False
+            for index in indexes:
+                if index is None:
+                    continue
+                current = sessions[index]
+                start = datetime.fromisoformat(current.start) + timedelta(days=1)
+                start = start.replace(hour=9, minute=0, second=0, microsecond=0)
+                for _ in range(370):
+                    end = start + timedelta(minutes=current.duration_minutes)
+                    excluded = start.date().isoformat() in constraints.core.excluded_dates or start.weekday() in constraints.core.excluded_weekdays
+                    conflict = any(start < busy_end and end > busy_start for busy_start, busy_end in calendar_busy)
+                    overlap = any(other.id != current.id and start < datetime.fromisoformat(other.end) and end > datetime.fromisoformat(other.start) for other in sessions)
+                    capacity_ok = self._fits_capacity(sessions, current.id, start, current.duration_minutes, constraints)
+                    if not excluded and not conflict and not overlap and capacity_ok and (not constraints.core.deadline or end.date().isoformat() <= constraints.core.deadline):
+                        sessions[index] = current.model_copy(update={"start": start.isoformat(), "end": end.isoformat(), "status": "moved", "reason": f"Moved for {issue.rule_id}."})
+                        moved = True
+                        break
+                    start += timedelta(days=1)
+                if moved:
+                    break
+            if not moved:
+                raise ValueError("schedule repair could not find a valid target window")
+        else:
+            raise ValueError("schedule issue has no supported deterministic operation")
+        if sum(item.duration_minutes for item in sessions) != schedule.capacity_summary.scheduled_minutes:
+            raise ValueError("schedule repair changed total effort")
+        sessions = [item.model_copy(update={"sequence": index}) for index, item in enumerate(sorted(sessions, key=lambda value: value.start))]
+        capacity_summary = self._capacity_summary(sessions, constraints, schedule.capacity_summary)
+        return schedule.model_copy(update={
+            "artifact_id": new_artifact_id("schedule"),
+            "version": schedule.version + 1,
+            "sessions": sessions,
+            "periods": sorted({item.start[:10] for item in sessions}),
+            "capacity_summary": capacity_summary,
+            "buffer_summary": f"Reserved {capacity_summary.buffer_minutes} minutes ({constraints.core.minimum_buffer_ratio:.0%}).",
+        })
+
+    @staticmethod
+    def _fits_capacity(
+        sessions: Sequence[ScheduleSession],
+        moving_id: str,
+        candidate_start: datetime,
+        duration: int,
+        constraints: ConstraintSet,
+    ) -> bool:
+        same_day = sum(
+            item.duration_minutes
+            for item in sessions
+            if item.id != moving_id and datetime.fromisoformat(item.start).date() == candidate_start.date()
+        )
+        daily_limit = (
+            constraints.core.weekend_capacity_minutes
+            if candidate_start.weekday() >= 5 and constraints.core.weekend_capacity_minutes is not None
+            else constraints.core.weekday_capacity_minutes
+        )
+        daily_usable = ScheduleGenerator._usable(daily_limit, constraints.core.minimum_buffer_ratio)
+        if daily_usable is not None and same_day + duration > daily_usable:
+            return False
+        candidate_week = candidate_start.isocalendar()[:2]
+        same_week = sum(
+            item.duration_minutes
+            for item in sessions
+            if item.id != moving_id and datetime.fromisoformat(item.start).isocalendar()[:2] == candidate_week
+        )
+        weekly_usable = ScheduleGenerator._usable(constraints.core.weekly_capacity_minutes, constraints.core.minimum_buffer_ratio)
+        return weekly_usable is None or same_week + duration <= weekly_usable
+
+    @staticmethod
+    def _capacity_summary(
+        sessions: Sequence[ScheduleSession],
+        constraints: ConstraintSet,
+        previous: CapacitySummary,
+    ) -> CapacitySummary:
+        days = {datetime.fromisoformat(item.start).date() for item in sessions}
+        weeks = {day.isocalendar()[:2] for day in days}
+        scheduled = sum(item.duration_minutes for item in sessions)
+        limits = [
+            constraints.core.weekend_capacity_minutes
+            if day.weekday() >= 5 and constraints.core.weekend_capacity_minutes is not None
+            else constraints.core.weekday_capacity_minutes
+            for day in days
+        ]
+        concrete_limits = [limit for limit in limits if limit is not None]
+        if concrete_limits:
+            available = sum(concrete_limits)
+            buffer = sum(limit - (ScheduleGenerator._usable(limit, constraints.core.minimum_buffer_ratio) or 0) for limit in concrete_limits)
+        elif constraints.core.weekly_capacity_minutes is not None:
+            available = constraints.core.weekly_capacity_minutes * len(weeks)
+            buffer = sum(
+                constraints.core.weekly_capacity_minutes
+                - (ScheduleGenerator._usable(constraints.core.weekly_capacity_minutes, constraints.core.minimum_buffer_ratio) or 0)
+                for _ in weeks
+            )
+        else:
+            available = max(previous.available_minutes, scheduled)
+            buffer = math.ceil(scheduled * constraints.core.minimum_buffer_ratio / max(0.01, 1 - constraints.core.minimum_buffer_ratio))
+        return previous.model_copy(update={
+            "available_minutes": available,
+            "scheduled_minutes": scheduled,
+            "buffer_minutes": buffer,
+        })
+
+
 class ScheduleGenerator:
     def generate(
         self,
@@ -546,12 +845,15 @@ class ScheduleGenerator:
         start: datetime,
         timezone: str = "Asia/Shanghai",
         calendar_snapshot_ref: str | None = None,
+        calendar_busy: Sequence[tuple[datetime, datetime]] = (),
     ) -> ScheduleBlueprint:
         maximum = constraints.core.maximum_session_minutes or 120
         cursor = start
         sessions: list[ScheduleSession] = []
         unscheduled: list[str] = []
         daily_used: dict[str, int] = defaultdict(int)
+        weekly_used: dict[tuple[int, int], int] = defaultdict(int)
+        used_capacity: dict[str, int] = {}
         sequence = 0
         for task in self._topological(plan.tasks):
             remaining = task.effort_estimate.expected_minutes
@@ -563,12 +865,19 @@ class ScheduleGenerator:
                     if cursor.weekday() >= 5 and constraints.core.weekend_capacity_minutes is not None
                     else constraints.core.weekday_capacity_minutes
                 )
+                week = cursor.isocalendar()
+                week_key = (week.year, week.week)
+                weekly_limit = constraints.core.weekly_capacity_minutes
+                day_usable = self._usable(day_limit, constraints.core.minimum_buffer_ratio)
+                week_usable = self._usable(weekly_limit, constraints.core.minimum_buffer_ratio)
                 excluded = (
                     day_key in constraints.core.excluded_dates
                     or cursor.weekday() in constraints.core.excluded_weekdays
                     or day_limit == 0
                 )
-                available = remaining if day_limit is None else max(0, day_limit - daily_used[day_key])
+                available = remaining if day_usable is None else max(0, day_usable - daily_used[day_key])
+                if week_usable is not None:
+                    available = min(available, max(0, week_usable - weekly_used[week_key]))
                 if excluded or available <= 0:
                     cursor = (cursor + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
                     skipped_days += 1
@@ -578,6 +887,10 @@ class ScheduleGenerator:
                     continue
                 duration = min(maximum, remaining, available)
                 end = cursor + timedelta(minutes=duration)
+                overlap = next((busy_end for busy_start, busy_end in calendar_busy if cursor < busy_end and end > busy_start), None)
+                if overlap is not None:
+                    cursor = overlap
+                    continue
                 sessions.append(
                     ScheduleSession(
                         id=f"session-{task.id}-{sequence}",
@@ -590,11 +903,25 @@ class ScheduleGenerator:
                     )
                 )
                 daily_used[day_key] += duration
+                weekly_used[week_key] += duration
+                if day_limit is not None:
+                    used_capacity[day_key] = day_limit
                 cursor = end + timedelta(minutes=30)
                 remaining -= duration
                 sequence += 1
         scheduled = sum(value.duration_minutes for value in sessions)
-        buffer = int(scheduled * constraints.core.minimum_buffer_ratio)
+        if used_capacity:
+            available_total = sum(used_capacity.values())
+            buffer = sum(limit - self._usable(limit, constraints.core.minimum_buffer_ratio) for limit in used_capacity.values())
+        elif constraints.core.weekly_capacity_minutes is not None and weekly_used:
+            available_total = constraints.core.weekly_capacity_minutes * len(weekly_used)
+            buffer = sum(
+                constraints.core.weekly_capacity_minutes - self._usable(constraints.core.weekly_capacity_minutes, constraints.core.minimum_buffer_ratio)
+                for _ in weekly_used
+            )
+        else:
+            buffer = math.ceil(scheduled * constraints.core.minimum_buffer_ratio / max(0.01, 1 - constraints.core.minimum_buffer_ratio))
+            available_total = scheduled + buffer
         return ScheduleBlueprint(
             planRef=plan.artifact_id,
             planVersion=plan.version,
@@ -603,13 +930,17 @@ class ScheduleGenerator:
             periods=sorted({value.start[:10] for value in sessions}),
             sessions=sessions,
             capacitySummary=CapacitySummary(
-                availableMinutes=max(scheduled + buffer, constraints.core.weekday_capacity_minutes or 0),
+                availableMinutes=available_total,
                 scheduledMinutes=scheduled,
                 bufferMinutes=buffer,
             ),
             bufferSummary=f"Reserved {buffer} minutes ({constraints.core.minimum_buffer_ratio:.0%}).",
             unscheduledTaskIds=unscheduled,
         )
+
+    @staticmethod
+    def _usable(limit: int | None, ratio: float) -> int | None:
+        return None if limit is None else max(0, math.floor(limit * (1 - ratio)))
 
     @staticmethod
     def _topological(tasks: Sequence[PlanTask]) -> list[PlanTask]:
@@ -697,25 +1028,31 @@ class ScheduleValidator:
         for session in schedule.sessions:
             if session.id in parsed:
                 daily[parsed[session.id][0].date().isoformat()] += session.duration_minutes
-        daily_limit = constraints.core.weekday_capacity_minutes
         for day, minutes in daily.items():
             parsed_day = datetime.fromisoformat(day)
             limit = (
                 constraints.core.weekend_capacity_minutes
                 if parsed_day.weekday() >= 5 and constraints.core.weekend_capacity_minutes is not None
-                else daily_limit
+                else constraints.core.weekday_capacity_minutes
             )
-            if limit is not None and minutes > limit:
+            usable = ScheduleGenerator._usable(limit, constraints.core.minimum_buffer_ratio)
+            if usable is not None and minutes > usable:
                     issues.append(self._issue("daily_capacity", day, "scheduled minutes exceed configured capacity", ["move_schedule_session", "split_schedule_session"]))
         weekly: dict[tuple[int, int], int] = defaultdict(int)
         for day, minutes in daily.items():
             iso = datetime.fromisoformat(day).isocalendar()
             weekly[(iso.year, iso.week)] += minutes
-        if daily_limit is not None or constraints.core.weekend_capacity_minutes is not None:
+        if constraints.core.weekly_capacity_minutes is not None:
+            weekly_usable = ScheduleGenerator._usable(constraints.core.weekly_capacity_minutes, constraints.core.minimum_buffer_ratio) or 0
+            for week, minutes in weekly.items():
+                if minutes > weekly_usable:
+                    issues.append(self._issue("weekly_capacity", f"{week[0]}-W{week[1]:02d}", "scheduled minutes exceed weekly capacity", ["move_schedule_session", "split_schedule_session"]))
+        elif constraints.core.weekday_capacity_minutes is not None or constraints.core.weekend_capacity_minutes is not None:
+            daily_limit = constraints.core.weekday_capacity_minutes
             weekend_limit = constraints.core.weekend_capacity_minutes
             if weekend_limit is None:
                 weekend_limit = daily_limit or 0
-            weekly_limit = (daily_limit or 0) * 5 + weekend_limit * 2
+            weekly_limit = (ScheduleGenerator._usable(daily_limit, constraints.core.minimum_buffer_ratio) or 0) * 5 + (ScheduleGenerator._usable(weekend_limit, constraints.core.minimum_buffer_ratio) or 0) * 2
             for week, minutes in weekly.items():
                 if minutes > weekly_limit:
                     issues.append(self._issue("weekly_capacity", f"{week[0]}-W{week[1]:02d}", "scheduled minutes exceed weekly capacity", ["move_schedule_session", "split_schedule_session"]))
@@ -723,8 +1060,22 @@ class ScheduleValidator:
         scheduled = sum(session.duration_minutes for session in schedule.sessions)
         if expected != scheduled:
             issues.append(self._issue("effort_preserved", schedule.artifact_id, "schedule changed total task effort", ["update_schedule_session"]))
-        required_buffer = int(scheduled * constraints.core.minimum_buffer_ratio)
-        if schedule.capacity_summary.buffer_minutes < required_buffer:
+        day_limits = []
+        for day in daily:
+            parsed_day = datetime.fromisoformat(day)
+            limit = constraints.core.weekend_capacity_minutes if parsed_day.weekday() >= 5 and constraints.core.weekend_capacity_minutes is not None else constraints.core.weekday_capacity_minutes
+            if limit is not None:
+                day_limits.append(limit)
+        if day_limits:
+            available_capacity = sum(day_limits)
+            required_buffer = sum(limit - (ScheduleGenerator._usable(limit, constraints.core.minimum_buffer_ratio) or 0) for limit in day_limits)
+        elif constraints.core.weekly_capacity_minutes is not None and weekly:
+            available_capacity = constraints.core.weekly_capacity_minutes * len(weekly)
+            required_buffer = sum(constraints.core.weekly_capacity_minutes - (ScheduleGenerator._usable(constraints.core.weekly_capacity_minutes, constraints.core.minimum_buffer_ratio) or 0) for _ in weekly)
+        else:
+            available_capacity = schedule.capacity_summary.available_minutes
+            required_buffer = math.ceil(scheduled * constraints.core.minimum_buffer_ratio / max(0.01, 1 - constraints.core.minimum_buffer_ratio))
+        if schedule.capacity_summary.buffer_minutes < required_buffer or scheduled + schedule.capacity_summary.buffer_minutes > available_capacity:
             issues.append(self._issue("minimum_buffer", schedule.artifact_id, "schedule does not reserve the minimum buffer", ["move_schedule_session"]))
         return QualityReport(
             targetArtifactId=schedule.artifact_id,
@@ -816,9 +1167,9 @@ class FeedbackRouter:
         ("approve", ("确认", "批准", "写入日历", "approve")),
         ("reject", ("拒绝", "取消", "reject")),
         ("understanding_change", ("目标", "成功标准", "goal", "constraint")),
+        ("presentation_change", ("日历标题", "标题", "描述", "展示", "presentation")),
         ("schedule_change", ("时间", "日期", "排期", "周一", "周二", "周三", "周四", "周五", "周六", "周日", "schedule", "deadline")),
         ("resource_change", ("资源", "资料", "课程", "resource")),
-        ("presentation_change", ("标题", "描述", "展示", "presentation")),
     )
 
     def route(self, text: str) -> FeedbackRoute:
@@ -883,7 +1234,6 @@ class FinalApprovalService:
             "schedule_quality": approval.schedule_quality_report_version,
             "calendar_proposal": approval.calendar_proposal_version,
             "calendar_snapshot": approval.calendar_snapshot_version,
-            "checkpoint": approval.checkpoint_version,
         }
         stale = [name for name, version in expected.items() if versions.get(name) != version]
         if stale:

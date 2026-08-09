@@ -17,12 +17,9 @@ import httpx
 
 BASE_URL = "http://127.0.0.1:8003"
 PLANNING_TASKS = {
-    "planning_goal_model",
-    "planning_reality",
-    "planning_evidence",
-    "planning_strategy",
-    "planning_execution",
-    "planning_critique",
+    "planning_understanding",
+    "planning_plan",
+    "planning_review",
     "planning_learning",
 }
 
@@ -88,7 +85,7 @@ SCENARIOS = (
         "plan_revision",
         "In eight weeks I want to improve Python engineering skills, investing eight hours per week, and deliver one complete demonstrable project. I already know Python basics.",
         persona={"project": "Build a tested FastAPI service with SQLite, authentication, and a clear README."},
-        final_revision="There is too little project practice. Add a complete demonstrable project, but keep the total duration at eight weeks.",
+        final_revision="Split the second task into two tasks, but do not change any other task or the eight-week duration.",
     ),
     Scenario(
         "schedule_revision",
@@ -123,10 +120,39 @@ def post_json(client: httpx.Client, path: str, payload: dict[str, Any] | None = 
     return response.json()
 
 
+def command_turn(client: httpx.Client, thread_id: str, message: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    stream = events(
+        client.post(
+            "/api/command/chat",
+            json={
+                "threadId": thread_id,
+                "message": message,
+                "permission": "low",
+                "context": {"timezone": "Asia/Shanghai"},
+            },
+        )
+    )
+    status = next((item for item in reversed(stream) if item.get("type") == "planning_session_status"), None)
+    if not status:
+        raise RuntimeError(f"Command did not return planning status: {stream[-3:]}")
+    document = {
+        **(status.get("data") or {}),
+        "sessionId": status.get("sessionId"),
+        "status": status.get("status"),
+        "businessStatus": status.get("businessStatus"),
+        "runtimeStatus": status.get("runtimeStatus"),
+        "pendingInput": status.get("pendingInput"),
+        "modelFailure": status.get("modelFailure"),
+        "decisions": [item.get("data") for item in stream if item.get("type") == "agent_decision" and isinstance(item.get("data"), dict)],
+        "messages": [item.get("data") for item in stream if item.get("type") == "agent_message" and isinstance(item.get("data"), dict)],
+    }
+    return document, stream
+
+
 def semantic_answer(document: dict[str, Any], persona: dict[str, str]) -> str:
     question_context = {
-        "goalCompletion": document.get("goalCompletion"),
-        "pendingQuestion": document.get("pendingQuestion"),
+        "understanding": document.get("understandingSnapshot"),
+        "pendingInput": document.get("pendingInput"),
     }
     serialized = json.dumps(question_context, ensure_ascii=False).casefold()
     groups = (
@@ -141,20 +167,22 @@ def semantic_answer(document: dict[str, Any], persona: dict[str, str]) -> str:
     return " ".join(selected or persona.values()) or "Keep the current goal and continue using only explicit, non-blocking assumptions."
 
 
-def model_stats(document: dict[str, Any]) -> tuple[list[str], int, int]:
+def model_stats(document: dict[str, Any]) -> tuple[list[str], int, int, int, int]:
     providers: list[str] = []
-    calls = retries = 0
+    calls = retries = fallbacks = mocks = 0
     for decision in document.get("decisions") or []:
         usage = decision.get("modelUsage") if isinstance(decision, dict) else None
-        if not isinstance(usage, dict):
+        if not isinstance(usage, dict) or not usage.get("provider"):
             continue
         calls += 1
         provider = str(usage.get("provider") or "")
         if provider:
             providers.append(provider)
+        fallbacks += int(bool(usage.get("fallbackUsed")))
+        mocks += int(provider.casefold() in {"mock", "test", "fake"})
         attempts = usage.get("attempts") if isinstance(usage.get("attempts"), list) else []
         retries += max(0, len([item for item in attempts if item.get("status") != "skipped"]) - 1)
-    return providers, calls, retries
+    return providers, calls, retries, fallbacks, mocks
 
 
 def persisted_plan_ids(client: httpx.Client, plans: list[dict[str, Any]]) -> set[str]:
@@ -186,45 +214,70 @@ def run_one(client: httpx.Client, scenario: Scenario, run_index: int, *, clean: 
         "updated": 0,
         "calendarIds": [],
     }
-    document = post_json(
-        client,
-        "/api/planning/sessions",
-        {
-            "entryPoint": "p_mode",
-            "threadId": thread_id,
-            "userInput": goal,
-            "context": {
-                "calendarSnapshotRef": f"calendar:{thread_id}:1",
-                "calendarSnapshotVersion": 1,
-                "timezone": "Asia/Shanghai",
-            },
-        },
-    )
+    document, _ = command_turn(client, thread_id, goal)
+    all_decisions = list(document["decisions"])
+    all_messages = list(document["messages"])
     result["sessionId"] = document["sessionId"]
+    clarification_rounds = 0
+    recovery_attempts = 0
     for followup in scenario.followups:
-        document = post_json(client, f"/api/planning/sessions/{document['sessionId']}/answer-understanding", {"text": followup})
+        document, stream = command_turn(client, thread_id, followup)
+        all_decisions.extend(document["decisions"])
+        all_messages.extend(document["messages"])
     for _ in range(8):
         status = document.get("status")
         if status == "waiting_understanding_confirmation":
-            document = post_json(client, f"/api/planning/sessions/{document['sessionId']}/confirm-understanding")
+            document, stream = command_turn(client, thread_id, "confirm")
+            all_decisions.extend(document["decisions"])
+            all_messages.extend(document["messages"])
             continue
         if status in {"waiting_understanding_input", "collecting_goal", "needs_goal_clarification"}:
+            if clarification_rounds >= 3:
+                raise RuntimeError("Understanding exceeded the three-round question budget")
+            clarification_rounds += 1
             answer = semantic_answer(document, scenario.persona)
-            document = post_json(client, f"/api/planning/sessions/{document['sessionId']}/answer-understanding", {"text": answer})
+            document, stream = command_turn(client, thread_id, answer)
+            all_decisions.extend(document["decisions"])
+            all_messages.extend(document["messages"])
             continue
         if status == "MODEL_UNAVAILABLE" and document.get("modelFailure", {}).get("retryable"):
-            document = post_json(client, f"/api/planning/sessions/{document['sessionId']}/answer-understanding", {"text": "continue"})
+            if recovery_attempts >= 1:
+                break
+            recovery_attempts += 1
+            document, stream = command_turn(client, thread_id, "continue")
+            all_decisions.extend(document["decisions"])
+            all_messages.extend(document["messages"])
             continue
         break
     if scenario.final_revision and document.get("status") == "waiting_final_review":
-        document = post_json(
-            client,
-            f"/api/planning/sessions/{document['sessionId']}/revise-final",
-            {"text": scenario.final_revision},
-        )
+        before_plan = document.get("planBlueprint") or {}
+        before_schedule = document.get("scheduleBlueprint") or {}
+        before_calendar = document.get("calendarProposal") or {}
+        document, stream = command_turn(client, thread_id, scenario.final_revision)
+        all_decisions.extend(document["decisions"])
+        all_messages.extend(document["messages"])
+        after_plan = document.get("planBlueprint") or {}
+        after_schedule = document.get("scheduleBlueprint") or {}
+        after_calendar = document.get("calendarProposal") or {}
+        if scenario.key == "plan_revision":
+            if after_plan.get("version") == before_plan.get("version") or len(after_plan.get("tasks") or []) <= len(before_plan.get("tasks") or []):
+                raise RuntimeError("plan revision did not structurally split the requested task")
+            if (after_plan.get("tasks") or [{}])[0] != (before_plan.get("tasks") or [{}])[0]:
+                raise RuntimeError("plan revision changed an unrelated task")
+        if scenario.key == "schedule_revision":
+            if after_plan != before_plan:
+                raise RuntimeError("schedule-only revision changed Plan semantics")
+            if after_schedule.get("version") == before_schedule.get("version"):
+                raise RuntimeError("schedule revision did not create a new Schedule artifact")
+            if any(datetime.fromisoformat(item["start"]).weekday() == 2 for item in after_schedule.get("sessions") or []):
+                raise RuntimeError("schedule revision still contains Wednesday sessions")
+            if after_calendar.get("version") == before_calendar.get("version"):
+                raise RuntimeError("schedule revision did not regenerate CalendarProposal")
     if document.get("status") != "waiting_final_review":
         raise RuntimeError(f"{scenario.key} stopped at {document.get('status')}: {document.get('modelFailure')}")
-    providers, calls, retries = model_stats(document)
+    document["decisions"] = all_decisions
+    document["messages"] = all_messages
+    providers, calls, retries, fallbacks, mocks = model_stats(document)
     result.update(
         understanding=bool(document.get("understandingSnapshot")),
         plan=bool(document.get("planBlueprint")),
@@ -235,20 +288,21 @@ def run_one(client: httpx.Client, scenario: Scenario, run_index: int, *, clean: 
         providers=providers,
         modelCalls=calls,
         modelRetries=retries,
+        fallbackCount=fallbacks,
+        mockCount=mocks,
         reviewerContradictions=sum(
             1
             for message in document.get("messages") or []
             if "reviewer_contradiction" in json.dumps(message, ensure_ascii=False)
         ),
+        clarificationRounds=clarification_rounds,
+        recoveryAttempts=recovery_attempts,
     )
     if not providers or any(provider != "deepseek" for provider in providers):
         raise RuntimeError(f"non-DeepSeek provider observed: {providers}")
-    stream = events(
-        client.post(
-            "/api/command/chat",
-            json={"threadId": thread_id, "message": "write calendar", "permission": "low", "mode": "auto", "context": {}},
-        )
-    )
+    if fallbacks or mocks:
+        raise RuntimeError(f"fallback/mock observed: fallback={fallbacks}, mock={mocks}")
+    stream = events(client.post("/api/command/chat", json={"threadId": thread_id, "message": "write calendar", "permission": "low", "context": {"timezone": "Asia/Shanghai"}}))
     approval = next((item for item in stream if item.get("type") == "approval_required"), None)
     if not approval:
         raise RuntimeError(f"Calendar approval was not requested: {stream[-3:]}")
@@ -269,12 +323,8 @@ def run_one(client: httpx.Client, scenario: Scenario, run_index: int, *, clean: 
     plans = calendar_result.get("plans") or []
     if not plans:
         raise RuntimeError("Calendar write returned no persisted events")
-    for plan in plans:
-        title = str(plan.get("title") or "")
-        if not title.startswith(marker):
-            response = client.patch(f"/api/plans/{plan['id']}", json={"content": f"{marker} {title}"})
-            response.raise_for_status()
-            plan["title"] = response.json()["content"]
+    if any(not str(plan.get("sourceKey") or "") or not str(plan.get("sourceTaskId") or "") or not str(plan.get("sourceSessionId") or "") for plan in plans):
+        raise RuntimeError("Calendar persistence lost source lineage")
     ids = [str(plan["id"]) for plan in plans]
     result.update(
         status="written_to_calendar",
@@ -377,6 +427,8 @@ def main() -> int:
         "calendarEvents": sum(item["created"] + item["updated"] for item in report["results"]),
         "modelCalls": sum(item["modelCalls"] for item in report["results"]),
         "modelRetries": sum(item["modelRetries"] for item in report["results"]),
+        "fallbackCount": sum(item["fallbackCount"] for item in report["results"]),
+        "mockCount": sum(item["mockCount"] for item in report["results"]),
         "reviewerContradictions": sum(item["reviewerContradictions"] for item in report["results"]),
         "averageRepair": round(sum(item["repair"] for item in report["results"]) / max(1, len(report["results"])), 3),
         "averageSeconds": round(sum(item["elapsedSeconds"] for item in report["results"]) / max(1, len(report["results"])), 2),

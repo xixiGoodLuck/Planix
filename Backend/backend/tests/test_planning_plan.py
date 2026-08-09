@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from app.cognitive_planning.agents import AgentResult, PlanReviewer, PlanningModelUnavailable
 from app.cognitive_planning.planning import (
     ConstraintCompiler,
     ContextClaim,
@@ -9,6 +12,9 @@ from app.cognitive_planning.planning import (
     PlanHardValidator,
     PlanMilestone,
     PlanTask,
+    QualityIssue,
+    QualityReport,
+    SemanticReviewResult,
     SemanticItem,
     UnderstandingReadiness,
     UnderstandingSnapshot,
@@ -109,7 +115,8 @@ def plan(snapshot: UnderstandingSnapshot, constraint_ref: str) -> PlanBlueprint:
 def test_constraint_compiler_keeps_core_and_semantic_layers_separate():
     snapshot = understanding()
     constraints = ConstraintCompiler().compile(snapshot)
-    assert constraints.core.weekday_capacity_minutes == 600
+    assert constraints.core.weekly_capacity_minutes == 600
+    assert constraints.core.weekday_capacity_minutes is None
     assert constraints.core.required_deliverables == [
         "完成可运行演示",
         "能够在面试中讲解设计决策",
@@ -143,10 +150,9 @@ def test_constraint_compiler_does_not_treat_weekdays_as_weekly_capacity():
 
     constraints = ConstraintCompiler().compile(snapshot)
 
-    assert constraints.core.weekday_capacity_minutes is None
-    assert [value.statement for value in constraints.semantic] == [
-        "Study 1 hour on weekdays and 2 hours on weekend days"
-    ]
+    assert constraints.core.weekday_capacity_minutes == 60
+    assert constraints.core.weekend_capacity_minutes == 120
+    assert constraints.semantic == []
 
 
 def test_plan_hard_validator_rejects_dependency_cycle():
@@ -213,3 +219,191 @@ def test_plan_hard_validator_rejects_unverified_external_fact():
         context=context(snapshot, constraints.artifact_id, verified=False),
     )
     assert "provenance" in {value.rule_id for value in report.issues}
+
+
+def test_plan_validator_does_not_treat_version_control_as_an_external_claim():
+    snapshot = understanding()
+    constraints = ConstraintCompiler().compile(snapshot)
+    current = plan(snapshot, constraints.artifact_id)
+    current = current.model_copy(
+        update={
+            "tasks": [
+                current.tasks[0].model_copy(update={"purpose": "Set up Git version control"}),
+                current.tasks[1],
+            ]
+        }
+    )
+    report = PlanHardValidator().validate(
+        current,
+        snapshot=snapshot,
+        constraints=constraints,
+        context=context(snapshot, constraints.artifact_id),
+    )
+    assert "provenance" not in {value.rule_id for value in report.issues}
+
+
+class ReviewModel:
+    def __init__(self, issue: QualityIssue):
+        self.issue = issue
+
+    def complete_contract(self, **_kwargs):
+        return AgentResult(
+            SemanticReviewResult(
+                targetArtifactId="placeholder",
+                targetVersion=1,
+                issues=[self.issue],
+            ),
+            {"attempts": []},
+        )
+
+
+@pytest.mark.parametrize(
+    "issue",
+    [
+        QualityIssue(
+            issueId="invalid-evidence",
+            category="content",
+            severity="major",
+            ruleId="semantic_fit",
+            targetType="plan",
+            targetId="task-1",
+            description="Evidence does not exist",
+            evidenceRefs=["missing-ref"],
+            allowedOperations=["update_task"],
+            repairBasis="semantic_review",
+        ),
+        QualityIssue(
+            issueId="unsupported-operation",
+            category="content",
+            severity="major",
+            ruleId="semantic_fit",
+            targetType="plan",
+            targetId="task-1",
+            description="Operation is not valid for Plan repair",
+            evidenceRefs=["task-1"],
+            allowedOperations=["update_calendar_presentation"],
+            repairBasis="semantic_review",
+        ),
+    ],
+)
+def test_semantic_reviewer_rejects_invalid_evidence_or_unsupported_repair(issue):
+    snapshot = understanding()
+    constraints = ConstraintCompiler().compile(snapshot)
+    current_context = context(snapshot, constraints.artifact_id)
+    current_plan = plan(snapshot, constraints.artifact_id)
+    hard = QualityReport(targetArtifactId=current_plan.artifact_id, targetVersion=1, hardRulesPassed=True)
+    with pytest.raises(PlanningModelUnavailable) as exc:
+        PlanReviewer(ReviewModel(issue)).run(snapshot, constraints, current_context, current_plan, hard)
+    assert exc.value.error.error_type == "invalid_model_output"
+
+
+def test_semantic_reviewer_accepts_current_success_signal_as_target_and_evidence():
+    snapshot = understanding()
+    constraints = ConstraintCompiler().compile(snapshot)
+    current_context = context(snapshot, constraints.artifact_id)
+    current_plan = plan(snapshot, constraints.artifact_id)
+    issue = QualityIssue(
+        issueId="missing-success-path",
+        category="content",
+        severity="major",
+        ruleId="semantic_fit",
+        targetType="success_signal",
+        targetId="item-success:demo",
+        description="The success path needs a clearer task",
+        evidenceRefs=["item-success:demo"],
+        allowedOperations=["add_task"],
+        repairBasis="semantic_review",
+    )
+    hard = QualityReport(targetArtifactId=current_plan.artifact_id, targetVersion=1, hardRulesPassed=True)
+    result = PlanReviewer(ReviewModel(issue)).run(snapshot, constraints, current_context, current_plan, hard)
+    assert result.artifact.issues == [issue]
+
+
+def test_semantic_reviewer_intersects_operations_with_patchguard_support():
+    snapshot = understanding()
+    constraints = ConstraintCompiler().compile(snapshot)
+    current_context = context(snapshot, constraints.artifact_id)
+    current_plan = plan(snapshot, constraints.artifact_id)
+    issue = QualityIssue(
+        issueId="mixed-operations",
+        category="content",
+        severity="major",
+        ruleId="semantic_fit",
+        targetType="task",
+        targetId="task-1",
+        description="Task needs an actionable correction",
+        evidenceRefs=["task-1"],
+        allowedOperations=["update_task", "update_calendar_presentation"],
+        repairBasis="semantic_review",
+    )
+    hard = QualityReport(targetArtifactId=current_plan.artifact_id, targetVersion=1, hardRulesPassed=True)
+    result = PlanReviewer(ReviewModel(issue)).run(snapshot, constraints, current_context, current_plan, hard)
+    assert result.artifact.issues[0].allowed_operations == ["update_task"]
+
+
+def test_semantic_reviewer_cannot_promote_nonblocking_unknown_or_task_array_order():
+    snapshot = understanding().model_copy(
+        update={"unknowns": [item("project-topic", "Project topic is not selected yet")]}
+    )
+    nonblocking = QualityIssue(
+        issueId="nonblocking-unknown",
+        category="content",
+        severity="major",
+        ruleId="goal_alignment",
+        targetType="task",
+        targetId="task-1",
+        description="The unknown project topic requires user confirmation.",
+        evidenceRefs=["item-project-topic", "task-1"],
+        allowedOperations=["update_task"],
+        repairBasis="semantic_review",
+    )
+    array_order = nonblocking.model_copy(
+        update={
+            "issue_id": "array-order",
+            "description": "task-2 is listed after task-1 in the task array, creating a forward dependency.",
+            "evidence_refs": ["task-1", "task-2"],
+        }
+    )
+    schedule_capacity = nonblocking.model_copy(
+        update={
+            "issue_id": "schedule-capacity",
+            "description": "The single task exceeds the daily time limit and must split across sessions.",
+            "evidence_refs": ["task-1"],
+        }
+    )
+    prerequisite = nonblocking.model_copy(
+        update={
+            "issue_id": "prerequisite",
+            "description": "The snapshot does not confirm testing knowledge, so the learning task should be optional.",
+            "evidence_refs": ["task-1"],
+        }
+    )
+    schedule_timing = nonblocking.model_copy(
+        update={
+            "issue_id": "schedule-timing",
+            "description": "Task-2 may be scheduled after week six and not complete before applications start.",
+            "evidence_refs": ["task-2"],
+        }
+    )
+    contradictory_missing_task = nonblocking.model_copy(
+        update={
+            "issue_id": "contradictory-missing-task",
+            "description": "The plan does not include any explicit task for a resume, although task-12 creates it.",
+            "evidence_refs": ["task-12"],
+        }
+    )
+    legitimate = nonblocking.model_copy(
+        update={
+            "issue_id": "legitimate",
+            "description": "The required task has no executable acceptance step.",
+            "evidence_refs": ["task-1"],
+        }
+    )
+
+    assert PlanReviewer._outside_semantic_authority(nonblocking, snapshot) is True
+    assert PlanReviewer._outside_semantic_authority(array_order, snapshot) is True
+    assert PlanReviewer._outside_semantic_authority(schedule_capacity, snapshot) is True
+    assert PlanReviewer._outside_semantic_authority(prerequisite, snapshot) is True
+    assert PlanReviewer._outside_semantic_authority(schedule_timing, snapshot) is True
+    assert PlanReviewer._outside_semantic_authority(contradictory_missing_task, snapshot) is True
+    assert PlanReviewer._outside_semantic_authority(legitimate, snapshot) is False

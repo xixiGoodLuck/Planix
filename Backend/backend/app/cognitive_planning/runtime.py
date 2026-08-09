@@ -16,10 +16,12 @@ from ..schemas import (
     PlanningSessionResponse,
     PlanningSessionTextRequest,
 )
+from ..services.calendar_snapshot import calendar_snapshot, normalize_timezone, timezone_info
 from .artifact_audit import PlanningArtifactAuditStore
 from .session_api import SessionApiAdapter
 from .agents import (
     CognitiveModelClient,
+    LearningAgent,
     PlanGenerator,
     PlanRepairAgent,
     PlanReviewer,
@@ -35,6 +37,7 @@ from .contracts import (
     ContextPack,
     ExecutionOutcome,
     FinalApprovalBundle,
+    FinalRevisionPatch,
     LearningObservation,
     PlanBlueprint,
     QualityIssue,
@@ -57,6 +60,7 @@ from .planning_services import (
     PatchGuard,
     PlanHardValidator,
     ScheduleGenerator,
+    SchedulePatchGuard,
     ScheduleValidator,
     UnderstandingReadinessService,
 )
@@ -96,6 +100,7 @@ class CognitiveOSRuntime:
         self.harness = HarnessRuntime(artifact_runtime=self.agent_runtime)
         self.user_model = user_model or UserModelMemoryRepository()
         self.understanding_agent = UnderstandingAgent(model)
+        self.learning_agent = LearningAgent(model)
         self.plan_generator = PlanGenerator(model)
         self.plan_repair_agent = PlanRepairAgent(model)
         self.plan_reviewer = PlanReviewer(model)
@@ -105,6 +110,7 @@ class CognitiveOSRuntime:
         self.plan_validator = PlanHardValidator()
         self.patch_guard = PatchGuard()
         self.schedule_generator = ScheduleGenerator()
+        self.schedule_patch_guard = SchedulePatchGuard()
         self.schedule_validator = ScheduleValidator()
         self.calendar_materializer = CalendarMaterializer()
         self.feedback_router = FeedbackRouter()
@@ -134,7 +140,7 @@ class CognitiveOSRuntime:
             "planning_mode": str(metadata.get("planningMode") or "model_backed"),
             "resume_node": str(metadata.get("currentStage") or "understanding"),
             "repair_count": int(row["repair_count"] or 0),
-            "schedule_repair_count": 0,
+            "schedule_repair_count": int(row["schedule_repair_count"] or 0),
             "errors": [],
         }
         latest: dict[str, Any] = {}
@@ -208,6 +214,21 @@ class CognitiveOSRuntime:
         )
         return artifact
 
+    def _record_rejected_repair(self, state: CognitivePlanningState, *, issue: QualityIssue, reason: str, model_usage: dict[str, Any]) -> None:
+        self.agent_runtime.record_decision(
+            state["session_id"],
+            agent=self.plan_generator.name,
+            decision="request_agent_revision",
+            reason=reason,
+            summary=f"Repair attempt for {issue.issue_id} was rejected by PatchGuard.",
+            input_artifact_ids=self._latest_artifact_ids(
+                state["session_id"],
+                ("plan_blueprint", "plan_quality_report", "constraint_set", "context_pack"),
+            ),
+            output_artifact_ids=[],
+            model_usage=model_usage,
+        )
+
     def _block_model(self, state: CognitivePlanningState, *, agent: str, error) -> CognitivePlanningState:
         recovery = self.harness.decide_model_failure(state, error)
         state.update(
@@ -246,14 +267,12 @@ class CognitiveOSRuntime:
 
     @staticmethod
     def _blocking_unknown_keys(snapshot: UnderstandingSnapshot) -> set[str]:
-        if not snapshot.next_question or snapshot.next_question.priority != "blocking":
-            return set()
-        critical_tokens = ("goal", "purpose", "subject", "safety", "feasibility", "目标", "目的", "安全", "可行")
-        candidates = [
-            item for item in snapshot.unknowns
-            if any(token in f"{item.key} {item.statement}".casefold() for token in critical_tokens)
-        ]
-        return {item.key for item in candidates[:1]}
+        critical = {"core_goal", "safety", "feasibility", "hard_constraint"}
+        keys = {item.key for item in snapshot.unknowns if item.blocking_category in critical}
+        question = snapshot.next_question
+        if question and question.priority == "blocking" and question.target_unknown_key:
+            keys.add(question.target_unknown_key)
+        return keys
 
     def session_guard_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
         if state.get("status") in {"ARCHIVED", "cancelled", "written_to_calendar"}:
@@ -330,7 +349,9 @@ class CognitiveOSRuntime:
         snapshot = state.get("understanding_snapshot")
         if not snapshot or not snapshot.readiness.confirmed:
             raise HTTPException(status_code=409, detail={"message": "understanding is not confirmed"})
-        constraints = self.constraint_compiler.compile(snapshot)
+        request_context = state.get("request_context", {})
+        zone = timezone_info(normalize_timezone(str(request_context.get("timezone") or "Asia/Shanghai")))
+        constraints = self.constraint_compiler.compile(snapshot, today=datetime.now(zone).date())
         state["constraint_set"] = self._record_planning_artifact(
             state,
             agent="Constraint Compiler",
@@ -351,7 +372,7 @@ class CognitiveOSRuntime:
             return state
         claims: list[ContextClaim] = []
         memory_refs: list[str] = []
-        for index, memory in enumerate(self.user_model.relevant(limit=5)):
+        for index, memory in enumerate(self.user_model.relevant(snapshot.goal_summary.casefold(), limit=5)):
             confirmed = memory.status == "confirmed"
             claims.append(
                 ContextClaim(
@@ -386,7 +407,7 @@ class CognitiveOSRuntime:
             claims=claims,
             memory_refs=memory_refs,
             tool_run_refs=[str(item) for item in request_context.get("toolRunRefs") or []],
-            calendar_snapshot_ref=str(request_context.get("calendarSnapshotRef") or "calendar:1"),
+            calendar_snapshot_ref=str(request_context.get("calendarSnapshotRef") or "calendar:0"),
         )
         state["context_pack"] = self._record_planning_artifact(
             state,
@@ -513,13 +534,33 @@ class CognitiveOSRuntime:
         snapshot = state.get("understanding_snapshot")
         if not plan or not quality or not constraints or not context or not snapshot:
             return state
-        if int(state.get("repair_count", 0)) >= 2:
+        user_revision = state.get("user_revision_issue")
+        if not user_revision and int(state.get("repair_count", 0)) >= 2:
             return state
-        issue = next((item for item in quality.issues if item.severity in {"blocker", "major"}), None)
+        issue = user_revision or next((item for item in quality.issues if item.severity in {"blocker", "major"}), None)
         if issue is None:
             return state
         try:
             result = self.plan_repair_agent.run(plan, issue, constraints, context)
+            if user_revision:
+                state["final_revision_patch"] = self._record_planning_artifact(
+                    state,
+                    agent="Final Review Controller",
+                    artifact_type="final_revision_patch",
+                    artifact=FinalRevisionPatch(
+                        category=state["feedback_route"].category,
+                        feedback=state["feedback_route"].normalized_instruction,
+                        baseArtifactId=plan.artifact_id,
+                        baseVersion=plan.version,
+                        operations=result.artifact.operations,
+                    ),
+                    decision="produce_artifact",
+                    reason="Final Review feedback was converted into a version-bound typed patch.",
+                    summary="Only the requested Plan layer may change; downstream artifacts are regenerated.",
+                    status="approved",
+                    inputs=("plan_blueprint", "plan_quality_report"),
+                    model_usage=result.model_usage,
+                )
             repaired, repair = self.patch_guard.apply_plan(
                 plan,
                 result.artifact,
@@ -532,6 +573,7 @@ class CognitiveOSRuntime:
         except PlanningModelUnavailable as exc:
             return self._block_model(state, agent=self.plan_generator.name, error=exc.error)
         except ValueError as exc:
+            self._record_rejected_repair(state, issue=issue, reason=str(exc), model_usage=result.model_usage)
             invalid = QualityIssue(
                 issueId=f"repair:{issue.issue_id}",
                 category=issue.category,
@@ -548,10 +590,23 @@ class CognitiveOSRuntime:
                 update={"issues": [*quality.issues, invalid], "repair_round": min(2, int(state.get("repair_count", 0)) + 1)}
             )
             state["repair_count"] = min(2, int(state.get("repair_count", 0)) + 1)
+            self.persistence.update(state["session_id"], repair_count=state["repair_count"], runtime_status="running")
             return state
         if not repair.accepted:
-            raise ValueError(repair.reason)
-        state["repair_count"] = min(2, int(state.get("repair_count", 0)) + 1)
+            self._record_rejected_repair(state, issue=issue, reason=repair.reason, model_usage=result.model_usage)
+            state["repair_count"] = min(2, int(state.get("repair_count", 0)) + 1)
+            self.persistence.update(state["session_id"], repair_count=state["repair_count"], runtime_status="running")
+            self.agent_runtime.record_message(
+                state["session_id"],
+                from_agent="Plan Generator",
+                to_agent="Plan Quality Reviewer",
+                message_type="revision_request",
+                reason=repair.reason,
+                payload={"issueId": issue.issue_id, "repairAttempt": state["repair_count"]},
+            )
+            return state
+        if not user_revision:
+            state["repair_count"] = min(2, int(state.get("repair_count", 0)) + 1)
         state["plan_blueprint"] = self._record_planning_artifact(
             state,
             agent=self.plan_generator.name,
@@ -563,7 +618,8 @@ class CognitiveOSRuntime:
             inputs=("plan_blueprint", "plan_quality_report", "constraint_set", "context_pack"),
             model_usage=result.model_usage,
         )
-        self.persistence.update(state["session_id"], repair_count=state["repair_count"], runtime_status="running")
+        self.persistence.update(state["session_id"], repair_count=int(state.get("repair_count", 0)), runtime_status="running")
+        state.pop("user_revision_issue", None)
         return state
 
     def generate_schedule_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
@@ -572,24 +628,55 @@ class CognitiveOSRuntime:
         context = state.get("context_pack")
         if not plan or not constraints or not context:
             return state
-        timezone = str(state.get("request_context", {}).get("timezone") or "Asia/Shanghai")
-        try:
-            zone = ZoneInfo(timezone)
-        except Exception:
-            zone = fixed_timezone(timedelta(hours=8)) if timezone == "Asia/Shanghai" else fixed_timezone.utc
+        request_context = state.get("request_context", {})
+        timezone = normalize_timezone(str(request_context.get("timezone") or "Asia/Shanghai"))
+        zone = timezone_info(timezone)
         start_date = constraints.core.required_start_date
         start = datetime.combine(
             date.fromisoformat(start_date) if start_date else date.today() + timedelta(days=1),
             datetime.min.time().replace(hour=9),
             tzinfo=zone,
         )
+        effective_constraints = constraints
+        previous = state.get("schedule_blueprint")
+        route = state.get("feedback_route")
+        if route and route.category == "schedule_change" and previous:
+            excluded = self._feedback_excluded_weekdays(route.normalized_instruction)
+            core = constraints.core.model_copy(
+                update={"excluded_weekdays": sorted(set([*constraints.core.excluded_weekdays, *excluded]))}
+            )
+            effective_constraints = constraints.model_copy(update={"core": core})
+            if any(token in route.normalized_instruction.casefold() for token in ("周末", "weekend")):
+                start += timedelta(days=(5 - start.weekday()) % 7)
+            state["final_revision_patch"] = self._record_planning_artifact(
+                state,
+                agent="Final Review Controller",
+                artifact_type="final_revision_patch",
+                artifact=FinalRevisionPatch(
+                    category="schedule_change",
+                    feedback=route.normalized_instruction,
+                    baseArtifactId=previous.artifact_id,
+                    baseVersion=previous.version,
+                    operations=[
+                        {"operation": "move_schedule_session", "targetId": previous.artifact_id, "payload": {"excludedWeekdays": excluded, "preferWeekend": "周末" in route.normalized_instruction or "weekend" in route.normalized_instruction.casefold()}},
+                    ],
+                ),
+                decision="produce_artifact",
+                reason="Final Review schedule feedback was bound to the current Schedule version.",
+                summary="Plan semantics remain unchanged while Schedule and downstream artifacts are regenerated.",
+                status="approved",
+                inputs=("schedule_blueprint", "schedule_quality_report"),
+            )
         schedule = self.schedule_generator.generate(
             plan,
-            constraints,
+            effective_constraints,
             start=start,
             timezone=timezone,
             calendar_snapshot_ref=context.calendar_snapshot_ref,
+            calendar_busy=self._calendar_busy(request_context),
         )
+        if previous:
+            schedule = schedule.model_copy(update={"artifact_id": new_artifact_id("schedule"), "version": previous.version + 1})
         state["schedule_blueprint"] = self._record_planning_artifact(
             state,
             agent="Schedule Agent",
@@ -615,12 +702,25 @@ class CognitiveOSRuntime:
             plan=plan,
             constraints=constraints,
             current_calendar_snapshot_ref=context.calendar_snapshot_ref,
+            calendar_busy=self._calendar_busy(state.get("request_context", {})),
         ).model_copy(
             update={
                 "artifact_id": previous.artifact_id if previous else new_artifact_id("quality"),
                 "version": previous.version + 1 if previous else 1,
             }
         )
+        revision = state.get("final_revision_patch")
+        if revision and revision.category == "schedule_change":
+            excluded = set(self._feedback_excluded_weekdays(revision.feedback))
+            violations = [item for item in schedule.sessions if datetime.fromisoformat(item.start).weekday() in excluded]
+            if violations:
+                issue = QualityIssue(
+                    issueId=f"schedule:user-feedback:{schedule.artifact_id}", category="schedule", severity="major",
+                    ruleId="user_schedule_revision", targetType="schedule", targetId=schedule.artifact_id,
+                    description="Schedule still violates the excluded weekday requested in Final Review.",
+                    evidenceRefs=[revision.id], allowedOperations=["move_schedule_session"], repairBasis="user_final_review",
+                )
+                quality = quality.model_copy(update={"hard_rules_passed": False, "issues": [*quality.issues, issue]})
         state["schedule_quality_report"] = self._record_planning_artifact(
             state,
             agent="Schedule Quality Reviewer",
@@ -644,14 +744,16 @@ class CognitiveOSRuntime:
         count = int(state.get("schedule_repair_count", 0))
         if count >= 2:
             return state
-        start = datetime.fromisoformat(schedule.sessions[0].start) if schedule.sessions else datetime.now(fixed_timezone.utc).replace(hour=9, minute=0, second=0, microsecond=0)
-        repaired = self.schedule_generator.generate(
-            plan,
-            constraints,
-            start=start,
-            timezone=schedule.planning_timezone,
-            calendar_snapshot_ref=context.calendar_snapshot_ref,
-        ).model_copy(update={"artifact_id": schedule.artifact_id, "version": schedule.version + 1})
+        quality = state.get("schedule_quality_report")
+        issue = next((item for item in (quality.issues if quality else []) if item.severity in {"blocker", "major"}), None)
+        if issue is None:
+            return state
+        repaired = self.schedule_patch_guard.apply(
+            schedule,
+            issue,
+            constraints=constraints,
+            calendar_busy=self._calendar_busy(state.get("request_context", {})),
+        )
         state["schedule_repair_count"] = count + 1
         state["schedule_blueprint"] = self._record_planning_artifact(
             state,
@@ -659,10 +761,11 @@ class CognitiveOSRuntime:
             artifact_type="schedule_blueprint",
             artifact=repaired,
             decision="produce_artifact",
-            reason="Schedule timing was regenerated within the two-round repair budget.",
-            summary="Only sessions moved or split; required Plan tasks and evidence remained unchanged.",
+            reason=f"Issue-scoped schedule repair applied {issue.allowed_operations} to {issue.issue_id}.",
+            summary="Only the targeted sessions moved or split; task identity and total effort were preserved.",
             inputs=("schedule_blueprint", "schedule_quality_report", "plan_blueprint", "constraint_set"),
         )
+        self.persistence.update(state["session_id"], schedule_repair_count=state["schedule_repair_count"], runtime_status="running")
         return state
 
     def materialize_calendar_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
@@ -671,12 +774,41 @@ class CognitiveOSRuntime:
         context = state.get("context_pack")
         if not plan or not schedule or not context:
             return state
+        previous = state.get("calendar_proposal")
         proposal = self.calendar_materializer.materialize(
             plan,
             schedule,
             timezone=schedule.planning_timezone,
             current_calendar_snapshot_ref=context.calendar_snapshot_ref,
         )
+        route = state.get("feedback_route")
+        if route and route.category == "presentation_change" and previous:
+            state["final_revision_patch"] = self._record_planning_artifact(
+                state,
+                agent="Final Review Controller",
+                artifact_type="final_revision_patch",
+                artifact=FinalRevisionPatch(
+                    category="presentation_change",
+                    feedback=route.normalized_instruction,
+                    baseArtifactId=previous.artifact_id,
+                    baseVersion=previous.version,
+                    operations=[{"operation": "update_calendar_presentation", "targetId": previous.artifact_id, "payload": {"titleStyle": "concise"}}],
+                ),
+                decision="produce_artifact",
+                reason="Calendar presentation feedback was bound to the current Calendar Proposal.",
+                summary="Only Calendar titles changed; Plan and Schedule semantics remain identical.",
+                status="approved",
+                inputs=("calendar_proposal",),
+            )
+            proposal = proposal.model_copy(
+                update={
+                    "artifact_id": new_artifact_id("calendar"),
+                    "version": previous.version + 1,
+                    "events": [event.model_copy(update={"title": self._concise_title(event.title)}) for event in proposal.events],
+                }
+            )
+        elif previous:
+            proposal = proposal.model_copy(update={"artifact_id": new_artifact_id("calendar"), "version": previous.version + 1})
         state["calendar_proposal"] = self._record_planning_artifact(
             state,
             agent="Calendar Materializer",
@@ -709,6 +841,26 @@ class CognitiveOSRuntime:
     def feedback_router_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
         route = self.feedback_router.route(state.get("user_input", ""))
         state["feedback_route"] = route
+        if route.category in {"plan_change", "resource_change"}:
+            plan = state.get("plan_blueprint")
+            if plan:
+                operations = (
+                    ["replace_resource", "update_task"]
+                    if route.category == "resource_change"
+                    else ["update_task", "split_task", "move_task", "add_task", "remove_optional_task"]
+                )
+                state["user_revision_issue"] = QualityIssue(
+                    issueId=f"final-review:{route.category}:{plan.artifact_id}:{plan.version}",
+                    category="evidence" if route.category == "resource_change" else "content",
+                    severity="major",
+                    ruleId="user_final_revision",
+                    targetType="plan",
+                    targetId=plan.artifact_id,
+                    description=route.normalized_instruction,
+                    evidenceRefs=[f"user-feedback:{state['session_id']}"],
+                    allowedOperations=operations,
+                    repairBasis="user_final_review",
+                )
         state["next_node"] = {
             "understanding_change": "understanding",
             "plan_change": "repair_plan",
@@ -719,6 +871,23 @@ class CognitiveOSRuntime:
             "reject": "wait_for_final_review",
         }[route.category]
         return state
+
+    @staticmethod
+    def _feedback_excluded_weekdays(text: str) -> list[int]:
+        lower = text.casefold()
+        names = {"周一": 0, "monday": 0, "周二": 1, "tuesday": 1, "周三": 2, "wednesday": 2, "周四": 3, "thursday": 3, "周五": 4, "friday": 4, "周六": 5, "saturday": 5, "周日": 6, "周天": 6, "sunday": 6}
+        if not any(token in lower for token in ("不要", "避开", "排除", "exclude", "not on")):
+            return []
+        return sorted({number for name, number in names.items() if name in lower})
+
+    @staticmethod
+    def _concise_title(title: str) -> str:
+        words = title.split()
+        if len(words) > 4:
+            return " ".join(words[:4])
+        if len(title) > 8:
+            return title[:8].rstrip()
+        return title[:-1].rstrip() if len(title) > 4 else title
 
     def record_learning_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
         observation = LearningObservation(
@@ -813,7 +982,7 @@ class CognitiveOSRuntime:
         row = self.persistence.get_row(session_id)
         return self._invoke(self._state_from_row(row, action="give_feedback", user_input=payload.text))
 
-    def approve_final(self, session_id: str, *, accept_missing_resources: bool = False) -> PlanningSessionResponse:
+    def approve_final(self, session_id: str) -> PlanningSessionResponse:
         row = self.persistence.get_row(session_id)
         if not row or row["status"] != "waiting_final_review":
             raise HTTPException(status_code=409, detail={"message": "session is not ready for final approval"})
@@ -835,7 +1004,7 @@ class CognitiveOSRuntime:
         )
         if any(kind not in heads for kind in required):
             raise HTTPException(status_code=409, detail={"message": "final approval is missing a current artifact"})
-        snapshot_version = int(state.get("request_context", {}).get("calendarSnapshotVersion") or 1)
+        snapshot_version = int(state.get("request_context", {}).get("calendarSnapshotVersion") or 0)
         persistent = self.harness.bootstrap(state)
         approval = self.final_approval_service.create(
             session_id=session_id,
@@ -883,9 +1052,20 @@ class CognitiveOSRuntime:
             "schedule": heads.get("schedule_blueprint").version if heads.get("schedule_blueprint") else 0,
             "schedule_quality": heads.get("schedule_quality_report").version if heads.get("schedule_quality_report") else 0,
             "calendar_proposal": heads.get("calendar_proposal").version if heads.get("calendar_proposal") else 0,
-            "calendar_snapshot": int(state.get("request_context", {}).get("calendarSnapshotVersion") or 1),
-            "checkpoint": approval.checkpoint_version,
+            "calendar_snapshot": int(calendar_snapshot(str(state.get("request_context", {}).get("timezone") or "Asia/Shanghai"))["calendarSnapshotVersion"]),
         }
+
+    @staticmethod
+    def _calendar_busy(request_context: dict[str, Any]) -> list[tuple[datetime, datetime]]:
+        busy: list[tuple[datetime, datetime]] = []
+        for item in request_context.get("calendarBusy") or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                busy.append((datetime.fromisoformat(str(item["start"])), datetime.fromisoformat(str(item["end"]))))
+            except (KeyError, ValueError):
+                continue
+        return busy
 
     def _assert_final_authority(self, session_id: str, *, require_permission: bool) -> None:
         row = self.persistence.get_row(session_id)
@@ -929,8 +1109,15 @@ class CognitiveOSRuntime:
         self.harness.assert_current_artifact(session_id, kind="final_approval_bundle", expected_ref=final_approval_ref)
         self._assert_final_authority(session_id, require_permission=True)
 
-    def mark_calendar_written(self, session_id: str, *, final_approval_ref: dict[str, Any] | None = None) -> None:
-        if final_approval_ref is not None:
+    def mark_calendar_written(self, session_id: str, *, final_approval_ref: dict[str, Any] | None = None, mutation_revision: int | None = None) -> None:
+        if mutation_revision is not None:
+            if final_approval_ref is None:
+                raise HTTPException(status_code=409, detail={"message": "Final Approval reference is required"})
+            self.harness.assert_current_artifact(session_id, kind="final_approval_bundle", expected_ref=final_approval_ref)
+            current = int(calendar_snapshot()["calendarSnapshotVersion"])
+            if current != mutation_revision:
+                raise HTTPException(status_code=409, detail={"message": "Calendar changed during approved write"})
+        elif final_approval_ref is not None:
             self.assert_calendar_write_allowed(session_id, final_approval_ref=final_approval_ref)
         else:
             self._assert_final_authority(session_id, require_permission=True)
@@ -1031,12 +1218,18 @@ class CognitiveOSRuntime:
                 summary="Replanning remains versioned and requires Final Review.",
                 inputs=("execution_outcome", "plan_blueprint"),
             )
-        observation = LearningObservation(
-            sessionId=session_id,
-            category="execution_feedback",
-            statement=f"Task {payload.task_id} reported {payload.status}.",
-            sourceRefs=[f"execution-outcome:{payload.task_id}:{payload.status}"],
+        outcome_artifact = max(
+            (item for item in self.agent_runtime.list_artifacts(session_id) if item.artifact_type == "execution_outcome"),
+            key=lambda item: item.version,
         )
+        source_ref = f"artifact:{outcome_artifact.id}:v{outcome_artifact.version}"
+        learning = self.learning_agent.run(
+            outcome,
+            session_id=session_id,
+            source_ref=source_ref,
+            domain_scope=[plan.goal_summary.casefold()],
+        )
+        observation = learning.artifact
         self._record_planning_artifact(
             state,
             agent="Learning Observer",
@@ -1046,6 +1239,12 @@ class CognitiveOSRuntime:
             reason="The execution outcome produced a tentative learning observation.",
             summary="No durable memory is written without independent Memory Evaluation.",
             inputs=("execution_outcome",),
+            model_usage=learning.model_usage,
+        )
+        self.harness.evaluate_memory_candidate(
+            session_id,
+            learning_observation=observation,
+            memory_repository=self.user_model,
         )
         return PlanningExecutionFeedbackResponse(
             outcome=outcome.model_dump(by_alias=True),
@@ -1061,9 +1260,9 @@ class CognitiveOSRuntime:
         snapshot = state.get("understanding_snapshot")
         if not snapshot or snapshot.conflicts:
             raise HTTPException(status_code=409, detail={"message": "conflicts cannot be skipped"})
-        blocking = self._blocking_unknown_keys(snapshot)
-        if any(token in key.casefold() for key in blocking for token in ("safety", "feasibility", "安全", "可行")):
-            raise HTTPException(status_code=409, detail={"message": "safety or feasibility questions cannot be skipped"})
+        non_assumable = {"core_goal", "safety", "feasibility", "hard_constraint"}
+        if any(item.blocking_category in non_assumable for item in snapshot.unknowns):
+            raise HTTPException(status_code=409, detail={"message": "core, safety, feasibility, or hard-constraint questions cannot be skipped"})
         assumptions = [*snapshot.assumptions]
         for item in snapshot.unknowns:
             assumptions.append(item.model_copy(update={"source_type": "model_assumption", "mutation_policy": "user_confirmation_required"}))

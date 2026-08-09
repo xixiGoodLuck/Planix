@@ -6,6 +6,7 @@ from uuid import uuid4
 from ..db import get_conn
 from ..errors import bad_request, not_found
 from ..schemas import PlanCreate, PlanOut, PlanUpdate
+from .calendar_snapshot import bump_calendar_revision
 
 
 def _normalize_date(value: str) -> str:
@@ -116,6 +117,7 @@ def create_plan(payload: PlanCreate) -> PlanOut:
                 payload.source_key.strip(),
             ),
         ).fetchone()
+        bump_calendar_revision(conn)
     return _to_plan(row)
 
 
@@ -154,6 +156,7 @@ def update_plan(plan_id: str, payload: PlanUpdate) -> PlanOut:
                 """,
                 (*updates.values(), plan_id),
             )
+            bump_calendar_revision(conn)
         row = conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
     return _to_plan(row)
 
@@ -163,9 +166,49 @@ def delete_plan(plan_id: str) -> None:
         cursor = conn.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
         if cursor.rowcount == 0:
             raise not_found("plan does not exist")
+        bump_calendar_revision(conn)
 
 
 def delete_all_plans() -> int:
     with get_conn() as conn:
         cursor = conn.execute("DELETE FROM plans")
+        if cursor.rowcount:
+            bump_calendar_revision(conn)
         return int(cursor.rowcount or 0)
+
+
+def upsert_calendar_plans(items: list[dict], *, expected_revision: int) -> tuple[list[tuple[str, PlanOut]], int]:
+    results: list[tuple[str, PlanOut]] = []
+    with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute("SELECT revision FROM calendar_state WHERE id = 'local'").fetchone()
+        if int(current["revision"] if current else 0) != expected_revision:
+            raise ValueError("Calendar revision is stale")
+        for item in items:
+            title = str(item.get("title") or "").strip()
+            source_key = str(item.get("sourceKey") or "").strip()
+            if not title or not source_key:
+                raise ValueError("Calendar event requires title and sourceKey")
+            target_date = _normalize_date(str(item.get("date") or ""))
+            target_time = _normalize_time(str(item.get("time") or "09:00"))
+            estimated = max(1, int(item.get("estimatedMinutes") or 30))
+            existing = conn.execute("SELECT id FROM plans WHERE source_key = ?", (source_key,)).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE plans SET date = ?, time = ?, content = ?, result = ?, priority = 'medium',
+                       estimated_minutes = ?, source = 'ai', updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                    (target_date, target_time, title, str(item.get("description") or ""), estimated, existing["id"]),
+                )
+                state, plan_id = "updated", existing["id"]
+            else:
+                plan_id = str(uuid4())
+                conn.execute(
+                    """INSERT INTO plans(id, date, time, content, result, priority, estimated_minutes, source, source_key)
+                       VALUES (?, ?, ?, ?, ?, 'medium', ?, 'ai', ?)""",
+                    (plan_id, target_date, target_time, title, str(item.get("description") or ""), estimated, source_key),
+                )
+                state = "created"
+            row = conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
+            results.append((state, _to_plan(row)))
+        revision = bump_calendar_revision(conn) if results else expected_revision
+    return results, revision
