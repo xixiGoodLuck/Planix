@@ -2,6 +2,7 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
+      # Local development only; replace these values outside local development.
       POSTGRES_DB: planix
       POSTGRES_USER: planix
       POSTGRES_PASSWORD: planix

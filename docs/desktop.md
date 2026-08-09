@@ -70,7 +70,7 @@ If a user sees `asset not found: index.html`, the installer was built incorrectl
 | `PLANIX_DB_POOL_MAX` | `5` | Maximum backend connection pool size |
 | `PLANIX_DB_POOL_TIMEOUT` | `10` | Pool acquisition/startup timeout in seconds |
 
-The desktop sidecar fails clearly when `DATABASE_URL` is absent or is not a `postgresql://` URL. It never creates a local embedded database.
+The desktop sidecar requires PostgreSQL 17 and fails clearly when `DATABASE_URL` is absent or is not a `postgresql://` URL. It never creates a local embedded database.
 
 ## Required Toolchain
 

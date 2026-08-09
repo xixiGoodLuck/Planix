@@ -2,7 +2,7 @@
 
 ## Product identity
 
-Planix is a local-first AI planning application. Portfolio documentation uses `v3.0.0`; package and installer versions are managed separately. Do not reintroduce former product, storage, sidecar, or environment-variable names.
+Planix is a local-first AI planning application that requires PostgreSQL 17. Portfolio documentation uses `v3.0.0`; package and installer versions are managed separately. Do not reintroduce former product, storage, sidecar, or environment-variable names.
 
 ## Canonical planning architecture
 

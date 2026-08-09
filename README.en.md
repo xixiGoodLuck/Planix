@@ -14,7 +14,7 @@ Calendar, Settings, and desktop packaging remain independent product capabilitie
 
 ## Run locally
 
-Planix requires PostgreSQL. Start the pinned local service and apply the Alembic schema first:
+Planix requires PostgreSQL 17. Start the pinned local service and apply the Alembic schema first:
 
 ```powershell
 docker compose up -d postgres
