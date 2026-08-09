@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   AiModelRoutingInput, AiSettings, AiSettingsInput, AiSettingsTestResult, AppliedPlan,
-  CommandPermission, CommandThread, CommandThreadSummary, Plan
+  CommandPermission, CommandThread, CommandThreadSummary, ContextResetResult, ContextStats, Plan
 } from '../types';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -124,6 +124,8 @@ export async function saveAiSettings(payload: AiSettingsInput) { return callApi<
 export async function saveAiSettingsRouting(payload: AiModelRoutingInput) { return callApi<AiSettings>('PUT', '/api/ai/settings/routing', payload); }
 export async function deleteAiSettingsKey(provider: AiSettings['provider']) { return callApi<AiSettings>('DELETE', `/api/ai/settings/key/${provider}`); }
 export async function testAiSettings() { return callApi<AiSettingsTestResult>('POST', '/api/ai/test', { prompt: 'Say OK in one short sentence.' }); }
+export async function fetchContextStats() { return callApi<ContextStats>('GET', '/api/settings/context'); }
+export async function resetAiContext(clearMemory = false) { return callApi<ContextResetResult>('DELETE', '/api/settings/context', { clearMemory }); }
 
 type BackendPlan = { id: string; date: string; time: string; content: string; done: boolean; result: string; priority: 'low' | 'medium' | 'high'; estimatedMinutes: number; source: 'manual' | 'ai'; sourceKey?: string; };
 function fromBackendPlan(plan: BackendPlan): Plan { return { id: plan.id, time: plan.time, title: plan.content, done: plan.done, completion: plan.result || '', priority: plan.priority, estimatedMinutes: plan.estimatedMinutes, source: plan.source, sourceKey: plan.sourceKey || '' }; }

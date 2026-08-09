@@ -42,3 +42,5 @@ export interface AiSettings {
 export interface AiSettingsInput { provider: AiProvider; baseUrl: string; model: string; apiKey?: string; temperature: number; timeoutSeconds: number; }
 export interface AiModelRoutingInput { routingRules: AiModelRoutingRule[]; autoModelPolicy?: AiAutoModelPolicy; }
 export interface AiSettingsTestResult { ok: boolean; mode: 'mock' | 'llm' | 'error'; message: string; provider?: string; model?: string; errorType?: string; statusCode?: number; detail?: string; }
+export interface ContextStats { conversations: number; planningSessions: number; artifacts: number; memories: number; }
+export interface ContextResetResult { deletedThreads: number; deletedSessions: number; deletedArtifacts: number; deletedEvents: number; deletedMemories: number; }

@@ -3320,6 +3320,97 @@ select:focus {
   accent-color: #6d5ef6;
 }
 
+.context-management-card {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.context-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.context-stats > div {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.42);
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.context-stats strong {
+  color: #f8fafc;
+  font-size: 20px;
+}
+
+.context-management-actions,
+.context-reset-dialog-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.context-management-actions > span {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.context-reset-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(2, 6, 23, 0.74);
+  backdrop-filter: blur(4px);
+}
+
+.context-reset-dialog {
+  width: min(480px, 100%);
+  padding: 22px;
+  border: 1px solid rgba(248, 113, 113, 0.28);
+  border-radius: 16px;
+  background: #111827;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+}
+
+.context-reset-dialog h2,
+.context-reset-dialog p {
+  margin: 0 0 12px;
+}
+
+.context-reset-dialog p,
+.context-reset-dialog li {
+  color: #cbd5e1;
+  line-height: 1.55;
+}
+
+.context-reset-dialog ul {
+  margin: 0 0 16px;
+  padding-left: 22px;
+}
+
+.context-reset-dialog .advanced-debug-toggle {
+  margin: 18px 0;
+}
+
+.context-reset-dialog-actions {
+  justify-content: flex-end;
+}
+
+@media (max-width: 720px) {
+  .context-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .advanced-debug-error {
   display: block;
   margin-top: 6px;

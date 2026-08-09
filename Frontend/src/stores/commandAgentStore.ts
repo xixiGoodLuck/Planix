@@ -91,6 +91,7 @@ async function refreshThreads() { update((current) => ({ ...current, loadingThre
 function setDrawerOpen(drawerOpen: boolean) { update((current) => ({ ...current, drawerOpen })); if (drawerOpen) void refreshThreads(); }
 function setPermission(permission: CommandPermission) { update((current) => ({ ...current, permission })); }
 function setAdvancedAgentTrace(value: boolean) { saveAdvancedAgentTrace(value); update((current) => ({ ...current, advancedAgentTrace: value })); }
+function clearContext() { const workspace = createWorkspace(); update((current) => ({ ...current, activeWorkspaceId: workspace.id, workspaces: { [workspace.id]: workspace }, workspaceOrder: [workspace.id], threads: [], drawerOpen: false, loadingThreads: false })); }
 function newThread() { const workspace = createWorkspace(); update((current) => ({ ...current, activeWorkspaceId: workspace.id, workspaces: { ...current.workspaces, [workspace.id]: workspace }, workspaceOrder: [...current.workspaceOrder, workspace.id], drawerOpen: false })); }
 function selectWorkspace(id: string) { if (state.workspaces[id]) update((current) => ({ ...current, activeWorkspaceId: id, drawerOpen: false })); }
 async function loadThread(threadId: string) { const found = Object.values(state.workspaces).find((item) => item.threadId === threadId); if (found) return selectWorkspace(found.id); const workspace = createWorkspace(); workspace.loading = true; update((current) => ({ ...current, activeWorkspaceId: workspace.id, workspaces: { ...current.workspaces, [workspace.id]: workspace }, workspaceOrder: [...current.workspaceOrder, workspace.id] })); try { const thread = await fetchCommandThread(threadId); update((current) => updateWorkspace(current, workspace.id, (item) => ({ ...item, threadId, title: thread.title, messages: thread.messages.map(toMessage), loading: false }))); } catch { update((current) => updateWorkspace(current, workspace.id, (item) => ({ ...item, loading: false, status: 'failed' }))); } }
@@ -110,4 +111,4 @@ function approveAction(actionId: string, decision: 'approve' | 'reject', t: (key
 }
 
 export function useCommandAgent() { return useSyncExternalStore((listener) => { listeners.add(listener); return () => listeners.delete(listener); }, () => state, () => state); }
-export const commandAgentActions = { setPermission, setAdvancedAgentTrace, setDrawerOpen, refreshThreads, newThread, selectWorkspace, loadThread, removeThread, removeWorkspace, sendCommand, approveAction };
+export const commandAgentActions = { setPermission, setAdvancedAgentTrace, clearContext, setDrawerOpen, refreshThreads, newThread, selectWorkspace, loadThread, removeThread, removeWorkspace, sendCommand, approveAction };

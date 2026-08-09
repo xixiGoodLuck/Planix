@@ -391,6 +391,31 @@ class PlanningSessionTextRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class ContextResetRequest(BaseModel):
+    clear_memory: bool = Field(default=False, alias="clearMemory")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ContextStatsOut(BaseModel):
+    conversations: int
+    planning_sessions: int = Field(alias="planningSessions")
+    artifacts: int
+    memories: int
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ContextResetOut(BaseModel):
+    deleted_threads: int = Field(alias="deletedThreads")
+    deleted_sessions: int = Field(alias="deletedSessions")
+    deleted_artifacts: int = Field(alias="deletedArtifacts")
+    deleted_events: int = Field(alias="deletedEvents")
+    deleted_memories: int = Field(alias="deletedMemories")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class PlanningExecutionFeedbackRequest(BaseModel):
     task_id: str = Field(alias="taskId", min_length=1)
     status: Literal["not_started", "in_progress", "blocked", "completed", "skipped", "rescheduled", "failed"]

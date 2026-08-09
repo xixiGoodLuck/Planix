@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .db import get_db_path
-from .routers import command, health, month_notes, planning, plans, settings
+from .routers import command, context_settings, health, month_notes, planning, plans, settings
 
 APP_VERSION = "1.1.4"
 
@@ -90,6 +90,7 @@ def create_app() -> FastAPI:
     app.include_router(month_notes.router)
     app.include_router(planning.router)
     app.include_router(settings.router)
+    app.include_router(context_settings.router)
 
     logger.info("Planix API started version=%s db_path=%s", APP_VERSION, get_db_path())
     return app
