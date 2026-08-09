@@ -11,8 +11,8 @@ import type {
   RoutingPrimaryProvider
 } from '../types';
 import {
-  ApiHttpError,
   ApiNetworkError,
+  apiErrorMessage,
   deleteAiSettingsKey,
   fetchAiSettings,
   fetchBackendHealth,
@@ -26,7 +26,7 @@ import {
   providerDefaultBaseUrls,
   providerDefaultModels,
   providerModelRecommendations,
-  upgradeLegacyKimiDefaults
+  settingsForEditor
 } from '../lib/aiSettingsDefaults';
 import { routingTaskTypes } from '../lib/aiRouting';
 
@@ -158,18 +158,6 @@ function normalizedPolicy(settings: AiSettings): AiAutoModelPolicy {
   };
 }
 
-function detailText(error: unknown): string {
-  if (error instanceof ApiNetworkError) return error.message;
-  if (error instanceof ApiHttpError) {
-    if (typeof error.detail === 'string') return error.detail;
-    if (error.detail && typeof error.detail === 'object' && 'message' in error.detail) {
-      return String((error.detail as { message: unknown }).message);
-    }
-    return `HTTP ${error.status}`;
-  }
-  return error instanceof Error ? error.message : String(error);
-}
-
 export function AIWorkspace({ onSettingsChange, t }: AIWorkspaceProps) {
   const [settings, setSettings] = useState<AiSettings>(defaultSettings);
   const [apiKey, setApiKey] = useState('');
@@ -177,22 +165,33 @@ export function AIWorkspace({ onSettingsChange, t }: AIWorkspaceProps) {
   const [busy, setBusy] = useState<'save' | 'test' | 'clear' | 'routing' | ''>('');
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [backendVersion, setBackendVersion] = useState('');
+  const [backendOnline, setBackendOnline] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([fetchAiSettings(), fetchBackendHealth()])
-      .then(([loaded, health]) => {
-        if (cancelled) return;
-        const normalized = upgradeLegacyKimiDefaults(loaded);
+    Promise.allSettled([fetchAiSettings(), fetchBackendHealth()]).then(([settingsResult, healthResult]) => {
+      if (cancelled) return;
+      if (settingsResult.status === 'fulfilled') {
+        const normalized = settingsForEditor(settingsResult.value);
         setSettings(normalized);
-        setBackendVersion(health.version || '');
         onSettingsChange?.(normalized);
-      })
-      .catch((error) => {
-        if (!cancelled) setStatus(detailText(error));
-      });
+      } else {
+        setStatus(apiErrorMessage(settingsResult.reason));
+      }
+      if (healthResult.status === 'fulfilled' && healthResult.value.status === 'ok') {
+        setBackendOnline(true);
+        setBackendVersion(healthResult.value.version || '');
+      } else {
+        setBackendOnline(false);
+        setBackendVersion('');
+        if (settingsResult.status === 'fulfilled') {
+          setStatus(apiErrorMessage(healthResult.status === 'rejected' ? healthResult.reason : new ApiNetworkError()));
+        }
+      }
+    });
     return () => { cancelled = true; };
-  }, [onSettingsChange]);
+  }, [onSettingsChange, reloadToken]);
 
   const rules = normalizedRules(settings);
   const policy = normalizedPolicy(settings);
@@ -245,13 +244,13 @@ export function AIWorkspace({ onSettingsChange, t }: AIWorkspaceProps) {
 
   async function persistSettings(clearKey = false): Promise<AiSettings | null> {
     try {
-      const saved = upgradeLegacyKimiDefaults(await saveAiSettings(settingsPayload(clearKey)));
+      const saved = settingsForEditor(await saveAiSettings(settingsPayload(clearKey)));
       setSettings(saved);
       setApiKey('');
       onSettingsChange?.(saved);
       return saved;
     } catch (error) {
-      setStatus(detailText(error));
+      setStatus(apiErrorMessage(error));
       return null;
     }
   }
@@ -273,7 +272,13 @@ export function AIWorkspace({ onSettingsChange, t }: AIWorkspaceProps) {
         const result = await testAiSettings();
         setStatus(result.message || (result.ok ? t('legacy.modelTestSuccess') : t('legacy.modelTestFailed')));
       } catch (error) {
-        setStatus(detailText(error));
+        setStatus(apiErrorMessage(error));
+      } finally {
+        try {
+          const refreshed = settingsForEditor(await fetchAiSettings());
+          setSettings(refreshed);
+          onSettingsChange?.(refreshed);
+        } catch { /* preserve the test result; the next refresh will retry settings */ }
       }
     }
     setBusy('');
@@ -283,13 +288,13 @@ export function AIWorkspace({ onSettingsChange, t }: AIWorkspaceProps) {
     setBusy('clear');
     setStatus('');
     try {
-      const saved = upgradeLegacyKimiDefaults(await deleteAiSettingsKey(provider));
+      const saved = settingsForEditor(await deleteAiSettingsKey(provider));
       setSettings(saved);
       setApiKey('');
       onSettingsChange?.(saved);
       setStatus(provider === 'local' ? t('legacy.configCleared') : t('legacy.keyCleared'));
     } catch (error) {
-      setStatus(detailText(error));
+      setStatus(apiErrorMessage(error));
     }
     setBusy('');
   }
@@ -331,12 +336,12 @@ export function AIWorkspace({ onSettingsChange, t }: AIWorkspaceProps) {
     setBusy('routing');
     setStatus('');
     try {
-      const saved = upgradeLegacyKimiDefaults(await saveAiSettingsRouting({ routingRules: rules, autoModelPolicy: policy }));
+      const saved = settingsForEditor(await saveAiSettingsRouting({ routingRules: rules, autoModelPolicy: policy }));
       setSettings(saved);
       onSettingsChange?.(saved);
       setStatus(t('legacy.routingSaved'));
     } catch (error) {
-      setStatus(detailText(error));
+      setStatus(apiErrorMessage(error));
     }
     setBusy('');
   }
@@ -368,6 +373,7 @@ export function AIWorkspace({ onSettingsChange, t }: AIWorkspaceProps) {
           <span><Settings size={15} />{t('legacy.aiSettings')}</span>
           <strong>{backendVersion || t('legacy.backendOffline')}</strong>
         </div>
+        {!backendOnline && <div className="settings-actions"><span>{t('legacy.backendOfflineHint')}。{t('legacy.backendConnectionFailedFriendly')}</span><button type="button" onClick={() => setReloadToken((value) => value + 1)}>{t('legacy.retryBackend')}</button></div>}
         <div className="settings-grid">
           <label>
             <span>{t('legacy.provider')}</span>
@@ -399,17 +405,17 @@ export function AIWorkspace({ onSettingsChange, t }: AIWorkspaceProps) {
           <label><span>{t('legacy.timeout')}</span><input type="number" min={5} max={120} value={settings.timeoutSeconds} onChange={(event) => updateSettings((current) => ({ ...current, timeoutSeconds: Number(event.target.value) }))} /></label>
         </div>
         <div className="settings-actions">
-          <button onClick={saveProvider} disabled={Boolean(busy)}><Save size={16} />{t('legacy.saveSettings')}</button>
-          <button onClick={testProvider} disabled={Boolean(busy)}><PlugZap size={16} />{t('legacy.testModel')}</button>
-          <button onClick={() => clearProvider(settings.provider)} disabled={Boolean(busy) || !activeConfigured}><Trash2 size={16} />{settings.provider === 'local' ? t('legacy.clearConfig') : t('legacy.clearKey')}</button>
+          <button onClick={saveProvider} disabled={!backendOnline || Boolean(busy)}><Save size={16} />{t('legacy.saveSettings')}</button>
+          <button onClick={testProvider} disabled={!backendOnline || Boolean(busy)}><PlugZap size={16} />{t('legacy.testModel')}</button>
+          <button onClick={() => clearProvider(settings.provider)} disabled={!backendOnline || Boolean(busy) || !activeConfigured}><Trash2 size={16} />{settings.provider === 'local' ? t('legacy.clearConfig') : t('legacy.clearKey')}</button>
           {status && <span>{status}</span>}
         </div>
         <div className="saved-provider-keys">
           <span>{t('legacy.savedApiKeys')}</span>
           <div>
             {savedProviders.length ? savedProviders.map((item) => (
-              <button key={item.provider} type="button" className="saved-provider-key" onClick={() => clearProvider(item.provider)} disabled={Boolean(busy)}>
-                <span>{providerLabel(item.provider, t)}</span><X size={13} />
+              <button key={item.provider} type="button" className="saved-provider-key" onClick={() => clearProvider(item.provider)} disabled={!backendOnline || Boolean(busy)}>
+                <span>{providerLabel(item.provider, t)}{item.provider === 'local' ? ` · ${t('legacy.localModelConfigured')}` : ''}</span><X size={13} />
               </button>
             )) : <em>{t('legacy.noSavedApiKeys')}</em>}
           </div>
@@ -443,7 +449,7 @@ export function AIWorkspace({ onSettingsChange, t }: AIWorkspaceProps) {
             ))}
           </div>
           <div className="settings-actions">
-            <button type="button" onClick={saveRouting} disabled={Boolean(busy)}><Save size={16} />{t('legacy.saveRouting')}</button>
+            <button type="button" onClick={saveRouting} disabled={!backendOnline || Boolean(busy)}><Save size={16} />{t('legacy.saveRouting')}</button>
             <button type="button" onClick={restoreRouting} disabled={Boolean(busy)}><RotateCcw size={16} />{t('legacy.restoreRecommendedRouting')}</button>
           </div>
         </div>

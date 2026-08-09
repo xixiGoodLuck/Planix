@@ -6,7 +6,6 @@ from fastapi import APIRouter, HTTPException
 from ..schemas import AiModelRoutingUpdate, AiSettingsOut, AiSettingsTestOut, AiSettingsTestPayload, AiSettingsUpdate
 from ..services.ai_settings import (
     SUPPORTED_PROVIDERS,
-    AiSettingsSaveValidationError,
     delete_provider_api_key,
     get_public_ai_settings,
     save_ai_settings,
@@ -76,15 +75,6 @@ def update_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
         result = save_ai_settings(payload)
         logger.info("AI settings saved successfully")
         return result
-    except AiSettingsSaveValidationError as exc:
-        logger.info(
-            "AI settings validation failed provider=%s model=%s error_type=%s status_code=%s",
-            exc.provider,
-            exc.model,
-            exc.error_type,
-            exc.status_code,
-        )
-        raise HTTPException(status_code=400, detail=exc.to_detail()) from exc
     except Exception as exc:
         logger.error("AI settings save failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Backend failed to save AI settings") from exc

@@ -395,7 +395,6 @@ def test_calendar_revision_storage_exists_and_increments_with_plan_mutation(clie
 
 def test_api_key_is_not_stored_in_plaintext(client, monkeypatch):
     secret = "PLANIX_TEST_SECRET_12345_DO_NOT_PERSIST"
-    monkeypatch.setattr("app.services.ai_settings._validate_provider_config", lambda *_args, **_kwargs: None)
     response = client.put(
         "/api/ai/settings",
         json={

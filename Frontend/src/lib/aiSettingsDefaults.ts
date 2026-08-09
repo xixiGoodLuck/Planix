@@ -85,3 +85,18 @@ export function upgradeLegacyKimiDefaults(settings: AiSettings): AiSettings {
     }))
   };
 }
+
+export function settingsForEditor(settings: AiSettings): AiSettings {
+  const normalized = upgradeLegacyKimiDefaults(settings);
+  return normalized.provider === 'mock'
+    ? {
+        ...normalized,
+        provider: 'deepseek',
+        baseUrl: providerDefaultBaseUrls.deepseek,
+        model: providerDefaultModels.deepseek,
+        hasApiKey: false,
+        keyStatus: 'unchecked',
+        keyErrorType: ''
+      }
+    : normalized;
+}

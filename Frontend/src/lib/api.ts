@@ -14,7 +14,11 @@ class ApiError extends Error {
   }
 }
 export class ApiNetworkError extends ApiError {
-  constructor(message = '无法连接 Planix 后端服务') { super(message, { isNetworkError: true }); this.name = 'ApiNetworkError'; }
+  constructor(cause?: unknown) {
+    super('无法连接 Planix 后端服务，请确认 PostgreSQL 17 和 Backend 8003 已启动。', { isNetworkError: true });
+    this.name = 'ApiNetworkError';
+    (this as Error & { cause?: unknown }).cause = cause;
+  }
 }
 export class ApiHttpError extends ApiError {
   status: number;
@@ -22,6 +26,25 @@ export class ApiHttpError extends ApiError {
 }
 export class CommandStreamError extends Error {
   constructor(message: string) { super(message); this.name = 'CommandStreamError'; }
+}
+
+function detailMessage(detail: unknown): string | undefined {
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail.map(detailMessage).filter((value): value is string => Boolean(value));
+    return messages.length ? messages.join('; ') : undefined;
+  }
+  if (!detail || typeof detail !== 'object') return undefined;
+  const value = detail as Record<string, unknown>;
+  if (typeof value.message === 'string') return value.message;
+  if (typeof value.msg === 'string') return value.msg;
+  return detailMessage(value.detail);
+}
+
+export function apiErrorMessage(error: unknown): string {
+  if (error instanceof ApiNetworkError) return error.message;
+  if (error instanceof ApiHttpError) return detailMessage(error.detail) || `HTTP ${error.status}`;
+  return error instanceof Error ? error.message : String(error);
 }
 
 function apiUrl(path: string) { return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`; }
@@ -53,7 +76,7 @@ async function callApi<T>(method: string, path: string, body?: unknown, timeoutM
     return response.status === 204 ? undefined as T : await response.json() as T;
   } catch (error) {
     if (error instanceof ApiError) throw error;
-    throw new ApiNetworkError(error instanceof Error ? error.message : String(error));
+    throw new ApiNetworkError(error);
   } finally { window.clearTimeout(timer); }
 }
 
@@ -94,7 +117,12 @@ export interface CommandChatPayload { threadId?: string; message: string; permis
 type CommandChatHandlers = { onEvent: (event: CommandChatEvent) => void; onError?: (error: Error) => void; onDone?: () => void; };
 
 async function runCommandStream(path: string, payload: unknown, handlers: CommandChatHandlers) {
-  const response = await fetch(apiUrl(path), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  let response: Response;
+  try {
+    response = await fetch(apiUrl(path), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  } catch (error) {
+    throw new ApiNetworkError(error);
+  }
   if (!response.ok) { let detail: unknown; try { detail = await response.json(); } catch { detail = undefined; } throw new ApiHttpError(response.status, detail); }
   if (!response.body) throw new ApiNetworkError('Command stream is unavailable');
   const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
@@ -116,7 +144,10 @@ export async function fetchCommandThread(threadId: string) { return callApi<Comm
 export async function listCommandThreads(limit = 50) { return callApi<CommandThreadSummary[]>('GET', `/api/command/threads?limit=${limit}`); }
 export async function deleteCommandThread(threadId: string) { return callApi<void>('DELETE', `/api/command/thread/${encodeURIComponent(threadId)}`); }
 
-export interface BackendHealth { status: string; service: string; version: string; database: string; }
+export interface BackendHealth {
+  status: string; name: string; app: string; pid: number; version: string;
+  startupTime: string; features: Record<string, boolean>; database: string;
+}
 export async function fetchBackendHealth() { return callApi<BackendHealth>('GET', '/health'); }
 export async function checkBackendHealth() { try { return (await fetchBackendHealth()).status === 'ok'; } catch { return false; } }
 export async function fetchAiSettings() { return callApi<AiSettings>('GET', '/api/ai/settings'); }

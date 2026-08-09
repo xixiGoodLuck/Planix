@@ -1,6 +1,5 @@
 import os
 import json
-import re
 from dataclasses import dataclass
 
 from ..db import get_conn, jsonb
@@ -113,7 +112,7 @@ class PendingProviderConfig:
     model: str
     api_key: str
     api_key_source: str
-    should_validate: bool
+    configuration_changed: bool
     key_status: str = "unchecked"
     key_error_type: str = ""
     last_validated_at: str = ""
@@ -126,33 +125,6 @@ class ModelRoutingRuleConfig:
     fallback_providers: tuple[str, ...]
     local_fallback_enabled: bool
     updated_at: str = ""
-
-
-class AiSettingsSaveValidationError(Exception):
-    def __init__(
-        self,
-        *,
-        message: str,
-        error_type: str,
-        provider: str,
-        model: str,
-        status_code: int = 0,
-    ):
-        super().__init__(message)
-        self.message = message
-        self.error_type = error_type
-        self.provider = provider
-        self.model = model
-        self.status_code = status_code
-
-    def to_detail(self) -> dict[str, object]:
-        return {
-            "errorType": self.error_type,
-            "provider": self.provider,
-            "model": self.model,
-            "message": self.message,
-            "statusCode": self.status_code,
-        }
 
 
 def _env_provider() -> str:
@@ -219,7 +191,16 @@ def _config_for_provider(conn, provider: str) -> ProviderConfig | None:
 def _saved_provider_rows(conn) -> list[AiSavedProvider]:
     rows = conn.execute("SELECT * FROM ai_provider_configs").fetchall()
     configs = [_row_to_provider_config(row) for row in rows]
-    configs = [config for config in configs if config and config.provider in KEYED_PROVIDERS]
+    configs = [
+        config
+        for config in configs
+        if config
+        and config.provider in KEYED_PROVIDERS
+        and (
+            config.has_api_key
+            or (config.provider == "local" and bool(config.base_url.strip() and config.model.strip()))
+        )
+    ]
     order = {provider: index for index, provider in enumerate(PROVIDER_ORDER)}
     configs.sort(key=lambda item: order.get(item.provider, 999))
     return [
@@ -611,13 +592,6 @@ def get_public_ai_settings() -> AiSettingsOut:
     return _to_public(settings, saved_providers, routing_rules, auto_model_policy)
 
 
-def _redact_sensitive_error_text(value: str, api_key: str) -> str:
-    text = value or ""
-    if api_key:
-        text = text.replace(api_key, "[redacted]")
-    return re.sub(r"Bearer\s+[^,\s]+", "Bearer [redacted]", text, flags=re.IGNORECASE)
-
-
 def _candidate_provider_config(conn, payload: AiSettingsUpdate) -> PendingProviderConfig:
     provider = payload.provider
     base_url = payload.base_url.strip().rstrip("/") or _default_base_url(provider)
@@ -626,10 +600,8 @@ def _candidate_provider_config(conn, payload: AiSettingsUpdate) -> PendingProvid
     if payload.api_key is None:
         api_key = existing.api_key if existing and existing.has_api_key else ""
         api_key_source = "user" if api_key else ""
-        should_validate = bool(
-            api_key
-            and existing
-            and (base_url != existing.base_url or model != existing.model)
+        configuration_changed = bool(
+            not existing or base_url != existing.base_url or model != existing.model
         )
         key_status = existing.key_status if api_key and existing else "unchecked"
         key_error_type = existing.key_error_type if api_key and existing else ""
@@ -637,8 +609,17 @@ def _candidate_provider_config(conn, payload: AiSettingsUpdate) -> PendingProvid
     else:
         api_key = payload.api_key.strip()
         api_key_source = "user" if api_key else ""
-        should_validate = bool(api_key) or provider == "local"
-        key_status = "valid" if api_key else "unchecked"
+        configuration_changed = bool(
+            not existing
+            or base_url != existing.base_url
+            or model != existing.model
+            or api_key != existing.api_key
+        )
+        key_status = existing.key_status if existing and not configuration_changed else "unchecked"
+        key_error_type = existing.key_error_type if existing and not configuration_changed else ""
+        last_validated_at = existing.last_validated_at if existing and not configuration_changed else ""
+    if configuration_changed:
+        key_status = "unchecked"
         key_error_type = ""
         last_validated_at = ""
     return PendingProviderConfig(
@@ -647,54 +628,11 @@ def _candidate_provider_config(conn, payload: AiSettingsUpdate) -> PendingProvid
         model=model,
         api_key=api_key,
         api_key_source=api_key_source,
-        should_validate=should_validate,
+        configuration_changed=configuration_changed,
         key_status=key_status,
         key_error_type=key_error_type,
         last_validated_at=last_validated_at,
     )
-
-
-def _validate_provider_config(candidate: PendingProviderConfig, *, temperature: float, timeout_seconds: int) -> None:
-    if not candidate.should_validate:
-        return
-    from .model_provider import ModelCallRequest, ModelRouter
-
-    settings = EffectiveAiSettings(
-        provider=candidate.provider,
-        base_url=candidate.base_url,
-        model=candidate.model,
-        api_key=candidate.api_key,
-        temperature=temperature,
-        timeout_seconds=timeout_seconds,
-        updated_at="",
-    )
-    result, error = ModelRouter(settings, routing_enabled=False).complete(
-        ModelCallRequest(
-            task_type="settings_test",
-            feature="settings_save_validation",
-            system="You are a concise health-check assistant. Reply with OK.",
-            user="Reply OK.",
-            max_tokens=16,
-            temperature=None if candidate.provider == "kimi" else 0,
-            timeout_seconds=timeout_seconds,
-            max_token_cap=16,
-        )
-    )
-    if error:
-        raise AiSettingsSaveValidationError(
-            message=_redact_sensitive_error_text(error.message, candidate.api_key),
-            error_type=error.error_type,
-            provider=candidate.provider,
-            model=candidate.model,
-            status_code=error.status_code,
-        )
-    if not result or result.mode != "llm":
-        raise AiSettingsSaveValidationError(
-            message="Model validation failed before saving settings.",
-            error_type="unknown",
-            provider=candidate.provider,
-            model=candidate.model,
-        )
 
 
 def _upsert_provider_config(conn, candidate: PendingProviderConfig) -> tuple[str, str]:
@@ -710,7 +648,7 @@ def _upsert_provider_config(conn, candidate: PendingProviderConfig) -> tuple[str
           provider, base_url, model, api_key_source,
           key_status, key_error_type, last_validated_at, updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE %s END, CURRENT_TIMESTAMP)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
         ON CONFLICT(provider)
         DO UPDATE SET
           base_url = excluded.base_url,
@@ -726,60 +664,70 @@ def _upsert_provider_config(conn, candidate: PendingProviderConfig) -> tuple[str
             candidate.base_url,
             candidate.model,
             stored_source,
-            "valid" if candidate.should_validate else candidate.key_status,
-            "" if candidate.should_validate else candidate.key_error_type,
-            candidate.should_validate,
+            candidate.key_status,
+            candidate.key_error_type,
             candidate.last_validated_at or None,
         ),
     )
     return "", stored_source
 
 
-def save_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
-    with get_conn() as conn:
-        if payload.provider == "mock":
-            base_url = payload.base_url.strip().rstrip("/") or _default_base_url(payload.provider)
-            model = payload.model.strip() or _default_model(payload.provider)
-            api_key_source = ""
-        else:
-            candidate = _candidate_provider_config(conn, payload)
-            if candidate.should_validate:
-                _validate_provider_config(
-                    candidate,
-                    temperature=payload.temperature,
-                    timeout_seconds=payload.timeout_seconds,
-                )
-            _db_api_key, api_key_source = _upsert_provider_config(conn, candidate)
-            base_url = candidate.base_url
-            model = candidate.model
+def _restore_provider_secret(provider: str, previous_secret: str | None) -> None:
+    store = get_secret_store()
+    key = provider_secret_key(provider)
+    if previous_secret:
+        store.set(key, previous_secret)
+    else:
+        store.delete(key)
 
-        conn.execute(
-            """
-            INSERT INTO ai_settings(
-              id, provider, base_url, model, api_key_source,
-              temperature, timeout_seconds, updated_at
+
+def save_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
+    secret_store = get_secret_store()
+    secret_key = provider_secret_key(payload.provider)
+    previous_secret = secret_store.get(secret_key) if payload.provider != "mock" else None
+    try:
+        with get_conn() as conn:
+            if payload.provider == "mock":
+                base_url = payload.base_url.strip().rstrip("/") or _default_base_url(payload.provider)
+                model = payload.model.strip() or _default_model(payload.provider)
+                api_key_source = ""
+            else:
+                candidate = _candidate_provider_config(conn, payload)
+                _db_api_key, api_key_source = _upsert_provider_config(conn, candidate)
+                base_url = candidate.base_url
+                model = candidate.model
+
+            conn.execute(
+                """
+                INSERT INTO ai_settings(
+                  id, provider, base_url, model, api_key_source,
+                  temperature, timeout_seconds, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT(id)
+                DO UPDATE SET
+                  provider = excluded.provider,
+                  base_url = excluded.base_url,
+                  model = excluded.model,
+                  api_key_source = excluded.api_key_source,
+                  temperature = excluded.temperature,
+                  timeout_seconds = excluded.timeout_seconds,
+                  updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    SETTINGS_ID,
+                    payload.provider,
+                    base_url,
+                    model,
+                    api_key_source,
+                    payload.temperature,
+                    payload.timeout_seconds,
+                ),
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT(id)
-            DO UPDATE SET
-              provider = excluded.provider,
-              base_url = excluded.base_url,
-              model = excluded.model,
-              api_key_source = excluded.api_key_source,
-              temperature = excluded.temperature,
-              timeout_seconds = excluded.timeout_seconds,
-              updated_at = CURRENT_TIMESTAMP
-            """,
-            (
-                SETTINGS_ID,
-                payload.provider,
-                base_url,
-                model,
-                api_key_source,
-                payload.temperature,
-                payload.timeout_seconds,
-            ),
-        )
+    except Exception:
+        if payload.provider != "mock":
+            _restore_provider_secret(payload.provider, previous_secret)
+        raise
     return get_public_ai_settings()
 
 
@@ -838,50 +786,58 @@ def save_model_routing_rules(payload: AiModelRoutingUpdate) -> AiSettingsOut:
 def delete_provider_api_key(provider: AiProvider | str) -> AiSettingsOut:
     if provider not in SUPPORTED_PROVIDERS:
         raise ValueError(f"Unsupported provider: {provider}")
-    get_secret_store().delete(provider_secret_key(str(provider)))
-    with get_conn() as conn:
-        if provider == "local":
-            conn.execute("DELETE FROM ai_provider_configs WHERE provider = %s", (provider,))
-        elif provider in KEYED_PROVIDERS:
-            existing = _config_for_provider(conn, provider)
-            if existing:
-                conn.execute(
-                    """
-                    UPDATE ai_provider_configs
-                    SET api_key_source = '', key_status = 'unchecked',
-                        key_error_type = '', last_validated_at = NULL, updated_at = CURRENT_TIMESTAMP
-                    WHERE provider = %s
-                    """,
-                    (provider,),
-                )
-            else:
-                conn.execute(
-                    """
-                    INSERT INTO ai_provider_configs(
-                      provider, base_url, model, api_key_source, updated_at
-                    )
-                    VALUES (%s, %s, %s, '', CURRENT_TIMESTAMP)
-                    """,
-                    (provider, _default_base_url(provider), _default_model(provider)),
-                )
-        settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = %s", (SETTINGS_ID,)).fetchone()
-        if settings_row and settings_row["provider"] == provider:
+    provider_name = str(provider)
+    store = get_secret_store()
+    key = provider_secret_key(provider_name)
+    previous_secret = store.get(key)
+    try:
+        with get_conn() as conn:
+            store.delete(key)
             if provider == "local":
-                conn.execute(
-                    """
-                    UPDATE ai_settings
-                    SET base_url = '', model = '', api_key_source = '', updated_at = CURRENT_TIMESTAMP
-                    WHERE id = %s
-                    """,
-                    (SETTINGS_ID,),
-                )
-            else:
-                conn.execute(
-                    """
-                    UPDATE ai_settings
-                    SET api_key_source = '', updated_at = CURRENT_TIMESTAMP
-                    WHERE id = %s
-                    """,
-                    (SETTINGS_ID,),
-                )
+                conn.execute("DELETE FROM ai_provider_configs WHERE provider = %s", (provider,))
+            elif provider in KEYED_PROVIDERS:
+                existing = _config_for_provider(conn, provider)
+                if existing:
+                    conn.execute(
+                        """
+                        UPDATE ai_provider_configs
+                        SET api_key_source = '', key_status = 'unchecked',
+                            key_error_type = '', last_validated_at = NULL, updated_at = CURRENT_TIMESTAMP
+                        WHERE provider = %s
+                        """,
+                        (provider,),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO ai_provider_configs(
+                          provider, base_url, model, api_key_source, updated_at
+                        )
+                        VALUES (%s, %s, %s, '', CURRENT_TIMESTAMP)
+                        """,
+                        (provider, _default_base_url(provider), _default_model(provider)),
+                    )
+            settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = %s", (SETTINGS_ID,)).fetchone()
+            if settings_row and settings_row["provider"] == provider:
+                if provider == "local":
+                    conn.execute(
+                        """
+                        UPDATE ai_settings
+                        SET base_url = '', model = '', api_key_source = '', updated_at = CURRENT_TIMESTAMP
+                        WHERE id = %s
+                        """,
+                        (SETTINGS_ID,),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE ai_settings
+                        SET api_key_source = '', updated_at = CURRENT_TIMESTAMP
+                        WHERE id = %s
+                        """,
+                        (SETTINGS_ID,),
+                    )
+    except Exception:
+        _restore_provider_secret(provider_name, previous_secret)
+        raise
     return get_public_ai_settings()

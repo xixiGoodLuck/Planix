@@ -187,6 +187,8 @@ Run the installed-app smoke test:
 
 The smoke test starts the installed app and checks `http://127.0.0.1:8003/api/health`. If it fails, check `%APPDATA%\Planix\logs\desktop.log`.
 
+API keys are stored only in Windows Credential Manager; PostgreSQL keeps provider metadata but never the secret value. The production SecretStore is Windows-only and deliberately has no plaintext file fallback on Linux or macOS.
+
 ## Common Failures
 
 | Symptom | Fix |
