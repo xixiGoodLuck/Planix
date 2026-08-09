@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { approveCommandAction, CommandStreamError, deleteCommandThread, fetchCommandThread, listCommandThreads, runCommandChat, type CommandChatEvent } from '../lib/api';
+import { approveCommandAction, CommandStreamError, deleteCommandThread, fetchCommandThread, listCommandThreads, runCommandChat, type CommandChatEvent, type PlanningControlAction } from '../lib/api';
 import { loadAdvancedAgentTrace, saveAdvancedAgentTrace } from '../lib/storage';
 import type { CommandMessage, CommandPermission, CommandThreadSummary } from '../types';
 import { todayISO } from '../utils/date';
@@ -114,12 +114,14 @@ async function loadThread(threadId: string) { const found = Object.values(state.
 async function removeThread(threadId: string) { await deleteCommandThread(threadId); const found = Object.values(state.workspaces).find((item) => item.threadId === threadId); if (found) removeWorkspace(found.id); await refreshThreads(); }
 function removeWorkspace(id: string) { if (state.workspaces[id]?.sending) return; update((current) => { const workspaces = { ...current.workspaces }; delete workspaces[id]; let order = current.workspaceOrder.filter((item) => item !== id); if (!order.length) { const replacement = createWorkspace(); workspaces[replacement.id] = replacement; order = [replacement.id]; } return { ...current, workspaces, workspaceOrder: order, activeWorkspaceId: current.activeWorkspaceId === id ? order[0] : current.activeWorkspaceId }; }); }
 
-function sendCommand(input: string, t: (key: string) => string): false | Promise<true> {
+function sendCommandRequest(input: string, t: (key: string) => string, controlAction?: PlanningControlAction): false | Promise<true> {
   const text = input.trim(); const workspaceId = state.activeWorkspaceId; const workspace = state.workspaces[workspaceId];
   if (!text || !state.canSend || !workspace) return false;
   addMessage(workspaceId, { role: 'user', content: text }); update((current) => updateWorkspace(current, workspaceId, (item) => ({ ...item, title: item.title || text, sending: true, status: 'running', error: undefined })));
-  return (async () => { const stream = streamHandler(workspaceId, t); try { await runCommandChat({ threadId: workspace.threadId, message: text, permission: state.permission, context: { date: todayISO(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone } }, stream); stream.finish(); if (!stream.sawOutput) addMessage(workspaceId, { role: 'assistant', content: t('command.emptyReply') }); } catch (error) { stream.finish(); const message = error instanceof Error ? error.message : String(error); addMessage(workspaceId, { role: 'card', kind: 'error', status: 'error', content: message }); update((current) => updateWorkspace(current, workspaceId, (item) => ({ ...item, status: 'failed', error: message }))); } finally { update((current) => updateWorkspace(current, workspaceId, (item) => ({ ...item, sending: false }))); void refreshThreads(); } return true as const; })();
+  return (async () => { const stream = streamHandler(workspaceId, t); try { await runCommandChat({ threadId: workspace.threadId, message: text, permission: state.permission, controlAction, context: { date: todayISO(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone } }, stream); stream.finish(); if (!stream.sawOutput) addMessage(workspaceId, { role: 'assistant', content: t('command.emptyReply') }); } catch (error) { stream.finish(); const message = error instanceof Error ? error.message : String(error); addMessage(workspaceId, { role: 'card', kind: 'error', status: 'error', content: message }); update((current) => updateWorkspace(current, workspaceId, (item) => ({ ...item, status: 'failed', error: message }))); } finally { update((current) => updateWorkspace(current, workspaceId, (item) => ({ ...item, sending: false }))); void refreshThreads(); } return true as const; })();
 }
+function sendCommand(input: string, t: (key: string) => string): false | Promise<true> { return sendCommandRequest(input, t); }
+function sendControlAction(action: PlanningControlAction, label: string, t: (key: string) => string): false | Promise<true> { return sendCommandRequest(label, t, action); }
 function approveAction(actionId: string, decision: 'approve' | 'reject', t: (key: string) => string): false | Promise<true> {
   const workspaceId = state.activeWorkspaceId; const workspace = state.workspaces[workspaceId]; if (!workspace || workspace.sending) return false;
   const previousStatus = workspace.status;
@@ -128,4 +130,4 @@ function approveAction(actionId: string, decision: 'approve' | 'reject', t: (key
 }
 
 export function useCommandAgent() { return useSyncExternalStore((listener) => { listeners.add(listener); return () => listeners.delete(listener); }, () => state, () => state); }
-export const commandAgentActions = { setPermission, setAdvancedAgentTrace, clearContext, setDrawerOpen, refreshThreads, newThread, selectWorkspace, loadThread, removeThread, removeWorkspace, sendCommand, approveAction };
+export const commandAgentActions = { setPermission, setAdvancedAgentTrace, clearContext, setDrawerOpen, refreshThreads, newThread, selectWorkspace, loadThread, removeThread, removeWorkspace, sendCommand, sendControlAction, approveAction };

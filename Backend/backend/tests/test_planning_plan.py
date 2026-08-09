@@ -155,6 +155,22 @@ def test_constraint_compiler_does_not_treat_weekdays_as_weekly_capacity():
     assert constraints.semantic == []
 
 
+def test_constraint_compiler_parses_compact_chinese_day_horizon():
+    snapshot = UnderstandingSnapshot(
+        artifactId="understanding-30-days",
+        goalSummary="30天内完成学习目标",
+        constraints=[item("horizon", "必须在30天内完成", "immutable"), item("daily", "每天学习1小时", "immutable")],
+        successSignals=[item("success", "完成一个可运行项目")],
+        readiness=UnderstandingReadiness(readyForConfirmation=True, confirmed=True),
+    )
+
+    constraints = ConstraintCompiler().compile(snapshot)
+
+    assert constraints.core.planning_horizon == "30 days"
+    assert constraints.core.weekday_capacity_minutes == 60
+    assert constraints.core.weekend_capacity_minutes == 60
+
+
 def test_plan_hard_validator_rejects_dependency_cycle():
     snapshot = understanding()
     constraints = ConstraintCompiler().compile(snapshot)

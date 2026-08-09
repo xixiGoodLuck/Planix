@@ -104,7 +104,7 @@ export type CommandChatEvent =
   | { type: 'approval_required'; actionId: string; draftId: string; permission: CommandPermission; risk: string; summary: string; target?: string; operation?: string }
   | { type: 'calendar_write_result'; actionId?: string; created: number; updated: number; failed: number; affectedDates?: string[]; errors?: string[]; plans?: unknown[] }
   | { type: 'planning_session_started'; sessionId: string; status: string }
-  | { type: 'planning_progress'; sessionId: string; currentStage: string; pendingAgent?: string | null; runtimeStatus: string; elapsedSeconds: number }
+  | { type: 'planning_progress'; sessionId: string; currentStage: string; pendingAgent?: string | null; runtimeStatus: string; elapsedSeconds: number; provider?: string; model?: string; thinkingMode?: 'disabled' | 'provider_default'; retry?: number }
   | { type: 'agent_decision'; sessionId: string; data: unknown }
   | { type: 'agent_message'; sessionId: string; data: unknown }
   | ({ type: 'planning_session_status' } & PlanningSessionResponse)
@@ -114,7 +114,8 @@ export type CommandChatEvent =
   | { type: 'done'; threadId: string }
   | { type: 'error'; error: string };
 
-export interface CommandChatPayload { threadId?: string; message: string; permission: CommandPermission; context?: Record<string, unknown>; }
+export type PlanningControlAction = 'continue_understanding' | 'revise_understanding' | 'continue_final' | 'revise_final';
+export interface CommandChatPayload { threadId?: string; message: string; permission: CommandPermission; controlAction?: PlanningControlAction; context?: Record<string, unknown>; }
 type CommandChatHandlers = { onEvent: (event: CommandChatEvent) => void; onError?: (error: Error) => void; onDone?: () => void; };
 
 async function runCommandStream(path: string, payload: unknown, handlers: CommandChatHandlers) {

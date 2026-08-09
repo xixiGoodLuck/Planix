@@ -104,9 +104,9 @@ def _run_fresh_goal(client, monkeypatch, *, message: str, ready: bool):
     return status
 
 
-def test_raw_destination_enters_fresh_v2_session_and_v2_asks_purpose(client, monkeypatch):
+def test_raw_destination_enters_soft_understanding_review_with_optional_purpose(client, monkeypatch):
     status = _run_fresh_goal(client, monkeypatch, message="我要去北京", ready=False)
-    assert status["status"] == "needs_goal_clarification"
+    assert status["status"] == "waiting_understanding_confirmation"
     understanding = status["data"]["understandingSnapshot"]
     assert understanding["goalSummary"] == "去北京"
     assert understanding["unknowns"][0]["key"] == "purpose"

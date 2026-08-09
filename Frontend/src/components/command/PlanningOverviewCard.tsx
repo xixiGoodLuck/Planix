@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import type { CommandThreadMessage } from '../../stores/commandAgentStore';
+import type { PlanningControlAction } from '../../lib/api';
 import { planningNodeTranslationKey, planningStageFromStatus, planningStageTranslationKey, type PlanningStage } from './planningStatus';
 
 type Translator = (key: string) => string;
@@ -10,6 +11,7 @@ interface PlanningOverviewCardProps {
   sending?: boolean;
   actionsEnabled?: boolean;
   onSend?: (value: string) => void;
+  onControl?: (action: PlanningControlAction, label: string) => void;
   t: Translator;
 }
 
@@ -54,6 +56,15 @@ function itemText(value: unknown): string {
 function listText(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map(itemText).filter(Boolean);
+}
+
+function semanticTextByAssumption(value: unknown, assumption: boolean): string[] {
+  if (!Array.isArray(value)) return assumption ? [] : listText(value);
+  return value.flatMap((item) => {
+    const raw = record(item);
+    const isAssumption = text(raw.sourceType) === 'model_assumption' || text(raw.source_type) === 'model_assumption';
+    return isAssumption === assumption ? [itemText(item)].filter(Boolean) : [];
+  });
 }
 
 function userFieldLabel(key: string, t: Translator): string {
@@ -222,12 +233,38 @@ function nextActionKey(stage: PlanningStage): string {
   return `command.planningNext${suffix}`;
 }
 
+const TIMELINE_STAGES = [
+  ['understanding', 'command.timelineUnderstanding'],
+  ['understanding_review', 'command.timelineUnderstandingReview'],
+  ['compile_constraints', 'command.timelineConstraints'],
+  ['build_context', 'command.timelineContext'],
+  ['generate_plan', 'command.timelinePlan'],
+  ['validate_plan', 'command.timelinePlanValidation'],
+  ['semantic_review', 'command.timelineSemanticReview'],
+  ['repair_plan', 'command.timelinePlanRepair'],
+  ['validate_repaired_plan', 'command.timelineRevalidation'],
+  ['generate_schedule', 'command.timelineSchedule'],
+  ['validate_schedule', 'command.timelineScheduleValidation'],
+  ['repair_schedule', 'command.timelineScheduleRepair'],
+  ['materialize_calendar', 'command.timelineCalendarMaterialization'],
+  ['final_review', 'command.timelineFinalReview'],
+  ['calendar_permission', 'command.timelineCalendarPermission'],
+  ['calendar_write', 'command.timelineCalendarWrite']
+] as const;
+
+type TimelineStatus = 'waiting' | 'running' | 'completed' | 'retrying' | 'skipped' | 'failed' | 'waiting_user';
+
+function timelineStatusLabel(status: TimelineStatus, t: Translator): string {
+  return t(`command.timelineStatus${status.split('_').map((part) => part[0].toUpperCase() + part.slice(1)).join('')}`);
+}
+
 export function PlanningOverviewCard({
   messages,
   status,
   sending = false,
   actionsEnabled = true,
   onSend,
+  onControl,
   t
 }: PlanningOverviewCardProps) {
   const [revisionTarget, setRevisionTarget] = useState<'understanding' | 'final' | null>(null);
@@ -246,6 +283,12 @@ export function PlanningOverviewCard({
   const pendingInput = record(latestKindPayloadField(messages, 'planning_session_status', 'pendingInput'));
   const currentNode = text(latestKindPayloadField(messages, 'planning_progress', 'currentStage'));
   const elapsedSeconds = Number(latestKindPayloadField(messages, 'planning_progress', 'elapsedSeconds') || 0);
+  const pendingAgent = text(latestKindPayloadField(messages, 'planning_progress', 'pendingAgent'));
+  const progressProvider = text(latestKindPayloadField(messages, 'planning_progress', 'provider'));
+  const progressModel = text(latestKindPayloadField(messages, 'planning_progress', 'model'));
+  const thinkingMode = text(latestKindPayloadField(messages, 'planning_progress', 'thinkingMode'));
+  const retryCount = Number(latestKindPayloadField(messages, 'planning_progress', 'retry') || 0);
+  const calendarWritten = messages.some((message) => message.kind === 'calendar_write_result' && Number(message.payload?.failed || 0) === 0);
   const stableStatus = status && status !== 'MODEL_UNAVAILABLE' ? status : sessionStatus || businessStatus;
   const currentStatus = stableStatus || status;
   const stage: PlanningStage = planningPhase === 'FINAL_REVIEW'
@@ -257,15 +300,39 @@ export function PlanningOverviewCard({
     || runtimeStatus === 'blocked_model_unavailable'
     || runtimeStatus === 'retry_required';
 
+  const planVersion = Number(planningPlan.version || 1);
+  const scheduleVersion = Number(planningSchedule.version || 1);
+  const statusStage = calendarWritten ? 'calendar_write'
+    : sending && currentNode ? currentNode
+    : currentStatus === 'waiting_understanding_confirmation' ? 'understanding_review'
+    : currentStatus === 'waiting_final_review' ? 'final_review'
+      : currentStatus === 'waiting_calendar_write_approval' ? 'calendar_permission'
+        : currentStatus === 'written_to_calendar' ? 'calendar_write'
+          : currentNode;
+  const currentTimelineIndex = Math.max(0, TIMELINE_STAGES.findIndex(([id]) => id === statusStage));
+  const timeline = TIMELINE_STAGES.map(([id, label], index) => {
+    let itemStatus: TimelineStatus = index < currentTimelineIndex ? 'completed' : index === currentTimelineIndex ? 'running' : 'waiting';
+    if ((id === 'repair_plan' || id === 'validate_repaired_plan') && index < currentTimelineIndex && planVersion <= 1) itemStatus = 'skipped';
+    if (id === 'repair_schedule' && index < currentTimelineIndex && scheduleVersion <= 1) itemStatus = 'skipped';
+    if (index === currentTimelineIndex && (id === 'understanding_review' || id === 'final_review' || id === 'calendar_permission')) itemStatus = 'waiting_user';
+    if (index === currentTimelineIndex && retryCount > 0) itemStatus = 'retrying';
+    if (index === currentTimelineIndex && modelBlocked) itemStatus = 'failed';
+    if (currentStatus === 'written_to_calendar' || calendarWritten) itemStatus = index === currentTimelineIndex ? 'completed' : itemStatus;
+    return { id, label, status: itemStatus };
+  });
+
   const goalStatement = text(planningUnderstanding.goalSummary)
     || t('command.planningUnderstandingPending');
   const facts = Array.from(new Set([
     ...semanticFactLines(planningUnderstanding.facts, t),
     ...listText(planningUnderstanding.constraints).map((item) => `${t('command.planningFactConstraints')}: ${item}`),
     ...listText(planningUnderstanding.preferences),
-    ...listText(planningUnderstanding.successSignals),
-    ...listText(planningUnderstanding.assumptions)
+    ...semanticTextByAssumption(planningUnderstanding.successSignals, false)
   ]));
+  const assumptions = [
+    ...listText(planningUnderstanding.assumptions),
+    ...semanticTextByAssumption(planningUnderstanding.successSignals, true)
+  ];
   const warnings = listText(planningUnderstanding.consistencyWarnings);
   const blockingUnknowns = listText(planningUnderstanding.unknowns);
   const pendingInputText = pendingInput.applied === false ? text(pendingInput.text) : '';
@@ -275,7 +342,7 @@ export function PlanningOverviewCard({
         : t('command.planningPendingModelInputFallback')]
     : blockingUnknowns;
   const clarificationOptions = listText(record(planningUnderstanding.nextQuestion).options).slice(0, 4);
-  const showClarificationChoices = stage === 'understand_goal'
+  const showClarificationChoices = (stage === 'understand_goal' || currentStatus === 'waiting_understanding_confirmation')
     && !modelBlocked
     && clarificationOptions.length >= 2;
   const clarificationDisabled = !actionsEnabled || !onSend || sending;
@@ -289,23 +356,25 @@ export function PlanningOverviewCard({
   const retryDisabled = sending || !onSend;
   const showUnderstandingActions = currentStatus === 'waiting_understanding_confirmation' && !modelBlocked;
   const showFinalReviewActions = currentStatus === 'waiting_final_review' && !modelBlocked;
-  const actionDisabled = !actionsEnabled || !onSend || sending;
+  const actionDisabled = !actionsEnabled || (!onSend && !onControl) || sending;
 
   const nextQuestion = text(record(planningUnderstanding.nextQuestion).question)
     || text(planningUnderstanding.nextQuestion);
   const nextAction = modelBlocked
     ? modelFailureAction
     : currentStatus === 'waiting_understanding_confirmation'
-      ? t('command.confirmUnderstanding')
+      ? t('command.continueUnderstanding')
       : currentStatus === 'waiting_final_review'
-        ? t('command.approveFinalPlan')
+        ? t('command.continueFinalPlan')
         : nextQuestion || blockingUnknowns[0] || t(nextActionKey(stage));
 
   const submitRevision = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const value = revisionText.trim();
     if (!value || actionDisabled) return;
-    onSend?.(value);
+    if (revisionTarget === 'understanding') onControl?.('revise_understanding', value);
+    else if (revisionTarget === 'final') onControl?.('revise_final', value);
+    else onSend?.(value);
     setRevisionText('');
     setRevisionTarget(null);
   };
@@ -318,6 +387,23 @@ export function PlanningOverviewCard({
         <strong>{t(sending && currentNode ? planningNodeTranslationKey(currentNode) : planningStageTranslationKey(stage))}</strong>
         {sending && currentNode ? <small>{elapsedSeconds}s</small> : null}
       </header>
+      <section className="planning-agent-timeline" aria-label={t('command.agentTimeline')}>
+        <h3>{t('command.agentTimeline')}</h3>
+        <ol>
+          {timeline.map((item, index) => (
+            <li className={`timeline-${item.status}`} key={item.id}>
+              <span className="timeline-marker" aria-hidden="true">{item.status === 'completed' ? '✓' : item.status === 'running' || item.status === 'retrying' ? '●' : item.status === 'skipped' ? '–' : item.status === 'failed' ? '!' : '○'}</span>
+              <span className="timeline-label">{t(item.label)}</span>
+              <small>{timelineStatusLabel(item.status, t)}</small>
+              {index === currentTimelineIndex && (sending || modelBlocked) ? (
+                <span className="timeline-detail">
+                  {[pendingAgent, progressProvider, progressModel, thinkingMode, `${elapsedSeconds}s`, retryCount ? `Retry ${retryCount}` : ''].filter(Boolean).join(' · ')}
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ol>
+      </section>
       <section>
         <h3>{t(planningPhase === 'FINAL_REVIEW' ? 'command.confirmedGoal' : 'command.goalUnderstanding')}</h3>
         <p className="planning-overview-goal">{goalStatement}</p>
@@ -342,6 +428,19 @@ export function PlanningOverviewCard({
           ? <ul>{visibleBlockingUnknowns.map((unknown, index) => <li key={`${unknown}-${index}`}>{unknown}</li>)}</ul>
           : <p>{t('command.noBlockingUnknowns')}</p>}
       </section>
+      {assumptions.length ? (
+        <section>
+          <h3>{t('command.cognitiveAssumptions')}</h3>
+          <ul>{assumptions.map((assumption, index) => <li key={`${assumption}-${index}`}>{assumption}</li>)}</ul>
+        </section>
+      ) : null}
+      {currentStatus === 'waiting_understanding_confirmation' && nextQuestion ? (
+        <section className="planning-optional-question">
+          <h3>{t('command.recommendedClarification')}</h3>
+          <p>{nextQuestion}</p>
+          <small>{t('command.recommendedClarificationHint')}</small>
+        </section>
+      ) : null}
       {planningPhase === 'FINAL_REVIEW' ? (
         <>
           <section>
@@ -369,18 +468,12 @@ export function PlanningOverviewCard({
             <p>{planningPlanQuality.hardRulesPassed === true && !listText(planningPlanQuality.issues).length
               ? t('command.qualityPassed')
               : t('command.qualityNeedsAttention')}</p>
-            {listText(planningPlanQuality.issues).length
-              ? <ul>{listText(planningPlanQuality.issues).map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}</ul>
-              : null}
           </section>
           <section>
             <h3>{t('command.scheduleQuality')}</h3>
             <p>{planningScheduleQuality.hardRulesPassed === true && !listText(planningScheduleQuality.issues).length
               ? t('command.qualityPassed')
               : t('command.qualityNeedsAttention')}</p>
-            {listText(planningScheduleQuality.issues).length
-              ? <ul>{listText(planningScheduleQuality.issues).map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}</ul>
-              : null}
           </section>
           <section>
             <h3>{t('command.calendarPreview')}</h3>
@@ -421,9 +514,9 @@ export function PlanningOverviewCard({
             <button
               type="button"
               disabled={actionDisabled}
-              onClick={() => onSend?.(t('command.confirmUnderstanding'))}
+              onClick={() => onControl?.('continue_understanding', t('command.continueUnderstanding'))}
             >
-              {t('command.confirmUnderstanding')}
+              {t('command.continueUnderstanding')}
             </button>
             <button
               type="button"
@@ -439,9 +532,9 @@ export function PlanningOverviewCard({
             <button
               type="button"
               disabled={actionDisabled}
-              onClick={() => onSend?.(t('command.approveFinalPlan'))}
+              onClick={() => onControl?.('continue_final', t('command.continueFinalPlan'))}
             >
-              {t('command.approveFinalPlan')}
+              {t('command.continueFinalPlan')}
             </button>
             <button
               type="button"

@@ -38,6 +38,22 @@ def detect_planning_control_intent(text: str) -> PlanningControlIntent:
     natural_approval = any(
         phrase in normalized
         for phrase in (
+            "直接继续",
+            "先按这些规划",
+            "不用问了",
+            "先生成看看",
+            "按现在的信息继续",
+            "按现在的信息规划",
+            "按现在的信息先规划",
+            "按当前信息继续",
+            "其他先不填",
+            "信息就这些",
+            "可以开始规划",
+            "不用补充",
+            "不修改直接继续",
+            "不用再改",
+            "直接下一步",
+            "写日历吧",
             "按这个理解继续",
             "按当前理解继续",
             "这个理解可以",
@@ -48,6 +64,8 @@ def detect_planning_control_intent(text: str) -> PlanningControlIntent:
             "就按这个理解",
             "就按这个计划",
             "就按这个方案",
+            "就这样",
+            "按这个来",
         )
     )
     if normalized in {"确认", "确认方向", "确认执行计划", "approve", "confirm", "yes", "ok", "okay"} or natural_approval:

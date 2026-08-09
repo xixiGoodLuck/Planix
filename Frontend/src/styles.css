@@ -3099,6 +3099,38 @@ select:focus {
   opacity: 0.48;
 }
 
+.planning-agent-timeline ol {
+  display: grid;
+  gap: 0.35rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.planning-agent-timeline li {
+  align-items: baseline;
+  display: grid;
+  grid-template-columns: 1.25rem minmax(10rem, 1fr) auto;
+  column-gap: 0.5rem;
+}
+
+.planning-agent-timeline li small,
+.planning-agent-timeline .timeline-detail {
+  color: var(--text-muted);
+}
+
+.planning-agent-timeline .timeline-detail {
+  grid-column: 2 / -1;
+  font-size: 0.78rem;
+}
+
+.planning-agent-timeline .timeline-completed .timeline-marker { color: #34d399; }
+.planning-agent-timeline .timeline-running .timeline-marker,
+.planning-agent-timeline .timeline-retrying .timeline-marker { color: #818cf8; }
+.planning-agent-timeline .timeline-failed .timeline-marker { color: #fb7185; }
+.planning-agent-timeline .timeline-waiting,
+.planning-agent-timeline .timeline-skipped { opacity: 0.68; }
+
 .planning-context-actions {
   display: flex;
   flex-wrap: wrap;

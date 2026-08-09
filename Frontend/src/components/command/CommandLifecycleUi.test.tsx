@@ -47,6 +47,7 @@ function renderThread(messages: CommandThreadMessage[], sending = false) {
       sending={sending}
       onApprove={noop}
       onSend={noop}
+      onControl={noop}
       t={t}
     />
   );
@@ -109,9 +110,19 @@ describe('Pure V2 Command lifecycle UI', () => {
     expect(html).not.toContain('更多操作');
   });
 
-  it('shows only understanding confirmation actions while waiting for confirmation', () => {
-    const html = renderThread([statusMessage('waiting_understanding_confirmation')]);
-    expect(html).toContain('确认当前理解');
+  it('shows optional suggestions and an always-available soft-review continue action', () => {
+    const html = renderThread([statusMessage('waiting_understanding_confirmation', {
+      understandingSnapshot: {
+        goalSummary: '学习 Python',
+        unknowns: [{ statement: '当前基础未说明' }],
+        assumptions: [{ statement: '暂按初学者通用路径规划' }],
+        nextQuestion: { question: '你目前的基础如何？', options: ['零基础', '有一点基础'] }
+      }
+    })]);
+    expect(html).toContain('可选补充');
+    expect(html).toContain('这些信息可以让计划更准确，但不是必填。');
+    expect(html).toContain('按当前理解继续');
+    expect(html).toContain('当前假设');
     expect(html).toContain('修正当前理解');
     expect(html).not.toContain('更多操作');
     expect(html).not.toContain('写入日历');
@@ -119,9 +130,9 @@ describe('Pure V2 Command lifecycle UI', () => {
 
   it('shows no lifecycle actions during automatic planning', () => {
     const html = renderThread([statusMessage('planning', { planningPhase: 'PLAN_GENERATION' })]);
-    expect(html).not.toContain('确认当前理解');
+    expect(html).not.toContain('按当前理解继续');
     expect(html).not.toContain('修正当前理解');
-    expect(html).not.toContain('确认最终计划');
+    expect(html).not.toContain('按当前计划继续');
     expect(html).not.toContain('修改最终计划');
     expect(html).not.toContain('重试当前阶段');
   });
@@ -136,7 +147,7 @@ describe('Pure V2 Command lifecycle UI', () => {
       calendarProposal: { events: [{ sourceKey: 'event-1', start: '2026-08-10T10:00:00+08:00', title: '完成 Agent 项目' }] }
     })]);
 
-    expect(html).toContain('确认最终计划');
+    expect(html).toContain('按当前计划继续');
     expect(html).toContain('修改最终计划');
     expect(html).not.toContain('批准并写入日历');
     expect(html).not.toContain('更多操作');
@@ -163,6 +174,37 @@ describe('Pure V2 Command lifecycle UI', () => {
     }]);
     expect(html).toContain('确认写入');
     expect(html).toContain('取消');
+  });
+
+  it('shows the full fixed timeline and marks unused repairs as skipped', () => {
+    const html = renderThread([statusMessage('waiting_final_review', {
+      planningPhase: 'FINAL_REVIEW',
+      planBlueprint: { version: 1, tasks: [] },
+      planQualityReport: { hardRulesPassed: true, issues: [] },
+      scheduleBlueprint: { version: 1, sessions: [] },
+      scheduleQualityReport: { hardRulesPassed: true, issues: [] },
+      calendarProposal: { events: [] }
+    })]);
+    expect(html).toContain('Agent 执行流程');
+    expect(html).toContain('目标理解');
+    expect(html).toContain('硬规则检查');
+    expect(html).toContain('语义审核');
+    expect(html).toContain('排期自动修复');
+    expect((html.match(/已跳过/g) || []).length).toBeGreaterThanOrEqual(2);
+    expect(html).toContain('等待用户');
+  });
+
+  it('keeps system quality blocks safe without exposing internal issue text or Continue', () => {
+    const html = renderThread([statusMessage('final_revision', {
+      planningPhase: 'FINAL_REVIEW',
+      planBlueprint: { version: 2, tasks: [] },
+      planQualityReport: { hardRulesPassed: false, issues: [{ description: 'PatchGuard internal target mismatch' }] },
+      scheduleBlueprint: {},
+      scheduleQualityReport: { hardRulesPassed: false, issues: [] }
+    })]);
+    expect(html).toContain('仍有问题需要处理');
+    expect(html).not.toContain('PatchGuard internal target mismatch');
+    expect(html).not.toContain('按当前计划继续');
   });
 });
 

@@ -5,21 +5,22 @@ import { CalendarWriteResultCard } from './CalendarWriteResultCard';
 import { AgentDecisionCard, AgentMessageCard, PlanningSessionStatusCard } from './PlanningTraceCards';
 import { ModelUsageBadge } from './ModelUsageBadge';
 import { PlanningOverviewCard } from './PlanningOverviewCard';
+import type { PlanningControlAction } from '../../lib/api';
 
 interface AgentThreadProps {
   messages: CommandThreadMessage[]; sending: boolean;
   onApprove: (actionId: string, decision: 'approve' | 'reject') => void;
-  onSend: (value: string) => void; advancedAgentTrace?: boolean; t: (key: string) => string;
+  onSend: (value: string) => void; onControl?: (action: PlanningControlAction, label: string) => void; advancedAgentTrace?: boolean; t: (key: string) => string;
 }
 const planningKinds = new Set(['planning_session_started', 'planning_progress', 'agent_decision', 'agent_message', 'planning_session_status']);
 const payload = (message: CommandThreadMessage) => message.payload || {};
 
-export function AgentThread({ messages, sending, onApprove, onSend, advancedAgentTrace = false, t }: AgentThreadProps) {
+export function AgentThread({ messages, sending, onApprove, onSend, onControl, advancedAgentTrace = false, t }: AgentThreadProps) {
   const planningMessages = messages.filter((message) => message.role === 'card' && planningKinds.has(message.kind || ''));
   const visible = messages.filter((message) => !planningKinds.has(message.kind || '') && (advancedAgentTrace || message.kind !== 'model_usage'));
   return <div className="command-thread">
     {!messages.length && <div className="command-empty-state"><h1>Planix</h1><p>{t('command.emptyDescription')}</p></div>}
-    {planningMessages.length > 0 && <article className="command-message card"><PlanningOverviewCard messages={planningMessages} sending={sending} actionsEnabled onSend={onSend} t={t} /></article>}
+    {planningMessages.length > 0 && <article className="command-message card"><PlanningOverviewCard messages={messages} sending={sending} actionsEnabled onSend={onSend} onControl={onControl} t={t} /></article>}
     {advancedAgentTrace && planningMessages.map((message) => <article className="command-message card" key={message.id}>
       {message.kind === 'planning_session_started' || message.kind === 'planning_session_status' ? <PlanningSessionStatusCard status={String(payload(message).status || message.content)} t={t} /> : null}
       {message.kind === 'agent_decision' ? <AgentDecisionCard data={payload(message).data} t={t} /> : null}

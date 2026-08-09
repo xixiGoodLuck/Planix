@@ -249,34 +249,7 @@ class UnderstandingReadinessService:
         rounds_used = snapshot.readiness.question_rounds_used
         question_budget = snapshot.readiness.question_budget
         budget_exhausted = rounds_used >= question_budget
-        success_marker = next((item for item in unknowns if item.key == "success_criteria"), None)
-        if not success_signals and budget_exhausted:
-            if success_marker is None and rounds_used < 3:
-                chinese = bool(re.search(r"[\u3400-\u9fff]", snapshot.goal_summary))
-                marker = SemanticItem(
-                    id=new_artifact_id("unknown"),
-                    key="success_criteria",
-                    statement="需要明确一个可验证的完成结果。" if chinese else "A verifiable completion outcome is still needed.",
-                    sourceType="model_assumption",
-                    sourceRef="readiness:success_criteria",
-                    mutationPolicy="user_confirmation_required",
-                    blockingCategory="important",
-                )
-                readiness = snapshot.readiness.model_copy(
-                    update={
-                        "ready_for_confirmation": False,
-                        "blocking_reasons": ["success criteria are not verifiable"],
-                        "question_budget": min(3, rounds_used + 1),
-                    }
-                )
-                question = UnderstandingQuestion(
-                    question="你希望在多长时间内达到什么可验证的结果？" if chinese else "What verifiable result do you want to achieve, and by when?",
-                    whyThisQuestionMatters="结果和时间范围决定计划的任务量与验收标准。" if chinese else "The outcome and timeframe determine scope and acceptance criteria.",
-                    expectedDecisionImpact="用于确定计划周期、交付物和完成标准。" if chinese else "This sets the plan duration, deliverable, and completion standard.",
-                    priority="important",
-                    targetUnknownKey="success_criteria",
-                )
-                return snapshot.model_copy(update={"unknowns": [*unknowns, marker], "next_question": question, "readiness": readiness})
+        if not success_signals:
             statement = (
                 f"完成一个可验证的阶段性成果，证明“{snapshot.goal_summary}”取得进展。"
                 if re.search(r"[\u3400-\u9fff]", snapshot.goal_summary)
@@ -308,7 +281,7 @@ class UnderstandingReadinessService:
         non_assumable = {"core_goal", "safety", "feasibility", "hard_constraint"}
         safety_blocked = any(item.blocking_category in non_assumable for item in blocking)
         ready = not reasons
-        if budget_exhausted and blocking and not safety_blocked:
+        if blocking and not safety_blocked:
             ready = not snapshot.conflicts and bool(snapshot.goal_summary and success_signals)
             reasons = [reason for reason in reasons if not reason.startswith("blocking unknown:")]
         readiness = snapshot.readiness.model_copy(
@@ -317,8 +290,11 @@ class UnderstandingReadinessService:
                 "blocking_reasons": reasons,
             }
         )
-        assumptions = list(snapshot.assumptions)
-        if budget_exhausted and ready:
+        assumptions = [
+            item for item in snapshot.assumptions
+            if item.source_type != "model_assumption" or item.source_ref.startswith("readiness:")
+        ]
+        if ready:
             existing = {item.key for item in assumptions}
             for item in blocking:
                 if item.blocking_category in non_assumable:
@@ -340,7 +316,9 @@ class UnderstandingReadinessService:
                 "assumptions": assumptions,
                 "success_signals": success_signals,
                 "unknowns": unknowns,
-                "next_question": None if ready else snapshot.next_question,
+                # Questions are recommendations shown during the soft review. They do
+                # not become a completeness gate merely because planning can proceed.
+                "next_question": snapshot.next_question,
             }
         )
 
@@ -365,6 +343,14 @@ class UnderstandingContextCompactor:
         )
 
 
+class PlanningDefaults:
+    VERSION = "planning-defaults:v1"
+    HORIZON_DAYS = 14
+    DAILY_CAPACITY_MINUTES = 120
+    SESSION_MINUTES = 120
+    START_OFFSET_DAYS = 1
+
+
 class ConstraintCompiler:
     _number = r"\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
     _minutes = re.compile(rf"(?P<value>{_number})\s*(?:分钟|minutes?|mins?)", re.I)
@@ -373,7 +359,7 @@ class ConstraintCompiler:
     _date = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
     _relative_horizon = re.compile(
         r"(?P<value>\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*"
-        r"(?P<unit>days?|weeks?|months?)",
+        r"(?P<unit>days?|weeks?|months?|天|日|周|星期|个月|月)",
         re.I,
     )
     _weekday_names = {
@@ -385,7 +371,6 @@ class ConstraintCompiler:
         "周六": 5, "星期六": 5, "saturday": 5,
         "周日": 6, "星期日": 6, "星期天": 6, "sunday": 6,
     }
-
     def compile(self, snapshot: UnderstandingSnapshot, *, today: date | None = None) -> ConstraintSet:
         core = CoreConstraints()
         semantic: list[SemanticConstraint] = []
@@ -465,6 +450,16 @@ class ConstraintCompiler:
             core.planning_horizon = f"{relative_horizon_days} days"
             if core.deadline is None:
                 core.deadline = (anchor + timedelta(days=relative_horizon_days)).isoformat()
+        if core.planning_horizon is None and core.deadline is None:
+            core.planning_horizon = f"{PlanningDefaults.HORIZON_DAYS} days"
+            core.deadline = (anchor + timedelta(days=PlanningDefaults.HORIZON_DAYS)).isoformat()
+        if core.required_start_date is None:
+            core.required_start_date = (anchor + timedelta(days=PlanningDefaults.START_OFFSET_DAYS)).isoformat()
+        if core.weekday_capacity_minutes is None and core.weekend_capacity_minutes is None and core.weekly_capacity_minutes is None:
+            core.weekday_capacity_minutes = PlanningDefaults.DAILY_CAPACITY_MINUTES
+            core.weekend_capacity_minutes = PlanningDefaults.DAILY_CAPACITY_MINUTES
+        if core.maximum_session_minutes is None:
+            core.maximum_session_minutes = PlanningDefaults.SESSION_MINUTES
         core.required_deliverables = [item.statement for item in snapshot.success_signals]
         return ConstraintSet(
             understandingRef=snapshot.artifact_id,
@@ -494,7 +489,7 @@ class ConstraintCompiler:
         raw = match.group("value").casefold()
         value = int(raw) if raw.isdigit() else words[raw]
         unit = match.group("unit").casefold()
-        multiplier = 1 if unit.startswith("day") else 7 if unit.startswith("week") else 30
+        multiplier = 1 if unit.startswith("day") or unit in {"天", "日"} else 7 if unit.startswith("week") or unit in {"周", "星期"} else 30
         return value * multiplier
 
 
@@ -1000,7 +995,7 @@ class ScheduleGenerator:
         calendar_snapshot_ref: str | None = None,
         calendar_busy: Sequence[tuple[datetime, datetime]] = (),
     ) -> ScheduleBlueprint:
-        maximum = constraints.core.maximum_session_minutes or 120
+        maximum = constraints.core.maximum_session_minutes or PlanningDefaults.SESSION_MINUTES
         cursor = start
         sessions: list[ScheduleSession] = []
         unscheduled: list[str] = []

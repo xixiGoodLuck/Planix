@@ -570,6 +570,12 @@ class PlanningSessionResponse(BaseModel):
 
 
 CommandPermission = Literal["low", "medium", "high"]
+PlanningControlAction = Literal[
+    "continue_understanding",
+    "revise_understanding",
+    "continue_final",
+    "revise_final",
+]
 
 
 def normalize_local_base_url(value: str) -> str:
@@ -583,6 +589,7 @@ def normalize_local_base_url(value: str) -> str:
 class CommandChatRequest(BaseModel):
     thread_id: str | None = Field(default=None, alias="threadId")
     message: str = Field(min_length=1, max_length=4000)
+    control_action: PlanningControlAction | None = Field(default=None, alias="controlAction")
     permission: CommandPermission = "low"
     context: dict[str, Any] = Field(default_factory=dict)
 

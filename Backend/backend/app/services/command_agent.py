@@ -24,9 +24,49 @@ from ..schemas import (
     PlanUpdate,
 )
 from .plans import create_plan, update_plan, upsert_calendar_plans
+from .ai_settings import (
+    get_auto_model_provider_chain,
+    get_effective_ai_settings,
+    get_effective_ai_settings_for_provider,
+    get_model_routing_rule,
+)
 
 
 _PLANNING_PROGRESS_POLL_SECONDS = 0.25
+_MODEL_TASK_BY_STAGE = {
+    "understanding": "planning_understanding",
+    "generate_plan": "planning_plan",
+    "repair_plan": "planning_plan",
+    "semantic_review": "planning_review",
+    "record_learning": "planning_learning",
+}
+
+
+def _safe_model_progress(stage: str) -> dict[str, Any]:
+    task_type = _MODEL_TASK_BY_STAGE.get(stage)
+    if not task_type:
+        return {}
+    try:
+        active = get_effective_ai_settings()
+        rule = get_model_routing_rule(task_type, active.provider)
+        providers = (
+            get_auto_model_provider_chain(task_type, rule.fallback_providers)
+            if rule.primary_provider == "auto"
+            else (rule.primary_provider, *rule.fallback_providers)
+        )
+        selected = active
+        for provider in providers:
+            candidate = get_effective_ai_settings_for_provider(provider, active)
+            if candidate.can_call:
+                selected = candidate
+                break
+        return {
+            "provider": selected.provider,
+            "model": selected.model,
+            "thinkingMode": "disabled" if active.force_non_thinking else "provider_default",
+        }
+    except Exception:
+        return {}
 
 
 def _now() -> str:
@@ -362,6 +402,8 @@ class CommandAgentService:
             }
         )
         last_progress: tuple[str, str, str, int] | None = ("session_guard", "", "active", 0)
+        stage_model: dict[str, Any] = {}
+        model_stage = ""
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="planix-command") as executor:
             future = executor.submit(operation)
             while not future.done():
@@ -375,6 +417,10 @@ class CommandAgentService:
                 lifecycle = harness_state.lifecycle if harness_state else "active"
                 progress = (current_stage, pending_agent or "", lifecycle, elapsed_seconds)
                 if progress != last_progress:
+                    if current_stage != model_stage:
+                        model_stage = current_stage
+                        stage_model = _safe_model_progress(current_stage)
+                    attempts = harness_state.errors[-1].attempts if harness_state and harness_state.errors else []
                     yield _ndjson(
                         {
                             "type": "planning_progress",
@@ -383,6 +429,8 @@ class CommandAgentService:
                             "pendingAgent": pending_agent,
                             "runtimeStatus": "running",
                             "elapsedSeconds": elapsed_seconds,
+                            "retry": sum(1 for attempt in attempts if attempt.get("automaticRetry")),
+                            **stage_model,
                         }
                     )
                     last_progress = progress
@@ -395,15 +443,24 @@ class CommandAgentService:
         if not session:
             return None
         text = payload.message
+        typed_action = payload.control_action
+        if typed_action == "continue_understanding" and session.status == "waiting_understanding_confirmation":
+            return "confirm_understanding", session
+        if typed_action == "revise_understanding" and session.status in {"needs_goal_clarification", "waiting_understanding_confirmation"}:
+            return "revise_understanding", session
+        if typed_action == "continue_final" and session.status == "waiting_final_review":
+            return "approve_final", session
+        if typed_action == "revise_final" and session.status in {"final_revision", "waiting_final_review"}:
+            return "revise_final", session
+        if typed_action:
+            raise HTTPException(status_code=409, detail={"message": "control action is not valid for the current planning state"})
         control = detect_planning_control_intent(text)
         if control == "cancel_planning":
             return "cancel", session
         if control == "restart_planning" or _restart_text(text):
             return "restart", session
-        if control == "continue_current_stage":
-            return "continue", session
-        if control == "skip_current_stage":
-            return "skip", session
+        if session.runtime_status == "running":
+            return "calendar_status", session
         if session.status == "needs_goal_clarification":
             return "answer_understanding", session
         if session.status == "MODEL_UNAVAILABLE":
@@ -411,10 +468,10 @@ class CommandAgentService:
                 return "answer_understanding", session
             return "continue", session
         if session.status == "waiting_understanding_confirmation":
-            return ("confirm_understanding" if control == "approve_current_stage" or _approval_text(text) else "revise_understanding"), session
+            return ("confirm_understanding" if control in {"approve_current_stage", "continue_current_stage", "skip_current_stage"} or _approval_text(text) else "revise_understanding"), session
         if session.status in {"final_revision", "waiting_final_review"}:
             if session.status == "waiting_final_review" and (
-                control == "approve_current_stage" or _approval_text(text) or _calendar_write_text(text)
+                control in {"approve_current_stage", "continue_current_stage"} or _approval_text(text) or _calendar_write_text(text)
             ):
                 return "approve_final", session
             return "revise_final", session
@@ -422,6 +479,10 @@ class CommandAgentService:
             return "calendar_status", session
         if session.status == "learning_from_feedback":
             return "revise_final", session
+        if control == "continue_current_stage":
+            return "continue", session
+        if control == "skip_current_stage":
+            return "skip", session
         return None
 
     def _stream_followup(

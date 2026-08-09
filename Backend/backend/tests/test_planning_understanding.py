@@ -320,7 +320,7 @@ def test_success_question_promotes_differently_keyed_user_fact_to_success_signal
     assert all(item.key != "user_success_criteria" for item in updated.facts)
 
 
-def test_question_budget_reserves_one_final_question_for_a_verifiable_outcome():
+def test_missing_success_outcome_becomes_an_explicit_default_without_blocking_review():
     current = snapshot().model_copy(
         update={
             "success_signals": [],
@@ -332,10 +332,9 @@ def test_question_budget_reserves_one_final_question_for_a_verifiable_outcome():
 
     assessed = UnderstandingReadinessService().assess(current)
 
-    assert assessed.readiness.ready_for_confirmation is False
-    assert assessed.readiness.question_budget == 3
-    assert assessed.next_question is not None
-    assert assessed.next_question.target_unknown_key == "success_criteria"
+    assert assessed.readiness.ready_for_confirmation is True
+    assert assessed.success_signals[0].source_type == "model_assumption"
+    assert assessed.success_signals[0].source_ref == "readiness:bounded_default"
 
 
 def test_success_outcome_answer_converges_understanding_after_bounded_question():
@@ -343,11 +342,18 @@ def test_success_outcome_answer_converges_understanding_after_bounded_question()
         update={
             "success_signals": [],
             "unknowns": [],
-            "next_question": None,
+            "unknowns": [semantic("success_criteria", "Need a verifiable outcome", "turn:1")],
+            "next_question": UnderstandingQuestion(
+                question="What verifiable result do you want?",
+                whyThisQuestionMatters="Defines completion",
+                expectedDecisionImpact="Sets the deliverable",
+                priority="important",
+                targetUnknownKey="success_criteria",
+            ),
             "readiness": UnderstandingReadiness(questionRoundsUsed=2, questionBudget=2, complexity="standard"),
         }
     )
-    prompted = UnderstandingReadinessService().assess(current)
+    prompted = current
     answer = semantic("success_criteria", "Build a working Todo API within four weeks", "turn:4")
     answered, _ = SemanticMergeService().apply(
         prompted,
@@ -366,4 +372,4 @@ def test_success_outcome_answer_converges_understanding_after_bounded_question()
 
     assert assessed.readiness.ready_for_confirmation is True
     assert assessed.success_signals[0].source_ref == "turn:4"
-    assert assessed.next_question is None
+    assert assessed.next_question is not None

@@ -44,6 +44,7 @@ from .contracts import (
     QualityReport,
     ReplanProposal,
     ScheduleBlueprint,
+    SemanticItem,
     UnderstandingSnapshot,
     new_artifact_id,
 )
@@ -59,6 +60,7 @@ from .planning_services import (
     FinalApprovalService,
     PatchGuard,
     PlanHardValidator,
+    PlanningDefaults,
     ScheduleGenerator,
     SchedulePatchGuard,
     ScheduleValidator,
@@ -341,8 +343,6 @@ class CognitiveOSRuntime:
             runtime_status="idle",
             cognitive_metadata=self._metadata(mode="model_backed", stage="understanding", repair_count=int(state.get("repair_count", 0))),
         )
-        if snapshot and snapshot.next_question and not ready:
-            self.persistence.append_assistant_turn(state["session_id"], snapshot.next_question.question)
         return state
 
     def compile_constraints_node(self, state: CognitivePlanningState) -> CognitivePlanningState:
@@ -1001,9 +1001,54 @@ class CognitiveOSRuntime:
         snapshot = state.get("understanding_snapshot")
         if not snapshot or not snapshot.readiness.ready_for_confirmation:
             raise HTTPException(status_code=409, detail={"message": "understanding is not ready"})
+        non_assumable = {"core_goal", "safety", "feasibility", "hard_constraint"}
+        blocking = [item for item in snapshot.unknowns if item.blocking_category in non_assumable]
+        if blocking:
+            raise HTTPException(status_code=409, detail={"message": "current understanding has a system-level blocker"})
+        assumption_keys = {item.key for item in snapshot.assumptions}
+        assumptions = [*snapshot.assumptions]
+        for item in snapshot.unknowns:
+            if item.key not in assumption_keys:
+                assumptions.append(item.model_copy(update={
+                    "id": f"assumed-{item.id}",
+                    "source_type": "model_assumption",
+                    "mutation_policy": "user_confirmation_required",
+                }))
+        user_items = [
+            item for item in [*snapshot.facts, *snapshot.constraints, *snapshot.preferences, *snapshot.success_signals]
+            if item.source_type == "user_confirmed"
+        ]
+        user_text = " ".join(item.statement.casefold() for item in user_items)
+        chinese = any("\u4e00" <= char <= "\u9fff" for char in snapshot.goal_summary)
+
+        def add_default(key: str, zh: str, en: str) -> None:
+            if key in assumption_keys:
+                return
+            assumptions.append(SemanticItem(
+                id=f"assumption-{key}-{snapshot.version + 1}",
+                key=key,
+                statement=zh if chinese else en,
+                sourceType="model_assumption",
+                sourceRef=PlanningDefaults.VERSION,
+                mutationPolicy="auto_adjust",
+                blockingCategory="optional",
+            ))
+            assumption_keys.add(key)
+
+        if not any(token in user_text for token in ("天", "周", "月", "day", "week", "month", "截止", "deadline")):
+            add_default("system_default_horizon", "未指定规划周期，采用系统默认 14 天窗口。", "No planning horizon was specified; use the 14-day system default.")
+        if not any(token in user_text for token in ("每天", "每日", "每周", "一周", "daily", "weekly", "per day", "per week")):
+            add_default("system_default_daily_capacity", "未指定可投入时间，采用系统默认每天 120 分钟容量。", "No capacity was specified; use the system default of 120 minutes per day.")
+        if not any(token in user_text for token in ("单次", "每次", "session")):
+            add_default("system_default_session_length", "未指定单次时长，采用系统默认 120 分钟。", "No session length was specified; use the 120-minute system default.")
+        if not any(token in user_text for token in ("开始", "明天", "后天", "下周", "start", "from", "tomorrow")):
+            add_default("system_default_start", "未指定开始日期，采用系统默认从次日开始。", "No start date was specified; use the next-day system default.")
         approved = snapshot.model_copy(
             update={
                 "version": snapshot.version + 1,
+                "unknowns": blocking,
+                "assumptions": assumptions,
+                "next_question": None,
                 "readiness": snapshot.readiness.model_copy(update={"confirmed": True}),
             }
         )

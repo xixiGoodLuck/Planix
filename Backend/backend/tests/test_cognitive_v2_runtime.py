@@ -22,6 +22,7 @@ from app.cognitive_planning.contracts import (
     SemanticItem,
     SemanticReviewResult,
     UnderstandingReadiness,
+    UnderstandingQuestion,
     UnderstandingSnapshot,
     UserModelMemoryDraft,
 )
@@ -194,6 +195,67 @@ class DeterministicV2Model:
             artifact=artifact,
             model_usage={"provider": "test", "model": "v2", "mode": "llm", "taskType": task_type},
         )
+
+
+def test_soft_understanding_continue_converts_optional_unknown_to_assumption(monkeypatch):
+    class VagueGoalModel:
+        def complete_contract(self, *, contract_type, **_kwargs):
+            assert contract_type is UnderstandingSnapshot
+            return AgentResult(
+                UnderstandingSnapshot(
+                    goalSummary="Learn Python",
+                    facts=[SemanticItem(
+                        id="goal-fact",
+                        key="goal",
+                        statement="The user wants to learn Python",
+                        sourceType="user_confirmed",
+                        sourceRef="turn:1",
+                    )],
+                    unknowns=[SemanticItem(
+                        id="level-unknown",
+                        key="current_level",
+                        statement="Current level is unspecified",
+                        sourceType="model_assumption",
+                        sourceRef="understanding:1",
+                    )],
+                    assumptions=[SemanticItem(
+                        id="invented-detail",
+                        key="invented_budget",
+                        statement="Assume an exact budget the user never provided",
+                        sourceType="model_assumption",
+                        sourceRef="understanding:1",
+                    )],
+                    nextQuestion=UnderstandingQuestion(
+                        question="What is your current level?",
+                        whyThisQuestionMatters="It can improve the starting point.",
+                        expectedDecisionImpact="It changes the first tasks.",
+                        priority="important",
+                        targetUnknownKey="current_level",
+                    ),
+                ),
+                {"provider": "test", "model": "v2", "mode": "llm", "taskType": "planning_understanding"},
+            )
+
+    runtime = CognitiveOSRuntime(model_client=VagueGoalModel())
+    started = runtime.create_session(CreatePlanningSessionRequest(threadId="soft-review", userInput="Learn Python"))
+    assert started.status == "waiting_understanding_confirmation"
+    assert started.understanding_snapshot["nextQuestion"]["question"] == "What is your current level?"
+    assert all(item["key"] != "invented_budget" for item in started.understanding_snapshot["assumptions"])
+
+    monkeypatch.setattr(runtime, "_invoke", lambda state: state)
+    continued = runtime.confirm_understanding(started.session_id)
+    approved = continued["understanding_snapshot"]
+    assert approved.unknowns == []
+    assert approved.assumptions[0].key == "current_level"
+    assert approved.assumptions[0].source_type == "model_assumption"
+    assert all(item.source_type != "user_confirmed" for item in approved.assumptions)
+    default_keys = {item.key for item in approved.assumptions if item.source_ref == "planning-defaults:v1"}
+    assert default_keys == {
+        "system_default_horizon",
+        "system_default_daily_capacity",
+        "system_default_session_length",
+        "system_default_start",
+    }
 
 
 def test_native_runtime_runs_direct_plan_flow_and_score_is_diagnostic(client):
