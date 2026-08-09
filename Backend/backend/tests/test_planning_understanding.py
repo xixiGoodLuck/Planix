@@ -201,3 +201,169 @@ def test_understanding_agent_rejects_stale_model_patch():
             [ConversationTurn(role="user", content="update")],
             previous=current,
         )
+
+
+def test_missing_replacement_target_is_normalized_to_a_current_user_fact():
+    current = snapshot().model_copy(update={"unknowns": []})
+    item = semantic("experience_level", "The user is a beginner", "turn:2")
+    updated, archived = SemanticMergeService().apply(
+        current,
+        UnderstandingPatch(
+            baseArtifactId=current.artifact_id,
+            baseVersion=current.version,
+            userMessageRef="turn:2",
+            operations=[SemanticOperation(operation="replace_item", section="facts", key=item.key, item=item)],
+        ),
+    )
+
+    assert updated.facts[-1].statement == "The user is a beginner"
+    assert archived.operations[0].operation == "add_item"
+
+
+def test_answered_unknown_moves_out_of_unknowns_without_self_supersedes():
+    current = snapshot().model_copy(
+        update={"unknowns": [semantic("learning_style", "Which learning style?", "turn:1")]}
+    )
+    answer = semantic("learning_style", "The user prefers video lessons", "turn:2")
+    updated, _ = SemanticMergeService().apply(
+        current,
+        UnderstandingPatch(
+            baseArtifactId=current.artifact_id,
+            baseVersion=current.version,
+            userMessageRef="turn:2",
+            operations=[SemanticOperation(operation="replace_item", section="unknowns", key=answer.key, item=answer)],
+        ),
+    )
+
+    assert not updated.unknowns
+    preference = next(item for item in updated.preferences if item.key == "learning_style")
+    assert preference.statement == "The user prefers video lessons"
+    assert preference.source_ref == "turn:2"
+
+
+def test_current_turn_unknown_statement_is_not_promoted_to_fact():
+    current = snapshot().model_copy(update={"unknowns": []})
+    unresolved = semantic("experience_level", "用户当前的编程经验水平未知。", "turn:2")
+    updated, _ = SemanticMergeService().apply(
+        current,
+        UnderstandingPatch(
+            baseArtifactId=current.artifact_id,
+            baseVersion=current.version,
+            userMessageRef="turn:2",
+            operations=[SemanticOperation(operation="add_item", section="unknowns", key=unresolved.key, item=unresolved)],
+        ),
+    )
+
+    assert [item.key for item in updated.unknowns] == ["experience_level"]
+    assert all(item.key != "experience_level" for item in updated.facts)
+
+
+def test_answer_to_current_question_clears_target_unknown_with_different_fact_key():
+    current = snapshot().model_copy(
+        update={
+            "unknowns": [semantic("current_level", "Current programming level is unknown", "turn:1")],
+            "next_question": UnderstandingQuestion(
+                question="What is your programming level?",
+                whyThisQuestionMatters="Needed to set the starting point",
+                expectedDecisionImpact="Sets the learning baseline",
+                priority="important",
+                targetUnknownKey="current_level",
+            ),
+        }
+    )
+    unresolved = semantic("current_level", "What is the user's current programming level?", "turn:2")
+    answer = semantic("user_zero_basis", "The user is a complete beginner", "turn:2")
+    updated, _ = SemanticMergeService().apply(
+        current,
+        UnderstandingPatch(
+            baseArtifactId=current.artifact_id,
+            baseVersion=current.version,
+            userMessageRef="turn:2",
+            operations=[
+                SemanticOperation(operation="replace_item", section="unknowns", key=unresolved.key, item=unresolved),
+                SemanticOperation(operation="add_item", section="facts", key=answer.key, item=answer),
+            ],
+        ),
+    )
+
+    assert all(item.key != "current_level" for item in updated.unknowns)
+    assert any(item.key == "user_zero_basis" for item in updated.facts)
+
+
+def test_success_question_promotes_differently_keyed_user_fact_to_success_signal():
+    current = snapshot().model_copy(
+        update={
+            "success_signals": [],
+            "unknowns": [semantic("success_criteria", "Need to determine a verifiable outcome", "turn:1")],
+            "next_question": UnderstandingQuestion(
+                question="What verifiable result do you want and by when?",
+                whyThisQuestionMatters="Defines completion",
+                expectedDecisionImpact="Sets deliverable and horizon",
+                priority="important",
+                targetUnknownKey="success_criteria",
+            ),
+        }
+    )
+    answer = semantic("user_success_criteria", "Build a working Todo API in four weeks", "turn:2")
+    updated, _ = SemanticMergeService().apply(
+        current,
+        UnderstandingPatch(
+            baseArtifactId=current.artifact_id,
+            baseVersion=current.version,
+            userMessageRef="turn:2",
+            operations=[SemanticOperation(operation="add_item", section="facts", key=answer.key, item=answer)],
+        ),
+    )
+
+    assert not updated.unknowns
+    assert [item.key for item in updated.success_signals] == ["user_success_criteria"]
+    assert all(item.key != "user_success_criteria" for item in updated.facts)
+
+
+def test_question_budget_reserves_one_final_question_for_a_verifiable_outcome():
+    current = snapshot().model_copy(
+        update={
+            "success_signals": [],
+            "unknowns": [],
+            "next_question": None,
+            "readiness": UnderstandingReadiness(questionRoundsUsed=2, questionBudget=2, complexity="standard"),
+        }
+    )
+
+    assessed = UnderstandingReadinessService().assess(current)
+
+    assert assessed.readiness.ready_for_confirmation is False
+    assert assessed.readiness.question_budget == 3
+    assert assessed.next_question is not None
+    assert assessed.next_question.target_unknown_key == "success_criteria"
+
+
+def test_success_outcome_answer_converges_understanding_after_bounded_question():
+    current = snapshot().model_copy(
+        update={
+            "success_signals": [],
+            "unknowns": [],
+            "next_question": None,
+            "readiness": UnderstandingReadiness(questionRoundsUsed=2, questionBudget=2, complexity="standard"),
+        }
+    )
+    prompted = UnderstandingReadinessService().assess(current)
+    answer = semantic("success_criteria", "Build a working Todo API within four weeks", "turn:4")
+    answered, _ = SemanticMergeService().apply(
+        prompted,
+        UnderstandingPatch(
+            baseArtifactId=prompted.artifact_id,
+            baseVersion=prompted.version,
+            userMessageRef="turn:4",
+            operations=[SemanticOperation(operation="replace_item", section="unknowns", key=answer.key, item=answer)],
+        ),
+    )
+    answered = answered.model_copy(
+        update={"readiness": answered.readiness.model_copy(update={"question_rounds_used": 3})}
+    )
+
+    assessed = UnderstandingReadinessService().assess(answered)
+
+    assert assessed.readiness.ready_for_confirmation is True
+    assert assessed.success_signals[0].source_ref == "turn:4"
+    assert assessed.next_question is None

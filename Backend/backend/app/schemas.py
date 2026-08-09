@@ -225,6 +225,7 @@ class AiSettingsUpdate(BaseModel):
     api_key: str | None = Field(default=None, alias="apiKey")
     temperature: float = Field(default=0.3, ge=0, le=2)
     timeout_seconds: int = Field(default=40, alias="timeoutSeconds", ge=5, le=120)
+    force_non_thinking: bool = Field(default=False, alias="forceNonThinking")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -342,6 +343,7 @@ class AiSettingsOut(BaseModel):
     key_error_type: str = Field(default="", alias="keyErrorType")
     temperature: float
     timeout_seconds: int = Field(alias="timeoutSeconds")
+    force_non_thinking: bool = Field(default=False, alias="forceNonThinking")
     updated_at: str = Field(alias="updatedAt")
     saved_providers: list[AiSavedProvider] = Field(default_factory=list, alias="savedProviders")
     routing_rules: list[AiModelRoutingRule] = Field(default_factory=list, alias="routingRules")

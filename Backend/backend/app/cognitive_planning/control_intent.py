@@ -35,13 +35,30 @@ def detect_planning_control_intent(text: str) -> PlanningControlIntent:
         "retrycurrentstage",
     }:
         return "continue_current_stage"
-    if normalized in {"确认", "确认方向", "确认执行计划", "approve", "confirm", "yes", "ok", "okay"}:
+    natural_approval = any(
+        phrase in normalized
+        for phrase in (
+            "按这个理解继续",
+            "按当前理解继续",
+            "这个理解可以",
+            "这个计划可以",
+            "确认这个理解",
+            "确认这个计划",
+            "确认这个方案",
+            "就按这个理解",
+            "就按这个计划",
+            "就按这个方案",
+        )
+    )
+    if normalized in {"确认", "确认方向", "确认执行计划", "approve", "confirm", "yes", "ok", "okay"} or natural_approval:
         return "approve_current_stage"
     if normalized in {"修改", "调整", "revise", "modify", "change"}:
         return "modify_current_stage"
     if normalized in {"重新开始", "重新规划", "从头来", "restart", "startover"}:
         return "restart_planning"
-    if normalized in {"取消", "取消规划", "cancel", "stop"}:
+    if normalized in {"取消", "取消规划", "cancel", "stop"} or (
+        "取消" in normalized and any(token in normalized for token in ("计划", "规划", "这个"))
+    ):
         return "cancel_planning"
     return "provide_goal_information"
 

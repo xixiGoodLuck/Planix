@@ -44,6 +44,7 @@ const defaultSettings: AiSettings = {
   hasApiKey: false,
   temperature: 0.3,
   timeoutSeconds: 40,
+  forceNonThinking: false,
   updatedAt: '',
   savedProviders: [],
   routingRules: []
@@ -235,7 +236,8 @@ export function AIWorkspace({ onSettingsChange, t }: AIWorkspaceProps) {
       baseUrl: settings.baseUrl.trim(),
       model: settings.model.trim(),
       temperature: settings.temperature,
-      timeoutSeconds: settings.timeoutSeconds
+      timeoutSeconds: settings.timeoutSeconds,
+      forceNonThinking: settings.forceNonThinking
     };
     if (clearKey) payload.apiKey = '';
     else if (apiKey.trim()) payload.apiKey = apiKey.trim();
@@ -403,7 +405,9 @@ export function AIWorkspace({ onSettingsChange, t }: AIWorkspaceProps) {
           </label>
           <label><span>{t('legacy.temperature')}</span><input type="number" min={0} max={2} step={0.1} value={settings.temperature} onChange={(event) => updateSettings((current) => ({ ...current, temperature: Number(event.target.value) }))} /></label>
           <label><span>{t('legacy.timeout')}</span><input type="number" min={5} max={120} value={settings.timeoutSeconds} onChange={(event) => updateSettings((current) => ({ ...current, timeoutSeconds: Number(event.target.value) }))} /></label>
+          <label className="routing-toggle"><input type="checkbox" checked={settings.forceNonThinking} onChange={(event) => updateSettings((current) => ({ ...current, forceNonThinking: event.target.checked }))} /><span>{t('legacy.forceNonThinking')}</span></label>
         </div>
+        <p className="section-hint">{settings.forceNonThinking ? t('legacy.forceNonThinkingEnabled') : t('legacy.forceNonThinkingDisabled')}</p>
         <div className="settings-actions">
           <button onClick={saveProvider} disabled={!backendOnline || Boolean(busy)}><Save size={16} />{t('legacy.saveSettings')}</button>
           <button onClick={testProvider} disabled={!backendOnline || Boolean(busy)}><PlugZap size={16} />{t('legacy.testModel')}</button>

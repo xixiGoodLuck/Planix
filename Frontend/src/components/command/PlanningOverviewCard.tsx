@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import type { CommandThreadMessage } from '../../stores/commandAgentStore';
-import { planningStageFromStatus, planningStageTranslationKey, type PlanningStage } from './planningStatus';
+import { planningNodeTranslationKey, planningStageFromStatus, planningStageTranslationKey, type PlanningStage } from './planningStatus';
 
 type Translator = (key: string) => string;
 
@@ -244,6 +244,8 @@ export function PlanningOverviewCard({
   const runtimeStatus = text(latestKindPayloadField(messages, 'planning_session_status', 'runtimeStatus'));
   const modelFailure = record(latestKindPayloadField(messages, 'planning_session_status', 'modelFailure'));
   const pendingInput = record(latestKindPayloadField(messages, 'planning_session_status', 'pendingInput'));
+  const currentNode = text(latestKindPayloadField(messages, 'planning_progress', 'currentStage'));
+  const elapsedSeconds = Number(latestKindPayloadField(messages, 'planning_progress', 'elapsedSeconds') || 0);
   const stableStatus = status && status !== 'MODEL_UNAVAILABLE' ? status : sessionStatus || businessStatus;
   const currentStatus = stableStatus || status;
   const stage: PlanningStage = planningPhase === 'FINAL_REVIEW'
@@ -313,7 +315,8 @@ export function PlanningOverviewCard({
       <h2 className="planning-workspace-title">{t('command.planningWorkspace')}</h2>
       <header className="planning-overview-stage">
         <span>{t('command.currentStage')}</span>
-        <strong>{t(planningStageTranslationKey(stage))}</strong>
+        <strong>{t(sending && currentNode ? planningNodeTranslationKey(currentNode) : planningStageTranslationKey(stage))}</strong>
+        {sending && currentNode ? <small>{elapsedSeconds}s</small> : null}
       </header>
       <section>
         <h3>{t(planningPhase === 'FINAL_REVIEW' ? 'command.confirmedGoal' : 'command.goalUnderstanding')}</h3>

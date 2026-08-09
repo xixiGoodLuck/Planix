@@ -6,11 +6,11 @@ import { todayISO } from '../utils/date';
 
 export interface CommandThreadMessage {
   id: string; role: 'user' | 'assistant' | 'card'; content: string; createdAt: number;
-  kind?: 'error' | 'calendar_preview' | 'approval' | 'calendar_write_result' | 'planning_session_started' | 'agent_decision' | 'agent_message' | 'planning_session_status' | 'model_usage' | 'clarify_question' | 'execution_result';
+  kind?: 'error' | 'calendar_preview' | 'approval' | 'calendar_write_result' | 'planning_session_started' | 'planning_progress' | 'agent_decision' | 'agent_message' | 'planning_session_status' | 'model_usage' | 'clarify_question' | 'execution_result';
   status?: 'running' | 'success' | 'error'; title?: string; draftId?: string; actionId?: string;
   payload?: Record<string, unknown>; streaming?: boolean;
 }
-export type CommandWorkspaceStatus = 'idle' | 'running' | 'waiting_clarification' | 'waiting_confirmation' | 'waiting_permission' | 'blocked_model' | 'accepted' | 'unconfirmed' | 'failed';
+export type CommandWorkspaceStatus = 'idle' | 'running' | 'waiting_clarification' | 'waiting_confirmation' | 'waiting_permission' | 'blocked_model' | 'accepted' | 'cancelled' | 'unconfirmed' | 'failed';
 export interface CommandWorkspaceSummary { id: string; threadId?: string; title: string; messageCount: number; status: CommandWorkspaceStatus; sending: boolean; updatedAt: number; error?: string; }
 type Workspace = CommandWorkspaceSummary & { messages: CommandThreadMessage[]; loading: boolean };
 type State = {
@@ -67,11 +67,27 @@ export function workspaceStatusFor(status: string, runtimeStatus = ''): CommandW
   if (status === 'waiting_understanding_confirmation' || status === 'waiting_final_review') return 'waiting_confirmation';
   if (status === 'waiting_calendar_write_approval') return 'waiting_permission';
   if (status === 'written_to_calendar') return 'accepted';
+  if (status === 'cancelled') return 'cancelled';
   return 'running';
 }
+export function workspaceStatusAfterApprovalError(previousStatus: CommandWorkspaceStatus): CommandWorkspaceStatus { return previousStatus; }
+export function workspaceStatusForCalendarWrite(failed: number | boolean): CommandWorkspaceStatus { return (typeof failed === 'number' ? failed > 0 : failed) ? 'failed' : 'accepted'; }
 function applyEvent(workspaceId: string, event: CommandChatEvent, t: (key: string) => string) {
   if (event.type === 'thread') update((current) => updateWorkspace(current, workspaceId, (workspace) => ({ ...workspace, threadId: event.threadId })));
+  if (event.type === 'planning_progress') {
+    update((current) => updateWorkspace(current, workspaceId, (workspace) => {
+      const existing = workspace.messages.find((message) => message.kind === 'planning_progress' && message.payload?.sessionId === event.sessionId);
+      const progress = { role: 'card' as const, kind: 'planning_progress' as const, status: 'running' as const, content: event.currentStage, payload: { ...event } };
+      return existing
+        ? { ...workspace, messages: workspace.messages.map((message) => message.id === existing.id ? { ...message, ...progress } : message) }
+        : { ...workspace, messages: [...workspace.messages, { ...progress, id: createId('progress'), createdAt: Date.now() }] };
+    }));
+    return;
+  }
   const card = eventCard(event, t); if (card) addMessage(workspaceId, card);
+  if (event.type === 'calendar_write_result') {
+    update((current) => updateWorkspace(current, workspaceId, (workspace) => ({ ...workspace, status: workspaceStatusForCalendarWrite(event.failed) })));
+  }
   if (event.type === 'planning_session_status') {
     const runtime = String(event.runtimeStatus || event.data?.runtimeStatus || '');
     const status = String(event.status || '');
@@ -106,8 +122,9 @@ function sendCommand(input: string, t: (key: string) => string): false | Promise
 }
 function approveAction(actionId: string, decision: 'approve' | 'reject', t: (key: string) => string): false | Promise<true> {
   const workspaceId = state.activeWorkspaceId; const workspace = state.workspaces[workspaceId]; if (!workspace || workspace.sending) return false;
+  const previousStatus = workspace.status;
   update((current) => updateWorkspace(current, workspaceId, (item) => ({ ...item, sending: true, status: 'running' })));
-  return (async () => { const stream = streamHandler(workspaceId, t); try { await approveCommandAction({ threadId: workspace.threadId, actionId, decision, permission: state.permission }, stream); stream.finish(); } catch (error) { const message = error instanceof Error ? error.message : String(error); addMessage(workspaceId, { role: 'card', kind: 'error', status: 'error', content: message }); } finally { update((current) => updateWorkspace(current, workspaceId, (item) => ({ ...item, sending: false }))); } return true as const; })();
+  return (async () => { const stream = streamHandler(workspaceId, t); try { await approveCommandAction({ threadId: workspace.threadId, actionId, decision, permission: state.permission }, stream); stream.finish(); } catch (error) { const message = error instanceof Error ? error.message : String(error); addMessage(workspaceId, { role: 'card', kind: 'error', status: 'error', content: message }); update((current) => updateWorkspace(current, workspaceId, (item) => ({ ...item, status: workspaceStatusAfterApprovalError(previousStatus), error: message }))); } finally { update((current) => updateWorkspace(current, workspaceId, (item) => ({ ...item, sending: false }))); } return true as const; })();
 }
 
 export function useCommandAgent() { return useSyncExternalStore((listener) => { listeners.add(listener); return () => listeners.delete(listener); }, () => state, () => state); }

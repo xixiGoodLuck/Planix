@@ -2,7 +2,7 @@ from contextlib import contextmanager
 
 from app.db import get_conn
 from app.schemas import normalize_local_base_url
-from app.services.ai_settings import ROUTABLE_TASK_TYPES
+from app.services.ai_settings import ROUTABLE_TASK_TYPES, get_effective_ai_settings
 from app.services.model_provider import ModelCallError, ModelCallResult, ModelRouter, OpenAICompatibleProvider
 from app.services.secret_store import get_secret_store, provider_secret_key
 
@@ -172,6 +172,28 @@ def test_saved_provider_rows_mean_saved_cloud_key_or_configured_local_model(clie
             "updatedAt": saved.json()["savedProviders"][0]["updatedAt"],
         }
     ]
+
+
+def test_force_non_thinking_can_be_enabled_and_disabled_globally(client):
+    initial = client.get("/api/ai/settings")
+    assert initial.status_code == 200
+    assert initial.json()["forceNonThinking"] is False
+
+    enabled = client.put(
+        "/api/ai/settings",
+        json=_settings_payload(forceNonThinking=True),
+    )
+    assert enabled.status_code == 200
+    assert enabled.json()["forceNonThinking"] is True
+    assert get_effective_ai_settings().force_non_thinking is True
+
+    disabled = client.put(
+        "/api/ai/settings",
+        json=_settings_payload(forceNonThinking=False),
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["forceNonThinking"] is False
+    assert get_effective_ai_settings().force_non_thinking is False
 
 
 def test_changed_credentials_reset_validation_but_unchanged_settings_preserve_it(client, monkeypatch):

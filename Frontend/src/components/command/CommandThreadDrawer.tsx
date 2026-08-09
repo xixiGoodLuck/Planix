@@ -26,6 +26,7 @@ function workspaceStatusLabel(status: CommandWorkspaceStatus, t: (key: string) =
     waiting_permission: 'command.workspaceWaitingPermission',
     blocked_model: 'command.workspaceModelBlocked',
     accepted: 'command.workspaceAccepted',
+    cancelled: 'command.workspaceCancelled',
     unconfirmed: 'command.workspaceUnconfirmed',
     failed: 'command.workspaceFailed'
   };

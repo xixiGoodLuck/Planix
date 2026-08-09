@@ -104,6 +104,7 @@ export type CommandChatEvent =
   | { type: 'approval_required'; actionId: string; draftId: string; permission: CommandPermission; risk: string; summary: string; target?: string; operation?: string }
   | { type: 'calendar_write_result'; actionId?: string; created: number; updated: number; failed: number; affectedDates?: string[]; errors?: string[]; plans?: unknown[] }
   | { type: 'planning_session_started'; sessionId: string; status: string }
+  | { type: 'planning_progress'; sessionId: string; currentStage: string; pendingAgent?: string | null; runtimeStatus: string; elapsedSeconds: number }
   | { type: 'agent_decision'; sessionId: string; data: unknown }
   | { type: 'agent_message'; sessionId: string; data: unknown }
   | ({ type: 'planning_session_status' } & PlanningSessionResponse)

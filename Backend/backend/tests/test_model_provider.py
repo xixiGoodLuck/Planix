@@ -32,6 +32,7 @@ def _settings(
     api_key: str = "sk-test-local",
     key_status: str = "unchecked",
     key_error_type: str = "",
+    force_non_thinking: bool = False,
 ) -> EffectiveAiSettings:
     return EffectiveAiSettings(
         provider=provider,
@@ -43,6 +44,7 @@ def _settings(
         updated_at="",
         key_status=key_status,
         key_error_type=key_error_type,
+        force_non_thinking=force_non_thinking,
     )
 
 
@@ -109,37 +111,40 @@ def test_kimi_defaults_use_current_official_endpoint_and_model():
 
 
 @pytest.mark.parametrize("provider", ("local", "custom"))
-def test_qwen_openai_compatible_requests_disable_thinking_by_default(provider):
+def test_qwen_openai_compatible_requests_keep_provider_default_when_not_forced(provider):
+    original = {"chat_template_kwargs": {"enable_thinking": True, "custom_option": "kept"}}
     payload = merge_openai_compatible_extra_body(
-        {},
+        original,
         _settings(provider=provider, model="Qwen3.5-4B"),
     )
 
-    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert payload == original
 
 
-def test_qwen_explicit_thinking_setting_overrides_default():
+def test_force_non_thinking_overrides_explicit_qwen_thinking_setting():
     payload = merge_openai_compatible_extra_body(
         {"chat_template_kwargs": {"enable_thinking": True, "custom_option": "kept"}},
-        _settings(provider="local", model="qwen3-8b"),
+        _settings(provider="local", model="qwen3-8b", force_non_thinking=True),
     )
 
     assert payload["chat_template_kwargs"] == {
-        "enable_thinking": True,
+        "enable_thinking": False,
         "custom_option": "kept",
     }
+    assert payload["reasoning_effort"] == "none"
 
 
 @pytest.mark.parametrize(
     ("provider", "model"),
-    (("openai", "gpt-4o-mini"), ("deepseek", "deepseek-v4-flash"), ("custom", "llama-3.1")),
+    (("openai", "gpt-4o-mini"), ("deepseek", "deepseek-chat"), ("custom", "llama-3.1")),
 )
-def test_non_qwen_providers_keep_the_original_request(provider, model):
+def test_models_without_a_supported_thinking_switch_keep_the_original_request(provider, model):
     payload = {"model": model}
 
-    assert merge_openai_compatible_extra_body(payload, _settings(provider=provider, model=model)) == {
-        "model": model
-    }
+    assert merge_openai_compatible_extra_body(
+        payload,
+        _settings(provider=provider, model=model, force_non_thinking=True),
+    ) == {"model": model}
 
 
 def test_usage_parser_accepts_openai_and_compatible_token_names():
@@ -272,7 +277,7 @@ def test_openai_compatible_provider_posts_expected_payload(monkeypatch):
     assert "max_completion_tokens" not in calls[0]["json"]
 
 
-def test_deepseek_v4_native_plan_requests_disable_thinking(monkeypatch):
+def test_deepseek_v4_force_non_thinking_applies_to_every_request(monkeypatch):
     calls = []
 
     class FakeResponse:
@@ -299,7 +304,10 @@ def test_deepseek_v4_native_plan_requests_disable_thinking(monkeypatch):
             return FakeResponse()
 
     monkeypatch.setattr(model_provider.httpx, "Client", FakeHttpClient)
-    router = ModelRouter(_settings(provider="deepseek", model="deepseek-v4-flash"), routing_enabled=False)
+    router = ModelRouter(
+        _settings(provider="deepseek", model="deepseek-v4-flash", force_non_thinking=True),
+        routing_enabled=False,
+    )
 
     for feature in (
             "planning_blueprint_generation",
@@ -326,7 +334,7 @@ def test_deepseek_v4_native_plan_requests_disable_thinking(monkeypatch):
     )
     assert error is None
     assert result is not None
-    assert "thinking" not in calls[-1]
+    assert calls[-1]["thinking"] == {"type": "disabled"}
 
     result, error = router.complete(
         _request(
@@ -334,6 +342,18 @@ def test_deepseek_v4_native_plan_requests_disable_thinking(monkeypatch):
             task_type="planning_review",
             feature="planning_plan_generation",
         )
+    )
+    assert error is None
+    assert result is not None
+    assert calls[-1]["thinking"] == {"type": "disabled"}
+
+    calls.clear()
+    default_router = ModelRouter(
+        _settings(provider="deepseek", model="deepseek-v4-flash", force_non_thinking=False),
+        routing_enabled=False,
+    )
+    result, error = default_router.complete(
+        _request(response_format_json=True, task_type="planning_plan", feature="planning_blueprint_generation")
     )
     assert error is None
     assert result is not None

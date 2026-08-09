@@ -36,10 +36,10 @@ export interface AiAutoModelPolicy { autoProviderOrder: Exclude<AiProvider, 'moc
 export interface AiSavedProvider { provider: AiProvider; baseUrl: string; model: string; hasApiKey: boolean; keyStatus?: 'unchecked' | 'valid' | 'invalid'; keyErrorType?: string; lastValidatedAt?: string; updatedAt: string; }
 export interface AiSettings {
   provider: AiProvider; baseUrl: string; model: string; hasApiKey: boolean; keyStatus?: 'unchecked' | 'valid' | 'invalid'; keyErrorType?: string;
-  temperature: number; timeoutSeconds: number; updatedAt: string; savedProviders: AiSavedProvider[];
+  temperature: number; timeoutSeconds: number; forceNonThinking: boolean; updatedAt: string; savedProviders: AiSavedProvider[];
   routingRules?: AiModelRoutingRule[]; autoModelPolicy?: AiAutoModelPolicy;
 }
-export interface AiSettingsInput { provider: AiProvider; baseUrl: string; model: string; apiKey?: string; temperature: number; timeoutSeconds: number; }
+export interface AiSettingsInput { provider: AiProvider; baseUrl: string; model: string; apiKey?: string; temperature: number; timeoutSeconds: number; forceNonThinking: boolean; }
 export interface AiModelRoutingInput { routingRules: AiModelRoutingRule[]; autoModelPolicy?: AiAutoModelPolicy; }
 export interface AiSettingsTestResult { ok: boolean; mode: 'mock' | 'llm' | 'error'; message: string; provider?: string; model?: string; errorType?: string; statusCode?: number; detail?: string; }
 export interface ContextStats { conversations: number; planningSessions: number; artifacts: number; memories: number; }

@@ -1,6 +1,8 @@
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date as date_type, datetime, timezone
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -22,6 +24,9 @@ from ..schemas import (
     PlanUpdate,
 )
 from .plans import create_plan, update_plan, upsert_calendar_plans
+
+
+_PLANNING_PROGRESS_POLL_SECONDS = 0.25
 
 
 def _now() -> str:
@@ -318,15 +323,72 @@ class CommandAgentService:
         )
 
     def _stream_start(self, thread_id: str, payload: CommandChatRequest) -> Iterator[str]:
-        session = get_planning_orchestrator().create_session(
-            CreatePlanningSessionRequest(
-                entryPoint="p_mode",
-                threadId=thread_id,
-                userInput=payload.message,
-                context=dict(payload.context),
-            )
+        service = get_planning_orchestrator()
+        session_id = service.prepare_session(
+            CreatePlanningSessionRequest(entryPoint="p_mode", threadId=thread_id, userInput=payload.message, context=dict(payload.context))
         )
-        yield from self._stream_snapshot(thread_id, session, include_start=True)
+        yield self._planning_event(
+            thread_id,
+            "planning_session_started",
+            session_id,
+            status="planning",
+            runtime_status="running",
+            data={"currentStage": "session_guard"},
+            content="Planning session started",
+        )
+        yield from self._stream_runtime_operation(
+            thread_id,
+            service,
+            session_id,
+            lambda: service.run_prepared_session(session_id),
+        )
+
+    def _stream_runtime_operation(
+        self,
+        thread_id: str,
+        service,
+        session_id: str,
+        operation: Callable[[], PlanningSessionResponse],
+    ) -> Iterator[str]:
+        started_at = time.monotonic()
+        yield _ndjson(
+            {
+                "type": "planning_progress",
+                "sessionId": session_id,
+                "currentStage": "session_guard",
+                "pendingAgent": None,
+                "runtimeStatus": "running",
+                "elapsedSeconds": 0,
+            }
+        )
+        last_progress: tuple[str, str, str, int] | None = ("session_guard", "", "active", 0)
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="planix-command") as executor:
+            future = executor.submit(operation)
+            while not future.done():
+                elapsed_seconds = int(time.monotonic() - started_at)
+                try:
+                    harness_state = service.harness.repository.load(session_id)
+                except Exception:
+                    harness_state = None
+                current_stage = harness_state.current_stage if harness_state else "session_guard"
+                pending_agent = harness_state.pending_agent if harness_state else None
+                lifecycle = harness_state.lifecycle if harness_state else "active"
+                progress = (current_stage, pending_agent or "", lifecycle, elapsed_seconds)
+                if progress != last_progress:
+                    yield _ndjson(
+                        {
+                            "type": "planning_progress",
+                            "sessionId": session_id,
+                            "currentStage": current_stage,
+                            "pendingAgent": pending_agent,
+                            "runtimeStatus": "running",
+                            "elapsedSeconds": elapsed_seconds,
+                        }
+                    )
+                    last_progress = progress
+                time.sleep(_PLANNING_PROGRESS_POLL_SECONDS)
+            updated = future.result()
+        yield from self._stream_snapshot(thread_id, updated)
 
     def _followup_action(self, thread_id: str, payload: CommandChatRequest) -> tuple[str, PlanningSessionResponse] | None:
         session = get_planning_orchestrator().latest_for_thread(thread_id)
@@ -351,7 +413,9 @@ class CommandAgentService:
         if session.status == "waiting_understanding_confirmation":
             return ("confirm_understanding" if control == "approve_current_stage" or _approval_text(text) else "revise_understanding"), session
         if session.status in {"final_revision", "waiting_final_review"}:
-            if session.status == "waiting_final_review" and (_approval_text(text) or _calendar_write_text(text)):
+            if session.status == "waiting_final_review" and (
+                control == "approve_current_stage" or _approval_text(text) or _calendar_write_text(text)
+            ):
                 return "approve_final", session
             return "revise_final", session
         if session.status == "waiting_calendar_write_approval":
@@ -370,29 +434,29 @@ class CommandAgentService:
         service = get_planning_orchestrator()
         request = PlanningSessionTextRequest(text=payload.message)
         if action == "cancel":
-            updated = service.cancel(session.session_id)
+            operation = lambda: service.cancel(session.session_id)
         elif action == "restart":
             service.cancel(session.session_id)
             yield from self._stream_start(thread_id, payload)
             return
         elif action == "continue":
-            updated = service.continue_current_stage(session.session_id)
+            operation = lambda: service.continue_current_stage(session.session_id)
         elif action == "skip":
-            updated = service.skip_current_stage(session.session_id)
+            operation = lambda: service.skip_current_stage(session.session_id)
         elif action == "answer_understanding":
-            updated = service.answer_understanding(session.session_id, request)
+            operation = lambda: service.answer_understanding(session.session_id, request)
         elif action == "confirm_understanding":
-            updated = service.confirm_understanding(session.session_id)
+            operation = lambda: service.confirm_understanding(session.session_id)
         elif action == "revise_understanding":
-            updated = service.revise_understanding(session.session_id, request)
+            operation = lambda: service.revise_understanding(session.session_id, request)
         elif action == "revise_final":
-            updated = service.revise_final(session.session_id, request)
+            operation = lambda: service.revise_final(session.session_id, request)
         elif action == "approve_final":
             yield from self._stream_calendar_preview(thread_id, payload, session)
             return
         else:
-            updated = service.get_session(session.session_id)
-        yield from self._stream_snapshot(thread_id, updated)
+            operation = lambda: service.get_session(session.session_id)
+        yield from self._stream_runtime_operation(thread_id, service, session.session_id, operation)
 
     def _calendar_items(self, session: PlanningSessionResponse) -> list[dict[str, Any]]:
         proposal = session.calendar_proposal if isinstance(session.calendar_proposal, dict) else {}

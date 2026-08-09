@@ -19,6 +19,7 @@ ROUTABLE_TASK_TYPES = [
     "planning_learning",
 ]
 AUTO_MODEL_POLICY_KEY = "ai.autoModelPolicy"
+FORCE_NON_THINKING_KEY = "ai.forceNonThinking"
 KEY_STATUS_VALUES = {"unchecked", "valid", "invalid"}
 KEY_INVALIDATING_ERRORS = {"auth_error", "invalid_key_format"}
 DEFAULT_TASK_STRATEGIES = {
@@ -67,6 +68,7 @@ class EffectiveAiSettings:
     updated_at: str
     key_status: str = "unchecked"
     key_error_type: str = ""
+    force_non_thinking: bool = False
     @property
     def has_api_key(self) -> bool:
         return bool(self.api_key.strip())
@@ -292,6 +294,23 @@ def _auto_model_policy(conn) -> AiAutoModelPolicy:
     return normalized
 
 
+def _force_non_thinking(conn) -> bool:
+    row = conn.execute("SELECT value FROM user_preferences WHERE key = %s", (FORCE_NON_THINKING_KEY,)).fetchone()
+    return bool(row and row["value"] is True)
+
+
+def _save_force_non_thinking(conn, value: bool) -> None:
+    conn.execute(
+        """
+        INSERT INTO user_preferences(key, value, updated_at)
+        VALUES (%s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT(key)
+        DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        """,
+        (FORCE_NON_THINKING_KEY, jsonb(bool(value))),
+    )
+
+
 def _save_auto_model_policy(conn, policy: AiAutoModelPolicy | None) -> None:
     if policy is None:
         return
@@ -402,7 +421,7 @@ def _routing_rule_rows(conn) -> list[AiModelRoutingRule]:
     return [_routing_config_to_public(rule) for rule in rules]
 
 
-def _env_effective() -> EffectiveAiSettings:
+def _env_effective(force_non_thinking: bool = False) -> EffectiveAiSettings:
     return EffectiveAiSettings(
         provider=_env_provider(),
         base_url=_env_base_url(),
@@ -411,12 +430,17 @@ def _env_effective() -> EffectiveAiSettings:
         temperature=0.3,
         timeout_seconds=40,
         updated_at="",
+        force_non_thinking=force_non_thinking,
     )
 
 
-def _effective_from_rows(settings_row, config: ProviderConfig | None) -> EffectiveAiSettings:
+def _effective_from_rows(
+    settings_row,
+    config: ProviderConfig | None,
+    force_non_thinking: bool = False,
+) -> EffectiveAiSettings:
     if not settings_row:
-        return _env_effective()
+        return _env_effective(force_non_thinking)
     provider = settings_row["provider"] if settings_row["provider"] in SUPPORTED_PROVIDERS else "custom"
     base_url = settings_row["base_url"] or _default_base_url(provider)
     model = settings_row["model"] or _default_model(provider)
@@ -441,6 +465,7 @@ def _effective_from_rows(settings_row, config: ProviderConfig | None) -> Effecti
         updated_at=settings_row["updated_at"],
         key_status=key_status,
         key_error_type=key_error_type,
+        force_non_thinking=force_non_thinking,
     )
 
 
@@ -459,6 +484,7 @@ def _to_public(
         keyErrorType=settings.key_error_type,
         temperature=settings.temperature,
         timeoutSeconds=settings.timeout_seconds,
+        forceNonThinking=settings.force_non_thinking,
         updatedAt=settings.updated_at,
         savedProviders=saved_providers,
         routingRules=routing_rules,
@@ -471,15 +497,18 @@ def get_effective_ai_settings() -> EffectiveAiSettings:
         settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = %s", (SETTINGS_ID,)).fetchone()
         provider = settings_row["provider"] if settings_row else _env_provider()
         config = _config_for_provider(conn, provider) if provider in KEYED_PROVIDERS else None
-    return _effective_from_rows(settings_row, config)
+        force_non_thinking = _force_non_thinking(conn)
+    return _effective_from_rows(settings_row, config, force_non_thinking)
 
 
 def get_effective_ai_settings_for_provider(provider: str, active_settings: EffectiveAiSettings | None = None) -> EffectiveAiSettings:
     with get_conn() as conn:
         settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = %s", (SETTINGS_ID,)).fetchone()
+        force_non_thinking = active_settings.force_non_thinking if active_settings is not None else _force_non_thinking(conn)
         active = active_settings or _effective_from_rows(
             settings_row,
             _config_for_provider(conn, settings_row["provider"]) if settings_row and settings_row["provider"] in KEYED_PROVIDERS else None,
+            force_non_thinking,
         )
         if provider not in KEYED_PROVIDERS:
             return EffectiveAiSettings(
@@ -492,6 +521,7 @@ def get_effective_ai_settings_for_provider(provider: str, active_settings: Effec
                 updated_at=active.updated_at,
                 key_status="unchecked",
                 key_error_type="",
+                force_non_thinking=force_non_thinking,
             )
         config = _config_for_provider(conn, provider)
         return EffectiveAiSettings(
@@ -504,6 +534,7 @@ def get_effective_ai_settings_for_provider(provider: str, active_settings: Effec
             updated_at=config.updated_at if config else active.updated_at,
             key_status=config.key_status if config else "unchecked",
             key_error_type=config.key_error_type if config else "",
+            force_non_thinking=force_non_thinking,
         )
 
 
@@ -585,7 +616,7 @@ def get_public_ai_settings() -> AiSettingsOut:
         settings_row = conn.execute("SELECT * FROM ai_settings WHERE id = %s", (SETTINGS_ID,)).fetchone()
         provider = settings_row["provider"] if settings_row else _env_provider()
         config = _config_for_provider(conn, provider) if provider in KEYED_PROVIDERS else None
-        settings = _effective_from_rows(settings_row, config)
+        settings = _effective_from_rows(settings_row, config, _force_non_thinking(conn))
         saved_providers = _saved_provider_rows(conn)
         routing_rules = _routing_rule_rows(conn)
         auto_model_policy = _auto_model_policy(conn)
@@ -724,6 +755,7 @@ def save_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
                     payload.timeout_seconds,
                 ),
             )
+            _save_force_non_thinking(conn, payload.force_non_thinking)
     except Exception:
         if payload.provider != "mock":
             _restore_provider_secret(payload.provider, previous_secret)

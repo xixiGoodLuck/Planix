@@ -11,7 +11,7 @@ interface AgentThreadProps {
   onApprove: (actionId: string, decision: 'approve' | 'reject') => void;
   onSend: (value: string) => void; advancedAgentTrace?: boolean; t: (key: string) => string;
 }
-const planningKinds = new Set(['planning_session_started', 'agent_decision', 'agent_message', 'planning_session_status']);
+const planningKinds = new Set(['planning_session_started', 'planning_progress', 'agent_decision', 'agent_message', 'planning_session_status']);
 const payload = (message: CommandThreadMessage) => message.payload || {};
 
 export function AgentThread({ messages, sending, onApprove, onSend, advancedAgentTrace = false, t }: AgentThreadProps) {

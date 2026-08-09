@@ -21,3 +21,28 @@ export function planningStageFromStatus(status: string | undefined): PlanningSta
 export function planningStageTranslationKey(stage: PlanningStage): string {
   return `command.planningStage${stage.split('_').map((part) => part[0].toUpperCase() + part.slice(1)).join('')}`;
 }
+
+export function planningNodeTranslationKey(node: string): string {
+  const keyByNode: Record<string, string> = {
+    session_guard: 'command.planningNodePreparing',
+    understanding: 'command.planningNodeUnderstanding',
+    understanding_readiness: 'command.planningNodeUnderstandingValidation',
+    wait_for_understanding: 'command.planningNodeUnderstandingValidation',
+    compile_constraints: 'command.planningNodeConstraints',
+    build_context: 'command.planningNodeContext',
+    generate_plan: 'command.planningNodePlan',
+    validate_plan: 'command.planningNodePlanValidation',
+    semantic_review: 'command.planningNodeReview',
+    repair_plan: 'command.planningNodeRepair',
+    validate_repaired_plan: 'command.planningNodePlanValidation',
+    generate_schedule: 'command.planningNodeSchedule',
+    validate_schedule: 'command.planningNodeScheduleValidation',
+    repair_schedule: 'command.planningNodeScheduleRepair',
+    materialize_calendar: 'command.planningNodeCalendar',
+    wait_for_final_review: 'command.planningNodeFinalReview',
+    feedback_router: 'command.planningNodeFeedback',
+    record_learning: 'command.planningNodeLearning',
+    calendar_gate: 'command.planningNodeCalendar'
+  };
+  return keyByNode[node] || 'command.planningNodePreparing';
+}

@@ -10,18 +10,19 @@ from ..schemas import (
 from ..services.command_agent import CommandAgentService
 
 router = APIRouter(prefix="/api/command", tags=["command"])
+STREAM_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 
 @router.post("/chat")
 def post_command_chat(payload: CommandChatRequest) -> StreamingResponse:
     service = CommandAgentService()
-    return StreamingResponse(service.stream_chat(payload), media_type="application/x-ndjson")
+    return StreamingResponse(service.stream_chat(payload), media_type="application/x-ndjson", headers=STREAM_HEADERS)
 
 
 @router.post("/approve")
 def post_command_approve(payload: CommandApproveRequest) -> StreamingResponse:
     service = CommandAgentService()
-    return StreamingResponse(service.stream_approve(payload), media_type="application/x-ndjson")
+    return StreamingResponse(service.stream_approve(payload), media_type="application/x-ndjson", headers=STREAM_HEADERS)
 
 
 @router.get("/threads", response_model=list[CommandThreadSummaryOut])

@@ -963,12 +963,24 @@ class CognitiveOSRuntime:
         return state
 
     def create_session(self, payload: CreatePlanningSessionRequest) -> PlanningSessionResponse:
-        session_id = self.persistence.create(
+        session_id = self.prepare_session(payload)
+        return self.run_prepared_session(session_id)
+
+    def prepare_session(self, payload: CreatePlanningSessionRequest) -> str:
+        """Persist a new formal session before its graph starts running."""
+
+        return self.persistence.create(
             thread_id=payload.thread_id or "",
             user_input=payload.user_input,
             context=payload.context,
         )
+
+    def run_prepared_session(self, session_id: str) -> PlanningSessionResponse:
+        """Run the canonical graph for an already-persisted formal session."""
+
         row = self.persistence.get_row(session_id)
+        if not row:
+            raise HTTPException(status_code=404, detail={"message": "planning session not found"})
         return self._invoke(self._state_from_row(row, action="create"))
 
     def answer_understanding(self, session_id: str, payload: PlanningSessionTextRequest) -> PlanningSessionResponse:

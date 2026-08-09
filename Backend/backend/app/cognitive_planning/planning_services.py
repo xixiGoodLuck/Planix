@@ -56,7 +56,7 @@ EXTERNAL_FACT_PATTERNS = (
 class SemanticMergeService:
     """Apply stable-key changes without leaking superseded values downstream."""
 
-    SECTIONS = {
+    SECTIONS = (
         "facts",
         "constraints",
         "preferences",
@@ -64,7 +64,7 @@ class SemanticMergeService:
         "assumptions",
         "unknowns",
         "conflicts",
-    }
+    )
 
     def apply(
         self,
@@ -90,6 +90,7 @@ class SemanticMergeService:
                 (position for position, item in enumerate(values) if item["key"] == operation.key),
                 None,
             )
+            normalized_operation = operation
             if operation.operation in {"add_item", "replace_success_signal"}:
                 if operation.item is None:
                     raise ValueError("semantic add requires an item")
@@ -97,11 +98,26 @@ class SemanticMergeService:
                     raise ValueError(f"semantic key already exists: {operation.item.key}")
                 values.append(operation.item.model_dump())
             elif operation.operation == "replace_item":
-                if index is None or operation.item is None:
-                    raise ValueError("semantic replacement target is missing")
-                old = values[index]
-                replacement = operation.item.model_copy(update={"supersedes": old["id"]})
-                values[index] = replacement.model_dump()
+                if operation.item is None:
+                    raise ValueError("semantic replacement requires an item")
+                if index is None:
+                    for candidate in self.SECTIONS:
+                        candidate_values = list(update[candidate])
+                        candidate_index = next(
+                            (position for position, item in enumerate(candidate_values) if item["key"] == operation.key),
+                            None,
+                        )
+                        if candidate_index is not None:
+                            section, values, index = candidate, candidate_values, candidate_index
+                            normalized_operation = operation.model_copy(update={"section": candidate})
+                            break
+                if index is None:
+                    values.append(operation.item.model_dump())
+                    normalized_operation = operation.model_copy(update={"operation": "add_item", "section": section})
+                else:
+                    old = values[index]
+                    replacement = operation.item.model_copy(update={"supersedes": old["id"]})
+                    values[index] = replacement.model_dump()
             elif operation.operation in {"remove_item", "reject_assumption"}:
                 if index is None:
                     raise ValueError("semantic removal target is missing")
@@ -118,7 +134,82 @@ class SemanticMergeService:
             else:
                 raise ValueError(f"unsupported semantic operation: {operation.operation}")
             update[section] = values
-            archive_operations.append(operation)
+            archive_operations.append(normalized_operation)
+
+        def remains_unknown(statement: str) -> bool:
+            return any(
+                marker in statement.casefold()
+                for marker in ("unknown", "unclear", "need to clarify", "need to determine", "未知", "不明确", "不清楚", "需要明确", "尚未")
+            )
+
+        current_answer_keys = {
+            operation.item.key
+            for operation in patch.operations
+            if operation.item is not None
+            and operation.item.source_type == "user_confirmed"
+            and operation.item.source_ref == patch.user_message_ref
+            and not operation.item.statement.strip().endswith(("?", "？"))
+            and not remains_unknown(operation.item.statement)
+        }
+        if (
+            current.next_question is not None
+            and current_answer_keys
+            and current.next_question.target_unknown_key not in current_answer_keys
+        ):
+            update["unknowns"] = [
+                item for item in update["unknowns"] if item["key"] != current.next_question.target_unknown_key
+            ]
+
+        resolved_unknowns: list[dict] = []
+        for item in update["unknowns"]:
+            statement = item["statement"].strip()
+            is_current_user_answer = (
+                item["source_type"] == "user_confirmed"
+                and item["source_ref"] == patch.user_message_ref
+                and not statement.endswith(("?", "？"))
+                and not remains_unknown(statement)
+            )
+            if not is_current_user_answer:
+                resolved_unknowns.append(item)
+                continue
+            key = item["key"].casefold()
+            if any(token in key for token in ("success", "outcome", "deliverable", "result")):
+                target = "success_signals"
+            elif any(token in key for token in ("preference", "style", "format", "method", "mode")):
+                target = "preferences"
+            else:
+                target = "facts"
+            resolved = {**item, "mutation_policy": "immutable", "confidence": 1}
+            target_values = list(update[target])
+            target_index = next((position for position, value in enumerate(target_values) if value["key"] == item["key"]), None)
+            if target_index is None:
+                target_values.append(resolved)
+            else:
+                target_values[target_index] = resolved
+            update[target] = target_values
+        update["unknowns"] = resolved_unknowns
+
+        if (
+            current.next_question is not None
+            and current.next_question.target_unknown_key == "success_criteria"
+            and not update["success_signals"]
+        ):
+            for source_section in ("facts", "constraints", "preferences"):
+                source_values = list(update[source_section])
+                success_index = next(
+                    (
+                        position
+                        for position, item in enumerate(source_values)
+                        if item["source_type"] == "user_confirmed"
+                        and item["source_ref"] == patch.user_message_ref
+                        and any(token in item["key"].casefold() for token in ("success", "outcome", "deliverable", "result"))
+                    ),
+                    None,
+                )
+                if success_index is not None:
+                    update["success_signals"] = [source_values.pop(success_index)]
+                    update[source_section] = source_values
+                    break
 
         update.update(
             {
@@ -153,24 +244,72 @@ class UnderstandingReadinessService:
         blocking_unknown_keys: Iterable[str] = (),
     ) -> UnderstandingSnapshot:
         blocking_keys = set(blocking_unknown_keys)
+        unknowns = list(snapshot.unknowns)
+        success_signals = list(snapshot.success_signals)
+        rounds_used = snapshot.readiness.question_rounds_used
+        question_budget = snapshot.readiness.question_budget
+        budget_exhausted = rounds_used >= question_budget
+        success_marker = next((item for item in unknowns if item.key == "success_criteria"), None)
+        if not success_signals and budget_exhausted:
+            if success_marker is None and rounds_used < 3:
+                chinese = bool(re.search(r"[\u3400-\u9fff]", snapshot.goal_summary))
+                marker = SemanticItem(
+                    id=new_artifact_id("unknown"),
+                    key="success_criteria",
+                    statement="需要明确一个可验证的完成结果。" if chinese else "A verifiable completion outcome is still needed.",
+                    sourceType="model_assumption",
+                    sourceRef="readiness:success_criteria",
+                    mutationPolicy="user_confirmation_required",
+                    blockingCategory="important",
+                )
+                readiness = snapshot.readiness.model_copy(
+                    update={
+                        "ready_for_confirmation": False,
+                        "blocking_reasons": ["success criteria are not verifiable"],
+                        "question_budget": min(3, rounds_used + 1),
+                    }
+                )
+                question = UnderstandingQuestion(
+                    question="你希望在多长时间内达到什么可验证的结果？" if chinese else "What verifiable result do you want to achieve, and by when?",
+                    whyThisQuestionMatters="结果和时间范围决定计划的任务量与验收标准。" if chinese else "The outcome and timeframe determine scope and acceptance criteria.",
+                    expectedDecisionImpact="用于确定计划周期、交付物和完成标准。" if chinese else "This sets the plan duration, deliverable, and completion standard.",
+                    priority="important",
+                    targetUnknownKey="success_criteria",
+                )
+                return snapshot.model_copy(update={"unknowns": [*unknowns, marker], "next_question": question, "readiness": readiness})
+            statement = (
+                f"完成一个可验证的阶段性成果，证明“{snapshot.goal_summary}”取得进展。"
+                if re.search(r"[\u3400-\u9fff]", snapshot.goal_summary)
+                else f"Complete a verifiable milestone demonstrating progress toward: {snapshot.goal_summary}"
+            )
+            success_signals.append(
+                SemanticItem(
+                    id=new_artifact_id("success"),
+                    key="success:bounded_default",
+                    statement=statement,
+                    sourceType="model_assumption",
+                    sourceRef="readiness:bounded_default",
+                    mutationPolicy="user_confirmation_required",
+                    blockingCategory="important",
+                )
+            )
+            unknowns = [item for item in unknowns if item.key != "success_criteria"]
+            blocking_keys.discard("success_criteria")
         reasons: list[str] = []
         if not snapshot.goal_summary.strip():
             reasons.append("core goal is missing")
-        if not snapshot.success_signals:
+        if not success_signals:
             reasons.append("success criteria are not verifiable")
         if snapshot.conflicts:
             reasons.append("understanding contains unresolved conflicts")
-        blocking = [item for item in snapshot.unknowns if item.key in blocking_keys]
+        blocking = [item for item in unknowns if item.key in blocking_keys]
         if blocking:
             reasons.extend(f"blocking unknown: {item.key}" for item in blocking)
-        budget_exhausted = (
-            snapshot.readiness.question_rounds_used >= snapshot.readiness.question_budget
-        )
         non_assumable = {"core_goal", "safety", "feasibility", "hard_constraint"}
         safety_blocked = any(item.blocking_category in non_assumable for item in blocking)
         ready = not reasons
         if budget_exhausted and blocking and not safety_blocked:
-            ready = not snapshot.conflicts and bool(snapshot.goal_summary and snapshot.success_signals)
+            ready = not snapshot.conflicts and bool(snapshot.goal_summary and success_signals)
             reasons = [reason for reason in reasons if not reason.startswith("blocking unknown:")]
         readiness = snapshot.readiness.model_copy(
             update={
@@ -179,7 +318,6 @@ class UnderstandingReadinessService:
             }
         )
         assumptions = list(snapshot.assumptions)
-        unknowns = list(snapshot.unknowns)
         if budget_exhausted and ready:
             existing = {item.key for item in assumptions}
             for item in blocking:
@@ -197,7 +335,13 @@ class UnderstandingReadinessService:
                     )
             unknowns = [item for item in unknowns if item.key not in blocking_keys or item.blocking_category in non_assumable]
         return snapshot.model_copy(
-            update={"readiness": readiness, "assumptions": assumptions, "unknowns": unknowns}
+            update={
+                "readiness": readiness,
+                "assumptions": assumptions,
+                "success_signals": success_signals,
+                "unknowns": unknowns,
+                "next_question": None if ready else snapshot.next_question,
+            }
         )
 
 

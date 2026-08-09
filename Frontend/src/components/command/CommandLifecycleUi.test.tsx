@@ -53,6 +53,18 @@ function renderThread(messages: CommandThreadMessage[], sending = false) {
 }
 
 describe('Pure V2 Command lifecycle UI', () => {
+  it('shows live node progress and elapsed time while planning is running', () => {
+    const progress: CommandThreadMessage = {
+      id: 'progress-1', role: 'card', kind: 'planning_progress', content: 'generate_plan', createdAt: 1,
+      payload: { sessionId: 'session-1', currentStage: 'generate_plan', elapsedSeconds: 18 }
+    };
+
+    const html = renderThread([statusMessage('planning'), progress], true);
+
+    expect(html).toContain(zhCN.command.planningNodePlan);
+    expect(html).toContain('18s');
+  });
+
   it('renders a fresh thread with only the goal composer and translated empty state', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const html = renderToStaticMarkup(

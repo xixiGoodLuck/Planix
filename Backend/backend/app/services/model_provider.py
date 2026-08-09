@@ -169,16 +169,18 @@ def provider_default_model(provider: str) -> str:
 
 
 def merge_openai_compatible_extra_body(payload: dict[str, Any], settings: EffectiveAiSettings) -> dict[str, Any]:
-    if settings.provider not in {"local", "custom"} or "qwen" not in settings.model.casefold():
+    if not settings.force_non_thinking:
         return payload
-    existing = payload.get("chat_template_kwargs")
-    payload["chat_template_kwargs"] = (
-        {"enable_thinking": False, **existing}
-        if isinstance(existing, dict)
-        else {"enable_thinking": False}
-    )
-    if settings.provider == "local":
-        payload.setdefault("reasoning_effort", "none")
+    if settings.provider == "deepseek" and settings.model.casefold().startswith("deepseek-v4-"):
+        payload["thinking"] = {"type": "disabled"}
+    if settings.provider in {"local", "custom"} and "qwen" in settings.model.casefold():
+        existing = payload.get("chat_template_kwargs")
+        payload["chat_template_kwargs"] = {
+            **(existing if isinstance(existing, dict) else {}),
+            "enable_thinking": False,
+        }
+        if settings.provider == "local":
+            payload["reasoning_effort"] = "none"
     return payload
 
 
@@ -380,23 +382,6 @@ class OpenAICompatibleProvider:
             payload["max_tokens"] = token_limit
         if request.response_format_json:
             payload["response_format"] = {"type": "json_object"}
-            # DeepSeek V4 defaults to thinking mode. The native plan stage is
-            # the longest structured stage and already receives an
-            # explicit JSON Schema plus local validation.  Disable hidden
-            # reasoning only there so large blueprints finish within the
-            # synchronous connection budget.
-            if (
-                self.provider == "deepseek"
-                and self.settings.model.startswith("deepseek-v4-")
-                and request.task_type == "planning_plan"
-                and request.feature.endswith(
-                    (
-                        "planning_blueprint_generation",
-                        "planning_plan_repair",
-                    )
-                )
-            ):
-                payload["thinking"] = {"type": "disabled"}
         return merge_openai_compatible_extra_body(payload, self.settings)
 
     def complete(self, request: ModelCallRequest) -> tuple[ModelCallResult | None, ModelCallError | None]:
