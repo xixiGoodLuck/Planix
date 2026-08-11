@@ -18,6 +18,8 @@ Thumbs.db
 node_modules/
 dist/
 coverage/
+!Backend/backend/app/learning/evidence/coverage/
+!Backend/backend/app/learning/evidence/coverage/*.py
 *.tsbuildinfo
 
 # Backend

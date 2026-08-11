@@ -11,7 +11,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 
-ALEMBIC_REVISION = "20260809_01"
+ALEMBIC_REVISION = "20260811_02"
 REQUIRED_TABLES = {
     "plans",
     "month_notes",
@@ -34,6 +34,13 @@ REQUIRED_TABLES = {
     "command_drafts",
     "command_actions",
     "command_approvals",
+    "learning_runs",
+    "learning_artifacts",
+    "learning_checkpoints",
+    "learning_resume_events",
+    "learning_video_resources",
+    "learning_transcript_sources",
+    "learning_transcript_segments",
 }
 
 

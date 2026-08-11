@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { AppRoute } from '../types';
 
-export const appRoutes: AppRoute[] = ['calendar', 'settings', 'command'];
-export const appMenuRoutes = ['calendar', 'settings'] as const satisfies readonly AppRoute[];
+export const appRoutes: AppRoute[] = ['calendar', 'learning', 'settings', 'command'];
+export const appMenuRoutes = ['learning', 'calendar', 'settings'] as const satisfies readonly AppRoute[];
 export const defaultRoute: AppRoute = 'command';
 
 export function normalizeAppRoute(candidate: string): AppRoute {

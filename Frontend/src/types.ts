@@ -1,6 +1,6 @@
 export type Language = 'zh-CN' | 'en-US';
 export type Lang = Language;
-export type AppRoute = 'calendar' | 'settings' | 'command';
+export type AppRoute = 'calendar' | 'learning' | 'settings' | 'command';
 export type CommandPermission = 'low' | 'medium' | 'high';
 
 export interface CommandMessage {

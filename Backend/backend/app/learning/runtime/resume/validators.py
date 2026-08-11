@@ -186,6 +186,13 @@ class LearningResumeCommitValidator:
             raise LearningResumeValidationError(
                 "resume audit refs do not match checkpoint refs"
             )
+        if (
+            audit_event.checkpoint_before != checkpoint_before
+            or audit_event.checkpoint_after != checkpoint_after
+        ):
+            raise LearningResumeValidationError(
+                "resume audit checkpoints do not match the committed transition"
+            )
 
     def _validate_lineage(
         self,

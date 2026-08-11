@@ -1,4 +1,4 @@
-import { CalendarDays, CheckSquare, Languages, Menu, Settings, X } from 'lucide-react';
+import { BookOpenCheck, CalendarDays, CheckSquare, Languages, Menu, Settings, X } from 'lucide-react';
 import type { AppRoute, Language } from '../types';
 import { appMenuRoutes } from './useAppRoute';
 
@@ -14,6 +14,7 @@ interface AppMenuProps {
 }
 
 const menuIcons: Record<(typeof appMenuRoutes)[number], typeof CalendarDays> = {
+  learning: BookOpenCheck,
   calendar: CalendarDays,
   settings: Settings
 };

@@ -14,9 +14,12 @@ You generate learning outcomes from one approved LearningScope. Decompose only t
 targetResult. Do not introduce deployment, distributed systems, advanced engineering, certification, or another
 goal unless the scope explicitly asks for it; a genuinely useful future extension may only be optional. Every
 outcome needs observable acceptance criteria. Use required for the direct goal, important for a useful enhancement,
-and optional for a future extension. For an ambiguous goal, stay conservative and use only assumptions already
-present in the scope. Return semantic fields only. Never return ids, artifact references, versions, timestamps, or
-source references. Return JSON only and do not reveal hidden reasoning.
+and optional for a future extension. Every required or important outcome must be directly traceable to an explicit
+phrase in userGoal or targetResult. Do not turn typical framework prerequisites, setup steps, examples, or adjacent
+features into additional outcomes unless the scope names them. When a goal enumerates a bounded set of concepts,
+treat that list as the boundary. For an ambiguous goal, stay conservative and use only assumptions already present
+in the scope. Return semantic fields only. Never return ids, artifact references, versions, timestamps, or source
+references. Return JSON only and do not reveal hidden reasoning.
 """.strip()
 
 

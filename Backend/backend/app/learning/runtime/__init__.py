@@ -1,8 +1,10 @@
 from .artifact_store import (
     ArtifactStore,
     ArtifactStoreError,
+    ArtifactVersionConflict,
     CheckpointStore,
     InMemoryArtifactStore,
+    LearningCheckpointConflict,
 )
 from .contracts import (
     LearningArtifactEnvelope,
@@ -36,16 +38,22 @@ from .resume import (
     ResumeExecutionResult,
     ValidatedStageContext,
 )
-from .storage import LearningArtifactRepository, PostgresArtifactStore
+from .storage import (
+    LearningArtifactRepository,
+    PostgresArtifactStore,
+    PostgresLearningArtifactRepository,
+)
 
 __all__ = [
     "ArtifactStore",
     "ArtifactStoreError",
+    "ArtifactVersionConflict",
     "ArtifactBundle",
     "CheckpointStore",
     "InMemoryArtifactStore",
     "LearningArtifactEnvelope",
     "LearningArtifactRepository",
+    "LearningCheckpointConflict",
     "LearningProgressEvent",
     "LearningRunResult",
     "LearningRunCheckpoint",
@@ -66,6 +74,7 @@ __all__ = [
     "LearningStage",
     "LearningStageRegistry",
     "PostgresArtifactStore",
+    "PostgresLearningArtifactRepository",
     "ProgressEventSink",
     "ResumeDecision",
     "ResumeCommitService",

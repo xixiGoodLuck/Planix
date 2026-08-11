@@ -4,6 +4,8 @@ from collections import defaultdict
 from collections.abc import Callable
 from contextlib import contextmanager
 from copy import deepcopy
+from hashlib import sha256
+import json
 from threading import RLock
 from typing import Any, Iterator, Protocol, cast
 
@@ -20,7 +22,12 @@ from ..contracts import (
     LearningScope,
 )
 from ..generators.base import artifact_ref
-from .contracts import LearningArtifactEnvelope, LearningRunCheckpoint
+from .contracts import (
+    LearningArtifactEnvelope,
+    LearningProgressEvent,
+    LearningRunCheckpoint,
+    LearningSessionState,
+)
 
 
 SUPPORTED_LEARNING_SCHEMA_VERSION = 1
@@ -28,6 +35,14 @@ ArtifactValidator = Callable[[LearningArtifact], None]
 
 
 class ArtifactStoreError(RuntimeError):
+    pass
+
+
+class ArtifactVersionConflict(ArtifactStoreError):
+    pass
+
+
+class LearningCheckpointConflict(ArtifactStoreError):
     pass
 
 
@@ -76,9 +91,33 @@ class ArtifactStore(Protocol):
 
 
 class CheckpointStore(Protocol):
-    def save_checkpoint(self, checkpoint: LearningRunCheckpoint) -> None: ...
+    def save_checkpoint(
+        self,
+        checkpoint: LearningRunCheckpoint,
+        *,
+        expected_version: int | None = None,
+    ) -> LearningRunCheckpoint: ...
 
     def get_checkpoint(self, run_id: str) -> LearningRunCheckpoint | None: ...
+
+
+class LearningRunStore(Protocol):
+    def save_run(
+        self,
+        state: LearningSessionState,
+        *,
+        run_fingerprint: str = "",
+    ) -> None: ...
+
+    def get_run(self, run_id: str) -> LearningSessionState | None: ...
+
+    def save_progress_event(
+        self,
+        run_id: str,
+        event: LearningProgressEvent,
+    ) -> None: ...
+
+    def get_progress_events(self, run_id: str) -> list[LearningProgressEvent]: ...
 
 
 _ARTIFACT_MODELS: dict[LearningArtifactType, type[LearningArtifact]] = {
@@ -123,6 +162,30 @@ def artifact_envelope(
     )
 
 
+def canonical_artifact_payload(envelope: LearningArtifactEnvelope) -> dict[str, Any]:
+    content = deepcopy(envelope.content)
+    content.pop("createdAt", None)
+    content.pop("created_at", None)
+    return {
+        "artifactType": envelope.artifact_type,
+        "artifactId": envelope.artifact_id,
+        "version": envelope.version,
+        "sessionId": envelope.session_id,
+        "schemaVersion": envelope.schema_version,
+        "content": content,
+    }
+
+
+def artifact_content_hash(envelope: LearningArtifactEnvelope) -> str:
+    canonical = json.dumps(
+        canonical_artifact_payload(envelope),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def artifact_from_envelope(envelope: LearningArtifactEnvelope) -> LearningArtifact:
     if envelope.schema_version != SUPPORTED_LEARNING_SCHEMA_VERSION:
         raise ArtifactStoreError(
@@ -157,6 +220,8 @@ class InMemoryArtifactStore:
         self._latest: dict[tuple[str, str], LearningArtifactRef] = {}
         self._checkpoints: dict[str, LearningRunCheckpoint] = {}
         self._resume_events: dict[str, list[Any]] = defaultdict(list)
+        self._runs: dict[str, LearningSessionState] = {}
+        self._progress_events: dict[str, list[LearningProgressEvent]] = defaultdict(list)
         self._lock = RLock()
 
     @contextmanager
@@ -167,6 +232,8 @@ class InMemoryArtifactStore:
                 deepcopy(self._latest),
                 deepcopy(self._checkpoints),
                 deepcopy(self._resume_events),
+                deepcopy(self._runs),
+                deepcopy(self._progress_events),
             )
             try:
                 yield self
@@ -176,6 +243,8 @@ class InMemoryArtifactStore:
                     self._latest,
                     self._checkpoints,
                     self._resume_events,
+                    self._runs,
+                    self._progress_events,
                 ) = snapshot
                 raise
 
@@ -193,7 +262,7 @@ class InMemoryArtifactStore:
             existing = versions.get(artifact.version)
             if existing is not None:
                 if existing.model_dump(mode="json") != envelope.model_dump(mode="json"):
-                    raise ArtifactStoreError(
+                    raise ArtifactVersionConflict(
                         "an artifact id/version cannot be overwritten with different content"
                     )
                 return ref
@@ -310,9 +379,23 @@ class InMemoryArtifactStore:
                 self._refresh_latest(session_id, ref.artifact_type)
                 return True
 
-    def save_checkpoint(self, checkpoint: LearningRunCheckpoint) -> None:
+    def save_checkpoint(
+        self,
+        checkpoint: LearningRunCheckpoint,
+        *,
+        expected_version: int | None = None,
+    ) -> LearningRunCheckpoint:
         with self._lock:
-            self._checkpoints[checkpoint.run_id] = checkpoint.model_copy(deep=True)
+            current = self._checkpoints.get(checkpoint.run_id)
+            current_version = current.checkpoint_version if current is not None else 0
+            if expected_version is not None and expected_version != current_version:
+                raise LearningCheckpointConflict(
+                    f"stale Learning checkpoint: expected {expected_version}, current {current_version}"
+                )
+            next_version = 1 if current is None else current_version + 1
+            stored = checkpoint.model_copy(update={"checkpoint_version": next_version})
+            self._checkpoints[checkpoint.run_id] = stored.model_copy(deep=True)
+            return stored.model_copy(deep=True)
 
     def get_checkpoint(self, run_id: str) -> LearningRunCheckpoint | None:
         with self._lock:
@@ -329,6 +412,36 @@ class InMemoryArtifactStore:
     def get_resume_events(self, run_id: str) -> list[Any]:
         with self._lock:
             return deepcopy(self._resume_events.get(run_id, []))
+
+    def save_run(
+        self,
+        state: LearningSessionState,
+        *,
+        run_fingerprint: str = "",
+    ) -> None:
+        del run_fingerprint
+        with self._lock:
+            self._runs[state.session_id] = state.model_copy(deep=True)
+
+    def get_run(self, run_id: str) -> LearningSessionState | None:
+        with self._lock:
+            state = self._runs.get(run_id)
+            return state.model_copy(deep=True) if state is not None else None
+
+    def save_progress_event(
+        self,
+        run_id: str,
+        event: LearningProgressEvent,
+    ) -> None:
+        with self._lock:
+            self._progress_events[run_id].append(event.model_copy(deep=True))
+
+    def get_progress_events(self, run_id: str) -> list[LearningProgressEvent]:
+        with self._lock:
+            return [
+                item.model_copy(deep=True)
+                for item in self._progress_events.get(run_id, [])
+            ]
 
     def _refresh_latest(
         self,
@@ -356,11 +469,16 @@ class InMemoryArtifactStore:
 __all__ = [
     "ArtifactStore",
     "ArtifactStoreError",
+    "ArtifactVersionConflict",
     "ArtifactValidator",
     "CheckpointStore",
+    "LearningCheckpointConflict",
+    "LearningRunStore",
     "InMemoryArtifactStore",
     "SUPPORTED_LEARNING_SCHEMA_VERSION",
     "artifact_envelope",
+    "artifact_content_hash",
+    "canonical_artifact_payload",
     "artifact_from_envelope",
     "artifact_type_for",
 ]

@@ -31,7 +31,7 @@ export function RivaShell(props: RivaShellProps) {
   } = props;
 
   return (
-    <div className={`riva-shell ${route === 'command' ? 'command-shell' : ''} ${pOnlyMode ? 'p-only-shell' : ''}`}>
+    <div className={`riva-shell ${route === 'command' ? 'command-shell' : ''} ${route === 'learning' ? 'learning-shell' : ''} ${pOnlyMode ? 'p-only-shell' : ''}`}>
       <AppMenu
         route={route}
         language={language}
@@ -43,7 +43,7 @@ export function RivaShell(props: RivaShellProps) {
         t={t}
       />
       <main className="riva-main">{children}</main>
-      {route !== 'command' && <InspectorPanel snapshot={inspector} t={t} />}
+      {route !== 'command' && route !== 'learning' && <InspectorPanel snapshot={inspector} t={t} />}
     </div>
   );
 }

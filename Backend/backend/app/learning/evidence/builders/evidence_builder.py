@@ -108,13 +108,17 @@ class EvidenceBuilder:
                         "videoTitle": segment.resource.title,
                         "evidence": [
                             {
-                                "index": evidence_index[item.id],
-                                "kind": item.kind,
-                                "supportedClaim": item.supported_claim,
-                                "sourceExcerpt": item.source_excerpt,
-                                "verificationStatus": item.verification_status,
+                                "index": evidence_index[persisted.id],
+                                "kind": source.kind,
+                                "supportedClaim": source.supported_claim,
+                                "sourceExcerpt": source.source_excerpt,
+                                "verificationStatus": source.verification_status,
                             }
-                            for item in segment.evidence
+                            for source, persisted in zip(
+                                segment.source.evidence,
+                                segment.evidence,
+                                strict=True,
+                            )
                         ],
                     }
                     for index, segment in enumerate(prepared_segments)
@@ -127,6 +131,29 @@ class EvidenceBuilder:
             response.value,
             len(prepared_segments),
         )
+        raw_transcript = [
+            value
+            for segment in prepared_segments
+            for source in segment.source.evidence
+            for value in (source.supported_claim, source.source_excerpt)
+            if value
+        ]
+        annotations = {
+            index: annotation.model_copy(
+                update={
+                    "content_summary": self._safe_generated_text(
+                        annotation.content_summary,
+                        raw_transcript,
+                        "Verified transcript segment.",
+                    ),
+                    "topics": self._safe_topics(
+                        annotation.topics,
+                        raw_transcript,
+                    ),
+                }
+            )
+            for index, annotation in annotations.items()
+        }
         segments = [
             self._build_segment(prepared, annotations[index])
             for index, prepared in enumerate(prepared_segments)
@@ -136,6 +163,7 @@ class EvidenceBuilder:
             knowledge_graph,
             segments,
             evidence,
+            raw_transcript,
         )
         graph_id = generated_id(
             "evidence-graph",
@@ -209,9 +237,9 @@ class EvidenceBuilder:
                         resourceFingerprint=resource.content_fingerprint,
                         segmentId=segment_id,
                         kind=item.kind,
-                        supportedClaim=item.supported_claim,
+                        supportedClaim="Verified transcript evidence for this segment.",
                         sourceRange=item.source_range,
-                        sourceExcerpt=item.source_excerpt,
+                        sourceExcerpt=None,
                         verificationStatus=item.verification_status,
                     )
                     for evidence_index, item in enumerate(source.evidence)
@@ -270,6 +298,7 @@ class EvidenceBuilder:
         knowledge_graph: KnowledgeGraph,
         segments: list[ContentSegment],
         evidence: list[SegmentEvidence],
+        raw_transcript: list[str],
     ) -> list[CoverageEdge]:
         coverage: list[CoverageEdge] = []
         for index, item in enumerate(draft.coverage):
@@ -312,10 +341,46 @@ class EvidenceBuilder:
                     coverageType=item.coverage_type,
                     coverageStrength=item.coverage_strength,
                     confidence=item.confidence,
-                    reason=item.reason,
+                    reason=EvidenceBuilder._safe_generated_text(
+                        item.reason,
+                        raw_transcript,
+                        "Coverage is supported by verified transcript evidence.",
+                    ),
                 )
             )
         return coverage
+
+    @staticmethod
+    def _safe_generated_text(
+        value: str,
+        raw_transcript: list[str],
+        fallback: str,
+    ) -> str:
+        normalized = value.strip()
+        for source in raw_transcript:
+            raw = source.strip()
+            if raw and (raw in normalized or normalized in raw):
+                return fallback
+        return normalized
+
+    @classmethod
+    def _safe_topics(
+        cls,
+        topics: list[str],
+        raw_transcript: list[str],
+    ) -> list[str]:
+        safe = [
+            value
+            for topic in topics
+            if (
+                value := cls._safe_generated_text(
+                    topic,
+                    raw_transcript,
+                    "",
+                )
+            )
+        ]
+        return safe or ["Verified content"]
 
 
 __all__ = [

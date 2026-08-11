@@ -152,7 +152,11 @@ class LearningPipeline:
         knowledge_result = self._stage(
             "learning_knowledge",
             "knowledge_graph",
-            lambda: self.knowledge_generator.generate(scope, capability_graph),
+            lambda: self.knowledge_generator.generate_validated(
+                scope,
+                capability_graph,
+                self.artifact_validator,
+            ),
         )
         knowledge_graph = knowledge_result.knowledge_graph
         self._stage(
@@ -175,7 +179,10 @@ class LearningPipeline:
         evidence_result = self._stage(
             "learning_evidence",
             "evidence_graph",
-            lambda: self.evidence_pipeline.generate(knowledge_graph),
+            lambda: self.evidence_pipeline.generate(
+                knowledge_graph,
+                preferred_urls=scope.resource_preference.user_supplied_urls,
+            ),
         )
         evidence_graph = evidence_result.evidence_graph
         self._stage(

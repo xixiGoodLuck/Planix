@@ -5,7 +5,7 @@ from typing import Any, Callable, TypeVar
 
 from pydantic import ValidationError
 
-from ...contracts import EvidenceGraph, KnowledgeGraph
+from ...contracts import EvidenceGraph, KnowledgeGraph, VideoResource
 from ...generators import (
     LearningGenerationError,
     LearningModelOutputError,
@@ -15,9 +15,14 @@ from ...validators import LearningArtifactValidationError
 from ..builders import EvidenceBuilder
 from ..providers import (
     ProviderVideoDocument,
+    VideoSearchHit,
     VideoSearchQuery,
     VideoEvidenceProvider,
     VideoSourceProviderError,
+)
+from ..transcript.providers.base import (
+    TranscriptProviderError,
+    TranscriptUnavailableError,
 )
 from ..validators import EvidenceValidator
 
@@ -60,14 +65,25 @@ class EvidenceGenerationPipeline:
         self.validator = validator or EvidenceValidator()
         self.builder = EvidenceBuilder(model)
 
-    def generate(self, knowledge_graph: KnowledgeGraph) -> EvidenceGenerationResult:
-        hits = self._stage(
-            "video_search",
-            lambda: self.provider.search(
-                VideoSearchQuery(
-                    knowledgeTerms=[node.name for node in knowledge_graph.nodes],
-                )
-            ),
+    def generate(
+        self,
+        knowledge_graph: KnowledgeGraph,
+        preferred_urls: list[str] | None = None,
+    ) -> EvidenceGenerationResult:
+        hits = (
+            self._stage(
+                "user_supplied_video",
+                lambda: self._resolve_preferred_urls(preferred_urls),
+            )
+            if preferred_urls
+            else self._stage(
+                "video_search",
+                lambda: self.provider.search(
+                    VideoSearchQuery(
+                        knowledgeTerms=[node.name for node in knowledge_graph.nodes],
+                    )
+                ),
+            )
         )
         if not hits:
             raise EvidencePipelineError(
@@ -78,11 +94,18 @@ class EvidenceGenerationPipeline:
             )
 
         documents: list[ProviderVideoDocument] = []
+        unavailable = 0
         for index, hit in enumerate(hits):
-            document = self._stage(
-                "video_metadata",
-                lambda hit=hit: self.provider.fetch_evidence(hit.external_id),
-            )
+            try:
+                document = self.provider.fetch_evidence(hit.external_id)
+            except TranscriptUnavailableError:
+                unavailable += 1
+                continue
+            except Exception as exc:
+                document = self._stage(
+                    "video_metadata",
+                    lambda exc=exc: self._raise(exc),
+                )
             if (
                 document.metadata.provider != hit.provider
                 or document.metadata.external_id != hit.external_id
@@ -94,6 +117,19 @@ class EvidenceGenerationPipeline:
                     field_path=f"providerDocuments.{index}",
                 )
             documents.append(document)
+
+        if not documents:
+            message = (
+                "TRANSCRIPT_UNAVAILABLE: no candidate has an active transcript"
+                if unavailable
+                else "provider returned no verified evidence documents"
+            )
+            raise EvidencePipelineError(
+                "transcript_lookup",
+                message,
+                validator_rule="transcript_required",
+                field_path="providerDocuments",
+            )
 
         self._stage(
             "provider_evidence_validation",
@@ -136,8 +172,44 @@ class EvidenceGenerationPipeline:
         return EvidenceGenerationResult(
             knowledge_graph=knowledge_graph,
             evidence_graph=graph,
-            model_usage=build_result.model_usage,
+            model_usage={
+                **build_result.model_usage,
+                "transcriptUnavailableCandidates": unavailable,
+            },
         )
+
+    def _resolve_preferred_urls(self, urls: list[str]) -> list[VideoSearchHit]:
+        resolver = getattr(self.provider, "resolve_url", None)
+        if not callable(resolver):
+            raise VideoSourceProviderError(
+                "video provider does not support verified user-supplied URLs"
+            )
+        hits: list[VideoSearchHit] = []
+        seen: set[tuple[str, str]] = set()
+        for value in urls:
+            resource = resolver(value)
+            if not isinstance(resource, VideoResource):
+                raise VideoSourceProviderError(
+                    "verified URL resolution must return one VideoResource"
+                )
+            key = (resource.provider, resource.external_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append(
+                VideoSearchHit(
+                    provider=resource.provider,
+                    externalId=resource.external_id,
+                    canonicalUrl=resource.canonical_url,
+                    title=resource.title,
+                    durationSeconds=resource.duration_seconds,
+                )
+            )
+        return hits
+
+    @staticmethod
+    def _raise(exc: Exception):
+        raise exc
 
     @staticmethod
     def _stage(stage: str, operation: Callable[[], ResultT]) -> ResultT:
@@ -155,6 +227,7 @@ class EvidenceGenerationPipeline:
         except (
             LearningGenerationError,
             LearningModelOutputError,
+            TranscriptProviderError,
             VideoSourceProviderError,
             ValidationError,
             ValueError,

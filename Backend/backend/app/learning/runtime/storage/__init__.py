@@ -4,10 +4,12 @@ from .postgres_store import (
     PostgresArtifactStore,
     validate_learning_artifact_repository,
 )
+from .postgres_repository import PostgresLearningArtifactRepository
 
 __all__ = [
     "LEARNING_ARTIFACT_REPOSITORY_NAMESPACE",
     "LearningArtifactRepository",
     "PostgresArtifactStore",
+    "PostgresLearningArtifactRepository",
     "validate_learning_artifact_repository",
 ]

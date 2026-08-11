@@ -8,6 +8,7 @@ from pydantic import Field
 
 from ...contracts import LearningArtifactRef, LearningContract
 from ..artifact_store import ArtifactStore, CheckpointStore
+from ..contracts import LearningRunCheckpoint
 from ..recovery import LearningRecoveryService
 from .execution import ValidatedStageContext
 from .resume_policy import LearningResumePolicy, ResumeDecision
@@ -26,6 +27,8 @@ class ResumeEvent(LearningContract):
     resume_stage: LearningStageName | None = None
     reason: str = Field(min_length=1)
     artifact_refs: list[LearningArtifactRef] = Field(default_factory=list)
+    checkpoint_before: LearningRunCheckpoint | None = None
+    checkpoint_after: LearningRunCheckpoint | None = None
     timestamp: str = Field(default_factory=_utc_now)
 
 

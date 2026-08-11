@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
+from contextlib import nullcontext
+from hashlib import sha256
+import json
 from typing import cast
 from uuid import uuid4
 
@@ -20,6 +23,7 @@ from .contracts import (
     LearningSessionStage,
     LearningSessionState,
 )
+from .recovery import LearningRecoveryService
 
 
 ProgressEventSink = Callable[[str, LearningProgressEvent], None]
@@ -70,6 +74,7 @@ class LearningRuntime:
             dict[LearningArtifactType, LearningArtifactRef],
         ] = {}
         self._events: dict[str, list[LearningProgressEvent]] = defaultdict(list)
+        self._run_fingerprints: dict[str, str] = {}
 
     def create_session(self, session_id: str | None = None) -> LearningSessionState:
         resolved_id = session_id or f"learning-session-{uuid4()}"
@@ -91,10 +96,81 @@ class LearningRuntime:
 
     def get_session(self, session_id: str) -> LearningSessionState | None:
         state = self._sessions.get(session_id)
+        if state is None:
+            load = getattr(self.artifact_store, "get_run", None)
+            if callable(load):
+                state = load(session_id)
+                if state is not None:
+                    checkpoint = (
+                        self.checkpoint_store.get_checkpoint(session_id)
+                        if self.checkpoint_store is not None
+                        else None
+                    )
+                    if checkpoint is not None and self.checkpoint_store is not None:
+                        recovered = LearningRecoveryService(
+                            self.artifact_store,
+                            self.checkpoint_store,
+                        ).recover(session_id)
+                        checkpoint = recovered.checkpoint
+                        if recovered.status == "failed":
+                            state.current_stage = "failed"
+                            state.status = "failed"
+                            state.error = LearningSessionError(
+                                stage="failed",
+                                errorType="LearningRecoveryError",
+                                message=recovered.error or "Learning recovery failed",
+                            )
+                            save_run = getattr(self.artifact_store, "save_run", None)
+                            if callable(save_run):
+                                save_run(state)
+                    self._sessions[session_id] = state.model_copy(deep=True)
+                    self._artifact_refs[session_id] = {
+                        ref.artifact_type: ref
+                        for ref in (checkpoint.artifact_refs if checkpoint else [])
+                    }
         return state.model_copy(deep=True) if state is not None else None
 
     def get_events(self, session_id: str) -> list[LearningProgressEvent]:
-        return [item.model_copy(deep=True) for item in self._events.get(session_id, [])]
+        events = self._events.get(session_id, [])
+        if not events:
+            load = getattr(self.artifact_store, "get_progress_events", None)
+            if callable(load):
+                events = load(session_id)
+                self._events[session_id] = [item.model_copy(deep=True) for item in events]
+        return [item.model_copy(deep=True) for item in events]
+
+    def get_result(self, session_id: str) -> LearningRunResult | None:
+        state = self.get_session(session_id)
+        if state is None or state.status != "completed":
+            return None
+        checkpoint = (
+            self.checkpoint_store.get_checkpoint(session_id)
+            if self.checkpoint_store is not None
+            else None
+        )
+        refs = {
+            ref.artifact_type: ref
+            for ref in (checkpoint.artifact_refs if checkpoint is not None else [])
+        }
+        plan_ref = refs.get("learning_content_plan")
+        quality_ref = refs.get("learning_quality_report")
+        if plan_ref is None or quality_ref is None:
+            return None
+        plan = self.artifact_store.get_artifact(session_id, plan_ref)
+        quality = self.artifact_store.get_artifact(session_id, quality_ref)
+        from ..contracts import LearningContentPlan, LearningQualityReport
+
+        if not isinstance(plan, LearningContentPlan) or not isinstance(
+            quality,
+            LearningQualityReport,
+        ):
+            return None
+        return LearningRunResult(
+            session=state,
+            artifacts=refs,
+            finalPlan=plan,
+            qualityReport=quality,
+        )
 
     def run(
         self,
@@ -105,7 +181,12 @@ class LearningRuntime:
         if session_id is None:
             state = self._sessions[self.create_session().session_id]
         elif session_id not in self._sessions:
-            state = self._sessions[self.create_session(session_id).session_id]
+            loaded = self.get_session(session_id)
+            state = (
+                self._sessions[self.create_session(session_id).session_id]
+                if loaded is None
+                else self._sessions[session_id]
+            )
         else:
             state = self._sessions[session_id]
         if state.status != "created":
@@ -114,6 +195,7 @@ class LearningRuntime:
             )
 
         artifacts = self._artifact_refs[state.session_id]
+        self._run_fingerprints[state.session_id] = self._scope_fingerprint(scope)
         try:
             self._start_stage(state, "understanding")
             self._save_artifact(state, scope, artifacts)
@@ -237,18 +319,21 @@ class LearningRuntime:
         artifact: LearningArtifact,
         artifacts: dict[LearningArtifactType, LearningArtifactRef],
     ) -> None:
-        ref = self.artifact_store.save_artifact(state.session_id, artifact)
-        artifacts[ref.artifact_type] = ref
-        state.current_artifact_ref = ref
-        self._emit(
-            state,
-            LearningProgressEvent(
-                eventType="artifact_saved",
-                stage=state.current_stage,
-                status="saved",
-                message=f"Validated artifact saved: {ref.artifact_type}.",
-            ),
-        )
+        atomic = getattr(self.artifact_store, "atomic", None)
+        boundary = atomic() if callable(atomic) else nullcontext()
+        with boundary:
+            ref = self.artifact_store.save_artifact(state.session_id, artifact)
+            artifacts[ref.artifact_type] = ref
+            state.current_artifact_ref = ref
+            self._emit(
+                state,
+                LearningProgressEvent(
+                    eventType="artifact_saved",
+                    stage=state.current_stage,
+                    status="saved",
+                    message=f"Validated artifact saved: {ref.artifact_type}.",
+                ),
+            )
 
     def _emit(
         self,
@@ -256,25 +341,49 @@ class LearningRuntime:
         event: LearningProgressEvent,
     ) -> None:
         state.updated_at = event.timestamp
+        atomic = getattr(self.artifact_store, "atomic", None)
+        boundary = atomic() if callable(atomic) else nullcontext()
+        with boundary:
+            save_run = getattr(self.artifact_store, "save_run", None)
+            if callable(save_run):
+                save_run(
+                    state,
+                    run_fingerprint=self._run_fingerprints.get(state.session_id, ""),
+                )
+            if self.checkpoint_store is not None:
+                self.checkpoint_store.save_checkpoint(
+                    LearningRunCheckpoint(
+                        runId=state.session_id,
+                        currentStage=state.current_stage,
+                        status=state.status,
+                        artifactRefs=list(
+                            self._artifact_refs.get(state.session_id, {}).values()
+                        ),
+                        lastSuccessfulStage=(
+                            state.completed_stages[-1]
+                            if state.completed_stages
+                            else None
+                        ),
+                    )
+                )
+            save_event = getattr(self.artifact_store, "save_progress_event", None)
+            if callable(save_event):
+                save_event(state.session_id, event)
         self._events[state.session_id].append(event)
         if self.event_sink is not None:
             self.event_sink(state.session_id, event.model_copy(deep=True))
-        if self.checkpoint_store is not None:
-            self.checkpoint_store.save_checkpoint(
-                LearningRunCheckpoint(
-                    runId=state.session_id,
-                    currentStage=state.current_stage,
-                    status=state.status,
-                    artifactRefs=list(
-                        self._artifact_refs.get(state.session_id, {}).values()
-                    ),
-                    lastSuccessfulStage=(
-                        state.completed_stages[-1]
-                        if state.completed_stages
-                        else None
-                    ),
-                )
-            )
+
+    @staticmethod
+    def _scope_fingerprint(scope: LearningScope) -> str:
+        payload = scope.model_dump(mode="json", by_alias=True)
+        payload.pop("createdAt", None)
+        canonical = json.dumps(
+            {"scope": payload, "runtimeVersion": "learning-runtime-v1"},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return "sha256:" + sha256(canonical.encode("utf-8")).hexdigest()
 
 
 __all__ = [

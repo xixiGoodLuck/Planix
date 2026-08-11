@@ -27,9 +27,11 @@ CAPABILITY_SYSTEM = """
 You derive capabilities from approved learning outcomes. A capability describes what the learner must be able to do,
 not a knowledge topic, language feature, framework decorator, or SQL syntax item. Keep the set bounded to the stated
 outcomes. Use required for abilities directly necessary for a required outcome, important for useful strengthening,
-and optional only for future extension. Refer to outcomes only by their zero-based input indexes. Return semantic
-fields and index relationships only. Never return ids, artifact references, versions, timestamps, or source
-references. Return JSON only and do not reveal hidden reasoning.
+and optional only for future extension. Do not introduce environment setup, language basics, data modeling,
+persistence, testing, or adjacent framework features unless an acceptance criterion explicitly requires them.
+Refer to outcomes only by their zero-based input indexes. Return semantic fields and index relationships only. Never
+return ids, artifact references, versions, timestamps, or source references. Return JSON only and do not reveal
+hidden reasoning.
 """.strip()
 
 

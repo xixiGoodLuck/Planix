@@ -23,6 +23,7 @@ _SENSITIVE_VALIDATION_FIELDS = {
     "authorization",
     "clientsecret",
     "client_secret",
+    "content",
     "password",
     "secret",
 }
@@ -65,6 +66,9 @@ async def lifespan(_app: FastAPI):
             bootstrap.create_runtime,
             health_provider=bootstrap.health,
         )
+        learning.configure_learning_transcript_service(
+            bootstrap.transcript_registration_service()
+        )
         log = logger.info if report.status == "ready" else logger.warning
         log(
             "Planix Learning Runtime startup status=%s unavailable=%s",
@@ -78,6 +82,7 @@ async def lifespan(_app: FastAPI):
         yield
     finally:
         learning.shutdown_learning_runtime_manager()
+        learning.configure_learning_transcript_service(None)
         bootstrap.shutdown()
         close_db_pool()
 

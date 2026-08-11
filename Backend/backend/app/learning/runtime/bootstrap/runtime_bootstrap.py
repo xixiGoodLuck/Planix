@@ -5,9 +5,16 @@ from collections.abc import Callable
 from threading import RLock
 
 from ...evidence.providers import BilibiliProvider
+from ...evidence.transcript import (
+    LearningTranscriptRegistrationService,
+    LearningTranscriptRepository,
+    PersistentTranscriptProvider,
+    SubtitleFileTranscriptProvider,
+)
 from ...generators import RouterLearningModel
 from ..factory import LearningRuntimeConfig, LearningRuntimeFactory, RuntimeUnavailable
 from ..learning_runtime import LearningRuntime
+from ..storage import PostgresLearningArtifactRepository
 from .health_checks import learning_health_snapshot
 from .startup_checks import (
     StartupCheckReport,
@@ -25,12 +32,28 @@ def load_learning_runtime_config() -> LearningRuntimeConfig:
     )
     if environment not in {"development", "production"}:
         raise ValueError("PLANIX_LEARNING_ENVIRONMENT must be development or production")
+    repository = (
+        None
+        if environment == "development"
+        else PostgresLearningArtifactRepository()
+    )
+    video_provider = BilibiliProvider()
+    transcript_repository = (
+        None if environment == "development" else LearningTranscriptRepository()
+    )
+    transcript_provider = (
+        SubtitleFileTranscriptProvider()
+        if transcript_repository is None
+        else PersistentTranscriptProvider(transcript_repository)
+    )
     return LearningRuntimeConfig(
-        video_provider=BilibiliProvider(),
-        transcript_provider=None,
+        video_provider=video_provider,
+        transcript_provider=transcript_provider,
         artifact_store="memory" if environment == "development" else "postgres",
         model_provider=RouterLearningModel(),
         environment=environment,
+        artifact_repository=repository,
+        transcript_repository=transcript_repository,
     )
 
 
@@ -93,6 +116,21 @@ class LearningRuntimeBootstrap:
             )
         return learning_health_snapshot(report, transcript_provider)
 
+    def transcript_registration_service(
+        self,
+    ) -> LearningTranscriptRegistrationService | None:
+        with self._lock:
+            if (
+                self._config is None
+                or self._config.video_provider is None
+                or self._config.transcript_repository is None
+            ):
+                return None
+            return LearningTranscriptRegistrationService(
+                self._config.video_provider,
+                self._config.transcript_repository,
+            )
+
     def shutdown(self) -> None:
         with self._lock:
             self._close_components()
@@ -110,6 +148,7 @@ class LearningRuntimeBootstrap:
             self._config.transcript_provider,
             self._config.model_provider,
             self._config.artifact_repository,
+            self._config.transcript_repository,
         ):
             if component is None or id(component) in seen:
                 continue

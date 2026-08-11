@@ -8,6 +8,7 @@ export type { Language } from '../types';
 export type I18nNamespace = {
   common: Record<string, string>;
   shell: Record<string, string>;
+  learning: Record<string, string>;
   command: Record<string, string>;
   inspector: Record<string, string>;
   calendar: Record<string, string>;

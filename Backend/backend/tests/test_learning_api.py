@@ -165,6 +165,8 @@ def test_get_learning_result_returns_plan_and_quality(learning_api) -> None:
     assert response.status_code == 200
     assert payload["learning_content_plan"]["items"]
     assert payload["learning_quality_report"]["passed"] is True
+    assert payload["evidence_graph"]["resources"]
+    assert payload["evidence_graph"]["segments"]
 
 
 def test_failed_runtime_is_exposed_as_failed_status(learning_api) -> None:

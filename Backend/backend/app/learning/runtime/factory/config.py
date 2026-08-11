@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ...evidence.providers import VideoSourceProvider
-from ...evidence.transcript import TranscriptProvider
+from ...evidence.transcript import LearningTranscriptRepository, TranscriptProvider
 from ...generators import LearningSemanticModel
 from ..storage import LearningArtifactRepository
 
@@ -21,6 +21,7 @@ class LearningRuntimeConfig:
     model_provider: LearningSemanticModel | None
     environment: LearningEnvironment
     artifact_repository: LearningArtifactRepository | None = None
+    transcript_repository: LearningTranscriptRepository | None = None
 
 
 __all__ = [

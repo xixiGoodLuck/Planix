@@ -5,15 +5,16 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from threading import RLock
-from typing import Annotated, Callable
+from typing import Annotated, Callable, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ..learning.contracts import (
     ContentBudget,
     CurrentLevel,
+    EvidenceGraph,
     LanguagePreference,
     LearningAssumption,
     LearningContentPlan,
@@ -28,6 +29,14 @@ from ..learning.runtime import (
     LearningRuntimeError,
     LearningRuntimeFactory,
 )
+from ..learning.evidence.transcript import (
+    LearningTranscriptRegistrationService,
+    HARD_TRANSCRIPT_MAX_BYTES,
+    TranscriptConflict,
+    TranscriptRegistrationError,
+    TranscriptRepositoryError,
+    TranscriptSourceSummary,
+)
 
 
 router = APIRouter(prefix="/api/learning", tags=["learning"])
@@ -36,10 +45,24 @@ SSE_HEADERS = {
     "Connection": "keep-alive",
     "X-Accel-Buffering": "no",
 }
+TRANSCRIPT_REQUEST_HARD_BYTES = HARD_TRANSCRIPT_MAX_BYTES + 64 * 1024
 
 
 class LearningApiModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class LearningTranscriptCreateRequest(LearningApiModel):
+    video_url: str = Field(alias="videoUrl", min_length=1)
+    format: Literal["srt", "vtt"]
+    language: str = Field(default="", max_length=32)
+    content: str = Field(min_length=1)
+    source_name: str | None = Field(default=None, alias="sourceName", max_length=128)
+
+
+class LearningTranscriptRevokeResponse(LearningApiModel):
+    source_id: str
+    status: Literal["revoked"] = "revoked"
 
 
 class LearningRunPreferences(LearningApiModel):
@@ -47,7 +70,10 @@ class LearningRunPreferences(LearningApiModel):
     current_level: CurrentLevel = Field(default_factory=CurrentLevel)
     content_budget: ContentBudget = Field(default_factory=ContentBudget)
     language_preference: LanguagePreference = Field(default_factory=LanguagePreference)
-    resource_preference: ResourcePreference = Field(default_factory=ResourcePreference)
+    resource_preference: ResourcePreference = Field(
+        default_factory=ResourcePreference,
+        alias="resourcePreference",
+    )
     confirmed: bool = True
 
 
@@ -87,6 +113,7 @@ class LearningRunStatusResponse(LearningApiModel):
 class LearningRunResultResponse(LearningApiModel):
     learning_content_plan: LearningContentPlan
     learning_quality_report: LearningQualityReport
+    evidence_graph: EvidenceGraph
 
 
 LearningRuntimeBuilder = Callable[[], LearningRuntime]
@@ -136,16 +163,38 @@ class LearningRunManager:
         with self._lock:
             handle = self._runs.get(run_id)
         if handle is None:
-            raise KeyError(run_id)
+            runtime = self._runtime_factory()
+            if runtime.get_session(run_id) is None:
+                raise KeyError(run_id)
+            recovered = _LearningRunHandle(runtime=runtime)
+            with self._lock:
+                handle = self._runs.setdefault(run_id, recovered)
         return handle.runtime
 
     def get_result(self, run_id: str) -> LearningRunResult | None:
         with self._lock:
             handle = self._runs.get(run_id)
-            if handle is None:
-                raise KeyError(run_id)
-            result = handle.result
+        if handle is None:
+            self.get_runtime(run_id)
+            with self._lock:
+                handle = self._runs[run_id]
+        result = handle.result
+        if result is None:
+            result = handle.runtime.get_result(run_id)
+            if result is not None:
+                with self._lock:
+                    handle.result = result.model_copy(deep=True)
         return result.model_copy(deep=True) if result is not None else None
+
+    def get_evidence_graph(self, run_id: str) -> EvidenceGraph | None:
+        result = self.get_result(run_id)
+        if result is None:
+            return None
+        ref = result.artifacts.get("evidence_graph")
+        if ref is None:
+            return None
+        artifact = self.get_runtime(run_id).artifact_store.get_artifact(run_id, ref)
+        return artifact.model_copy(deep=True) if isinstance(artifact, EvidenceGraph) else None
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=True, cancel_futures=True)
@@ -224,10 +273,26 @@ _learning_runtime_factory = LearningRuntimeFactory(
     )
 )
 _learning_run_manager = LearningRunManager(_learning_runtime_factory)
+_learning_transcript_service: LearningTranscriptRegistrationService | None = None
 
 
 def get_learning_run_manager() -> LearningRunManager:
     return _learning_run_manager
+
+
+def get_learning_transcript_service() -> LearningTranscriptRegistrationService:
+    if _learning_transcript_service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Learning Transcript Registry is unavailable",
+        )
+    return _learning_transcript_service
+
+
+LearningTranscriptServiceDependency = Annotated[
+    LearningTranscriptRegistrationService,
+    Depends(get_learning_transcript_service),
+]
 
 
 def configure_learning_runtime_factory(
@@ -243,6 +308,13 @@ def configure_learning_runtime_factory(
         health_provider=health_provider,
     )
     previous.shutdown()
+
+
+def configure_learning_transcript_service(
+    service: LearningTranscriptRegistrationService | None,
+) -> None:
+    global _learning_transcript_service
+    _learning_transcript_service = service
 
 
 def shutdown_learning_runtime_manager() -> None:
@@ -275,6 +347,127 @@ def create_learning_run(
         return LearningRunCreateResponse(run_id=manager.create_run(payload))
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post(
+    "/transcripts",
+    response_model=TranscriptSourceSummary,
+    response_model_by_alias=False,
+    status_code=201,
+)
+async def register_learning_transcript(
+    request: Request,
+    service: LearningTranscriptServiceDependency,
+) -> TranscriptSourceSummary:
+    payload = await _bounded_transcript_request(request)
+    try:
+        source = service.register(
+            video_url=payload.video_url,
+            source_format=payload.format,
+            language=payload.language,
+            content=payload.content,
+            source_name=payload.source_name,
+        )
+        metadata = service.get_metadata(source.source_id)
+        if metadata is None:
+            raise TranscriptRepositoryError("registered transcript metadata is missing")
+        return metadata
+    except TranscriptConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except TranscriptRegistrationError as exc:
+        status_code = 413 if exc.error_type == "payload_too_large" else 400
+        raise HTTPException(
+            status_code=status_code,
+            detail={"message": exc.message, "errorType": exc.error_type},
+        ) from exc
+    except TranscriptRepositoryError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Learning Transcript Registry write failed",
+        ) from exc
+
+
+async def _bounded_transcript_request(
+    request: Request,
+) -> LearningTranscriptCreateRequest:
+    content_type = (
+        request.headers.get("content-type", "")
+        .split(";", 1)[0]
+        .strip()
+        .casefold()
+    )
+    if content_type != "application/json":
+        raise HTTPException(
+            status_code=415,
+            detail="Transcript registration requires application/json",
+        )
+    declared_length = request.headers.get("content-length", "").strip()
+    if declared_length:
+        try:
+            if int(declared_length) > TRANSCRIPT_REQUEST_HARD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Transcript request exceeds the hard size limit",
+                )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length") from exc
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > TRANSCRIPT_REQUEST_HARD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="Transcript request exceeds the hard size limit",
+            )
+    try:
+        decoded = bytes(body).decode("utf-8", errors="strict")
+        raw = json.loads(decoded)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Transcript request must be valid UTF-8 JSON",
+        ) from exc
+    try:
+        return LearningTranscriptCreateRequest.model_validate(raw)
+    except ValidationError as exc:
+        safe_errors = [
+            {
+                "loc": list(item.get("loc", ())),
+                "msg": item.get("msg", "invalid value"),
+                "type": item.get("type", "value_error"),
+            }
+            for item in exc.errors()
+        ]
+        raise HTTPException(status_code=422, detail=safe_errors) from exc
+
+
+@router.get(
+    "/transcripts/{source_id}",
+    response_model=TranscriptSourceSummary,
+    response_model_by_alias=False,
+)
+def get_learning_transcript(
+    source_id: str,
+    service: LearningTranscriptServiceDependency,
+) -> TranscriptSourceSummary:
+    metadata = service.get_metadata(source_id)
+    if metadata is None:
+        raise HTTPException(status_code=404, detail="Learning transcript not found")
+    return metadata
+
+
+@router.delete(
+    "/transcripts/{source_id}",
+    response_model=LearningTranscriptRevokeResponse,
+    response_model_by_alias=False,
+)
+def revoke_learning_transcript(
+    source_id: str,
+    service: LearningTranscriptServiceDependency,
+) -> LearningTranscriptRevokeResponse:
+    if not service.revoke(source_id):
+        raise HTTPException(status_code=404, detail="Learning transcript not found")
+    return LearningTranscriptRevokeResponse(source_id=source_id)
 
 
 @router.get("/runs/{run_id}", response_model=LearningRunStatusResponse)
@@ -365,9 +558,13 @@ def get_learning_run_result(
     result = manager.get_result(run_id)
     if result is None:
         raise HTTPException(status_code=409, detail="Learning run is not complete")
+    evidence_graph = manager.get_evidence_graph(run_id)
+    if evidence_graph is None:
+        raise HTTPException(status_code=409, detail="Learning evidence is unavailable")
     return LearningRunResultResponse(
         learning_content_plan=result.final_plan,
         learning_quality_report=result.quality_report,
+        evidence_graph=evidence_graph,
     )
 
 
@@ -382,9 +579,13 @@ __all__ = [
     "LearningRunCreateRequest",
     "LearningRunManager",
     "LearningRunPreferences",
+    "LearningTranscriptCreateRequest",
+    "LearningTranscriptRevokeResponse",
+    "configure_learning_transcript_service",
     "configure_learning_runtime_factory",
     "get_learning_health",
     "get_learning_run_manager",
+    "get_learning_transcript_service",
     "router",
     "shutdown_learning_runtime_manager",
 ]

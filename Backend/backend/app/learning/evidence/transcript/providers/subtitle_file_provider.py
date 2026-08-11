@@ -31,7 +31,7 @@ class _SubtitleSource:
 
 
 @dataclass(frozen=True)
-class _ParsedCue:
+class ParsedSubtitleCue:
     start_ms: int
     end_ms: int
     text: str
@@ -66,6 +66,7 @@ class SubtitleFileTranscriptProvider:
         suffix = Path(filename).suffix.casefold()
         if suffix not in {".srt", ".vtt"}:
             raise TranscriptProviderError("subtitle upload must be one .srt or .vtt file")
+        format_name: SubtitleFormat = suffix.removeprefix(".")  # type: ignore[assignment]
         text = self._decode(content)
         self._sources[resource.id] = _SubtitleSource(
             resource_id=resource.id,
@@ -73,7 +74,7 @@ class SubtitleFileTranscriptProvider:
             source_id=f"upload:{sha256(text.encode('utf-8')).hexdigest()}",
             source_name=Path(filename).name,
             language=language,
-            format=suffix.removeprefix("."),
+            format=format_name,
             content=text,
         )
 
@@ -127,7 +128,27 @@ class SubtitleFileTranscriptProvider:
         return True
 
     @classmethod
-    def _parse(cls, source: _SubtitleSource) -> list[_ParsedCue]:
+    def parse_upload(
+        cls,
+        format_name: SubtitleFormat,
+        content: str | bytes,
+    ) -> tuple[str, list[ParsedSubtitleCue]]:
+        if format_name not in {"srt", "vtt"}:
+            raise TranscriptProviderError("subtitle format must be srt or vtt")
+        text = cls._decode(content)
+        source = _SubtitleSource(
+            resource_id="parse-only",
+            fingerprint="parse-only",
+            source_id="parse-only",
+            source_name=f"transcript.{format_name}",
+            language="",
+            format=format_name,
+            content=text,
+        )
+        return text, cls._parse(source)
+
+    @classmethod
+    def _parse(cls, source: _SubtitleSource) -> list[ParsedSubtitleCue]:
         normalized = source.content.replace("\r\n", "\n").replace("\r", "\n")
         if source.format == "vtt":
             lines = normalized.lstrip("\ufeff").split("\n")
@@ -139,7 +160,7 @@ class SubtitleFileTranscriptProvider:
             normalized = normalized.lstrip("\ufeff")
             pattern = cls._SRT_TIME
 
-        cues: list[_ParsedCue] = []
+        cues: list[ParsedSubtitleCue] = []
         for block in re.split(r"\n\s*\n", normalized.strip()):
             lines = [line.strip() for line in block.split("\n") if line.strip()]
             if not lines:
@@ -160,7 +181,7 @@ class SubtitleFileTranscriptProvider:
             end_ms = cls._timestamp_ms(match.group("end"))
             if end_ms <= start_ms:
                 raise TranscriptProviderError("subtitle cue end must be after start")
-            cues.append(_ParsedCue(start_ms=start_ms, end_ms=end_ms, text=text))
+            cues.append(ParsedSubtitleCue(start_ms=start_ms, end_ms=end_ms, text=text))
         if not cues:
             raise TranscriptProviderError("subtitle source contains no cues")
         return cues
@@ -188,7 +209,7 @@ class SubtitleFileTranscriptProvider:
 
     @staticmethod
     def _integer_segments(
-        cues: list[_ParsedCue],
+        cues: list[ParsedSubtitleCue],
         source_id: str,
     ) -> list[TranscriptSegment]:
         groups: list[tuple[int, int, list[str]]] = []
@@ -218,6 +239,14 @@ class SubtitleFileTranscriptProvider:
             for index, (start, end, texts) in enumerate(groups)
         ]
 
+    @classmethod
+    def segments_from_cues(
+        cls,
+        cues: list[ParsedSubtitleCue],
+        source_id: str,
+    ) -> list[TranscriptSegment]:
+        return cls._integer_segments(cues, source_id)
+
     @staticmethod
     def _decode(content: str | bytes) -> str:
         if isinstance(content, str):
@@ -228,4 +257,8 @@ class SubtitleFileTranscriptProvider:
             raise TranscriptProviderError("subtitle file must be UTF-8 encoded") from exc
 
 
-__all__ = ["SubtitleFileTranscriptProvider"]
+__all__ = [
+    "ParsedSubtitleCue",
+    "SubtitleFileTranscriptProvider",
+    "SubtitleFormat",
+]

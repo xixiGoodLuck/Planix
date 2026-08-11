@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Iterable
 
 from ..contracts import (
@@ -178,7 +179,23 @@ class LearningArtifactValidator:
         capability_ids = {item.id for item in capability_graph.capabilities}
         outcome_ids = {item.id for item in capability_graph.outcomes}
         knowledge_ids = {item.id for item in graph.nodes}
+        knowledge_by_id = {item.id: item for item in graph.nodes}
+        normalized_names: dict[str, str] = {}
         for node in graph.nodes:
+            normalized_name = re.sub(
+                r"[^\w]+",
+                "",
+                node.name.casefold(),
+                flags=re.UNICODE,
+            )
+            previous_id = normalized_names.get(normalized_name)
+            if normalized_name and previous_id is not None:
+                self._fail(
+                    "duplicate_knowledge_name",
+                    f"knowledgeGraph.nodes.{node.id}.name",
+                    f"normalized name duplicates knowledge node {previous_id}",
+                )
+            normalized_names[normalized_name] = node.id
             missing_capabilities = set(node.capability_refs) - capability_ids
             missing_outcomes = set(node.outcome_refs) - outcome_ids
             if missing_capabilities:
@@ -202,7 +219,30 @@ class LearningArtifactValidator:
                     "required knowledge has no capability/outcome source",
                 )
 
-        directed_edges: list[tuple[str, str]] = []
+        required_capabilities = {
+            item.id
+            for item in capability_graph.capabilities
+            if item.importance == "required"
+        }
+        required_knowledge_coverage = {
+            capability_id
+            for node in graph.nodes
+            if node.importance == "required"
+            for capability_id in node.capability_refs
+        }
+        missing_required_capabilities = sorted(
+            required_capabilities - required_knowledge_coverage
+        )
+        if missing_required_capabilities:
+            target = missing_required_capabilities[0]
+            self._fail(
+                "required_capability_coverage",
+                f"capabilityGraph.capabilities.{target}",
+                f"required capability {target} has no required knowledge",
+            )
+
+        prerequisite_edges: list[tuple[str, str]] = []
+        containment_edges: list[tuple[str, str]] = []
         for index, edge in enumerate(graph.edges):
             if edge.source_knowledge_id not in knowledge_ids or edge.target_knowledge_id not in knowledge_ids:
                 self._fail(
@@ -211,13 +251,56 @@ class LearningArtifactValidator:
                     "knowledge edge references a missing node",
                 )
             if edge.source_knowledge_id == edge.target_knowledge_id:
-                self._fail(
-                    "knowledge_cycle",
-                    f"knowledgeGraph.edges.{index}",
-                    "knowledge cannot depend on itself",
+                rule = (
+                    "knowledge_cycle_prerequisite"
+                    if edge.relation == "prerequisite"
+                    else "knowledge_cycle_containment"
+                    if edge.relation == "part_of"
+                    else "invalid_relation_semantics"
                 )
-            directed_edges.append((edge.source_knowledge_id, edge.target_knowledge_id))
-        self._assert_acyclic(knowledge_ids, directed_edges, "knowledge_cycle", "knowledgeGraph.edges")
+                self._fail(
+                    rule,
+                    f"knowledgeGraph.edges.{index}",
+                    f"{edge.relation} cannot reference the same knowledge node",
+                )
+            source = knowledge_by_id[edge.source_knowledge_id]
+            target = knowledge_by_id[edge.target_knowledge_id]
+            if (
+                edge.relation == "prerequisite"
+                and source.importance == "optional"
+                and target.importance == "required"
+            ):
+                self._fail(
+                    "invalid_relation_semantics",
+                    f"knowledgeGraph.edges.{index}",
+                    "required knowledge cannot depend on an optional prerequisite",
+                )
+            if edge.relation == "optional_extension" and target.importance != "optional":
+                self._fail(
+                    "invalid_relation_semantics",
+                    f"knowledgeGraph.edges.{index}",
+                    "optional_extension must target optional knowledge",
+                )
+            if edge.relation == "prerequisite":
+                prerequisite_edges.append(
+                    (edge.source_knowledge_id, edge.target_knowledge_id)
+                )
+            elif edge.relation == "part_of":
+                containment_edges.append(
+                    (edge.source_knowledge_id, edge.target_knowledge_id)
+                )
+        self._assert_acyclic(
+            knowledge_ids,
+            prerequisite_edges,
+            "knowledge_cycle_prerequisite",
+            "knowledgeGraph.edges.prerequisite",
+        )
+        self._assert_acyclic(
+            knowledge_ids,
+            containment_edges,
+            "knowledge_cycle_containment",
+            "knowledgeGraph.edges.part_of",
+        )
 
     def validate_evidence_graph(self, knowledge_graph: KnowledgeGraph, graph: EvidenceGraph) -> None:
         self._assert_ref(
@@ -686,7 +769,46 @@ class LearningArtifactValidator:
                 if indegree[target] == 0:
                     ready.append(target)
         if visited != len(nodes):
-            raise LearningArtifactValidationError(rule, path, "directed dependency graph contains a cycle")
+            cycle = LearningArtifactValidator._find_cycle(nodes, edges)
+            cycle_path = " -> ".join(cycle) if cycle else "unknown"
+            raise LearningArtifactValidationError(
+                rule,
+                path,
+                f"directed dependency graph contains cycle path: {cycle_path}",
+            )
+
+    @staticmethod
+    def _find_cycle(
+        nodes: set[str],
+        edges: list[tuple[str, str]],
+    ) -> list[str]:
+        outgoing = {node: [] for node in nodes}
+        for source, target in edges:
+            outgoing[source].append(target)
+        state: dict[str, int] = {}
+        stack: list[str] = []
+
+        def visit(node: str) -> list[str]:
+            state[node] = 1
+            stack.append(node)
+            for target in sorted(outgoing[node]):
+                if state.get(target, 0) == 0:
+                    cycle = visit(target)
+                    if cycle:
+                        return cycle
+                elif state.get(target) == 1:
+                    start = stack.index(target)
+                    return [*stack[start:], target]
+            stack.pop()
+            state[node] = 2
+            return []
+
+        for node in sorted(nodes):
+            if state.get(node, 0) == 0:
+                cycle = visit(node)
+                if cycle:
+                    return cycle
+        return []
 
     @staticmethod
     def _fail(rule: str, path: str, message: str) -> None:

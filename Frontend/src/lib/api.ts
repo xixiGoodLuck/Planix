@@ -47,10 +47,10 @@ export function apiErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function apiUrl(path: string) { return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`; }
+export function apiUrl(path: string) { return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`; }
 function isJson(res: Response) { return (res.headers.get('content-type') || '').includes('application/json'); }
 
-async function callApi<T>(method: string, path: string, body?: unknown, timeoutMs = 45000): Promise<T> {
+export async function callApi<T>(method: string, path: string, body?: unknown, timeoutMs = 45000): Promise<T> {
   if (isTauri) {
     const result = await invoke<{ status: number; body: string }>('proxy_api', { req: { method, path, body: body === undefined ? '' : JSON.stringify(body) } });
     if (result.status < 200 || result.status >= 300) {

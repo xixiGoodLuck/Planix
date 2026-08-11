@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { CalendarPage } from './pages/CalendarPage';
 import { CommandPage } from './pages/CommandPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { LearningWorkspace } from './features/learning/pages/LearningWorkspace';
 import { RivaShell } from './shell/RivaShell';
 import { useAppRoute } from './shell/useAppRoute';
 import {
@@ -145,6 +146,7 @@ export function App() {
         onCompletionChange={(id, value) => { updateDay(selectedDate, (plans) => plans.map((plan) => plan.id === id ? { ...plan, completion: value } : plan)); void updateRemotePlan(id, { completion: value }); }} t={t}
       />}
       {route === 'settings' && <SettingsPage onSettingsChange={setAiSettings} t={t} />}
+      {route === 'learning' && <LearningWorkspace language={language} t={t} />}
       {route === 'command' && <CommandPage t={t} />}
     </RivaShell>
   );

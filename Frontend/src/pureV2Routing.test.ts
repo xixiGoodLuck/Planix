@@ -14,8 +14,8 @@ describe('Pure Planix V2 frontend routing', () => {
 
   it('keeps Command as default and exposes no retired runtime pages', () => {
     expect(defaultRoute).toBe('command');
-    expect(appRoutes).toEqual(['calendar', 'settings', 'command']);
-    expect(appMenuRoutes).toEqual(['calendar', 'settings']);
+    expect(appRoutes).toEqual(['calendar', 'learning', 'settings', 'command']);
+    expect(appMenuRoutes).toEqual(['learning', 'calendar', 'settings']);
     expect(normalizeAppRoute('notes')).toBe('command');
   });
 });

@@ -209,6 +209,25 @@ class BilibiliProvider:
             availability="available" if data.get("state") == 0 else "unavailable",
         )
 
+    def resolve_url(self, value: str) -> VideoResource:
+        bvid = self.external_id_from_url(value)
+        self._search_urls[bvid] = self._validate_video_url(value, bvid)
+        return self.fetch_metadata(bvid)
+
+    @classmethod
+    def external_id_from_url(cls, value: str) -> str:
+        parsed = urlsplit(str(value or "").strip())
+        if (
+            parsed.scheme not in {"http", "https"}
+            or (parsed.hostname or "").casefold()
+            not in {"bilibili.com", "www.bilibili.com"}
+        ):
+            raise VideoSourceProviderError("video URL must use bilibili.com")
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) != 2 or parts[0].casefold() != "video":
+            raise VideoSourceProviderError("Bilibili video URL must contain one BV id")
+        return cls._validate_bvid(parts[1])
+
     def _search(self, keyword: str, page_size: int) -> dict[str, Any]:
         params: dict[str, Any] = {
             "search_type": "video",

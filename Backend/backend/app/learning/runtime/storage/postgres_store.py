@@ -10,13 +10,21 @@ from ...contracts import (
     LearningArtifactType,
 )
 from ..artifact_store import (
+    ArtifactVersionConflict,
     ArtifactStoreError,
     ArtifactValidator,
+    LearningCheckpointConflict,
     SUPPORTED_LEARNING_SCHEMA_VERSION,
+    artifact_content_hash,
     artifact_envelope,
     artifact_from_envelope,
 )
-from ..contracts import LearningArtifactEnvelope, LearningRunCheckpoint
+from ..contracts import (
+    LearningArtifactEnvelope,
+    LearningProgressEvent,
+    LearningRunCheckpoint,
+    LearningSessionState,
+)
 
 
 StoredObject = LearningArtifactEnvelope | LearningRunCheckpoint | Mapping[str, Any]
@@ -24,7 +32,7 @@ LEARNING_ARTIFACT_REPOSITORY_NAMESPACE = "learning_artifacts"
 
 
 class LearningArtifactRepository(Protocol):
-    """Dedicated Learning persistence boundary for a future PostgreSQL adapter."""
+    """Dedicated Learning persistence boundary."""
 
     repository_namespace: str
     schema_version: int
@@ -54,7 +62,22 @@ class LearningArtifactRepository(Protocol):
         version: int,
     ) -> None: ...
 
-    def save_checkpoint(self, checkpoint: LearningRunCheckpoint) -> None: ...
+    def invalidate(
+        self,
+        session_id: str,
+        artifact_type: LearningArtifactType,
+        artifact_id: str,
+        version: int,
+        *,
+        reason: str,
+    ) -> None: ...
+
+    def save_checkpoint(
+        self,
+        checkpoint: LearningRunCheckpoint,
+        *,
+        expected_version: int | None = None,
+    ) -> LearningRunCheckpoint: ...
 
     def get_checkpoint(self, run_id: str) -> StoredObject | None: ...
 
@@ -63,6 +86,23 @@ class LearningArtifactRepository(Protocol):
     def save_resume_event(self, event: Any) -> None: ...
 
     def get_resume_events(self, run_id: str) -> list[Any]: ...
+
+    def save_run(
+        self,
+        state: LearningSessionState,
+        *,
+        run_fingerprint: str = "",
+    ) -> None: ...
+
+    def get_run(self, run_id: str) -> StoredObject | None: ...
+
+    def save_progress_event(
+        self,
+        run_id: str,
+        event: LearningProgressEvent,
+    ) -> None: ...
+
+    def get_progress_events(self, run_id: str) -> list[StoredObject]: ...
 
 
 def validate_learning_artifact_repository(
@@ -90,8 +130,7 @@ class PostgresArtifactStore:
     """ArtifactStore adapter with no SQL or production-table assumptions.
 
     The injected repository owns PostgreSQL transactions and must enforce a unique
-    key on ``session_id, artifact_type, artifact_id, version``. This adapter stays
-    isolated until a production repository is explicitly approved.
+    key on ``session_id, artifact_type, artifact_id, version``.
     """
 
     def __init__(self, repository: LearningArtifactRepository):
@@ -101,8 +140,12 @@ class PostgresArtifactStore:
     @contextmanager
     def atomic(self) -> Iterator["PostgresArtifactStore"]:
         try:
-            with self.repository.transaction():
+            operation = getattr(self.repository, "transaction", None)
+            if not callable(operation):
                 yield self
+            else:
+                with operation():
+                    yield self
         except Exception as exc:
             if isinstance(exc, ArtifactStoreError):
                 raise
@@ -122,14 +165,16 @@ class PostgresArtifactStore:
         )
         if existing_raw is not None:
             existing = self._as_envelope(existing_raw)
-            if existing.model_dump(mode="json") != envelope.model_dump(mode="json"):
-                raise ArtifactStoreError(
+            if artifact_content_hash(existing) != artifact_content_hash(envelope):
+                raise ArtifactVersionConflict(
                     "an artifact id/version cannot be overwritten with different content"
                 )
         else:
             try:
                 self._repo_save(envelope.model_copy(deep=True))
             except Exception as exc:
+                if isinstance(exc, ArtifactVersionConflict):
+                    raise
                 concurrent_raw = self._repo_get(
                     session_id,
                     envelope.artifact_type,
@@ -139,8 +184,8 @@ class PostgresArtifactStore:
                 if concurrent_raw is None:
                     raise ArtifactStoreError("persistent artifact insert failed") from exc
                 concurrent = self._as_envelope(concurrent_raw)
-                if concurrent.model_dump(mode="json") != envelope.model_dump(mode="json"):
-                    raise ArtifactStoreError(
+                if artifact_content_hash(concurrent) != artifact_content_hash(envelope):
+                    raise ArtifactVersionConflict(
                         "an artifact id/version cannot be overwritten with different content"
                     ) from exc
         return LearningArtifactRef(
@@ -239,19 +284,50 @@ class PostgresArtifactStore:
             if validator is not None:
                 validator(artifact)
             return False
-        except Exception:
-            self._repo_delete(
-                session_id,
-                ref.artifact_type,
-                ref.artifact_id,
-                ref.version,
-            )
+        except Exception as exc:
+            invalidate = getattr(self.repository, "invalidate", None)
+            if callable(invalidate):
+                invalidate(
+                    session_id,
+                    ref.artifact_type,
+                    ref.artifact_id,
+                    ref.version,
+                    reason=str(exc) or type(exc).__name__,
+                )
+            else:
+                self._repo_delete(
+                    session_id,
+                    ref.artifact_type,
+                    ref.artifact_id,
+                    ref.version,
+                )
             return True
 
-    def save_checkpoint(self, checkpoint: LearningRunCheckpoint) -> None:
+    def save_checkpoint(
+        self,
+        checkpoint: LearningRunCheckpoint,
+        *,
+        expected_version: int | None = None,
+    ) -> LearningRunCheckpoint:
         try:
-            self.repository.save_checkpoint(checkpoint.model_copy(deep=True))
+            operation = self.repository.save_checkpoint
+            if expected_version is None:
+                raw = operation(checkpoint.model_copy(deep=True))
+            else:
+                raw = operation(
+                    checkpoint.model_copy(deep=True),
+                    expected_version=expected_version,
+                )
+            if raw is None:
+                return checkpoint.model_copy(deep=True)
+            return (
+                raw
+                if isinstance(raw, LearningRunCheckpoint)
+                else LearningRunCheckpoint.model_validate(raw)
+            ).model_copy(deep=True)
         except Exception as exc:
+            if isinstance(exc, LearningCheckpointConflict):
+                raise
             raise ArtifactStoreError("persistent checkpoint save failed") from exc
 
     def get_checkpoint(self, run_id: str) -> LearningRunCheckpoint | None:
@@ -278,6 +354,63 @@ class PostgresArtifactStore:
 
     def get_resume_events(self, run_id: str) -> list[Any]:
         return self._repo_get_resume_events(run_id)
+
+    def save_run(
+        self,
+        state: LearningSessionState,
+        *,
+        run_fingerprint: str = "",
+    ) -> None:
+        operation = getattr(self.repository, "save_run", None)
+        if not callable(operation):
+            return
+        try:
+            operation(state.model_copy(deep=True), run_fingerprint=run_fingerprint)
+        except Exception as exc:
+            raise ArtifactStoreError("persistent Learning run save failed") from exc
+
+    def get_run(self, run_id: str) -> LearningSessionState | None:
+        operation = getattr(self.repository, "get_run", None)
+        if not callable(operation):
+            return None
+        raw = operation(run_id)
+        if raw is None:
+            return None
+        try:
+            return (
+                raw
+                if isinstance(raw, LearningSessionState)
+                else LearningSessionState.model_validate(raw)
+            ).model_copy(deep=True)
+        except Exception as exc:
+            raise ArtifactStoreError("stored Learning run is invalid") from exc
+
+    def save_progress_event(
+        self,
+        run_id: str,
+        event: LearningProgressEvent,
+    ) -> None:
+        operation = getattr(self.repository, "save_progress_event", None)
+        if not callable(operation):
+            return
+        try:
+            operation(run_id, event.model_copy(deep=True))
+        except Exception as exc:
+            raise ArtifactStoreError("persistent Learning event save failed") from exc
+
+    def get_progress_events(self, run_id: str) -> list[LearningProgressEvent]:
+        operation = getattr(self.repository, "get_progress_events", None)
+        if not callable(operation):
+            return []
+        try:
+            return [
+                item
+                if isinstance(item, LearningProgressEvent)
+                else LearningProgressEvent.model_validate(item)
+                for item in operation(run_id)
+            ]
+        except Exception as exc:
+            raise ArtifactStoreError("stored Learning events are invalid") from exc
 
     def _list_envelopes(
         self,

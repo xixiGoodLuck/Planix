@@ -60,22 +60,43 @@ class KnowledgeQualityValidator:
         )
 
         knowledge_ids = {item.id for item in knowledge_graph.nodes}
-        graph_edges = [
+        prerequisite_edges = [
             (edge.source_knowledge_id, edge.target_knowledge_id)
             for edge in knowledge_graph.edges
             if edge.source_knowledge_id in knowledge_ids
             and edge.target_knowledge_id in knowledge_ids
+            and edge.relation == "prerequisite"
         ]
-        graph_is_acyclic = self._is_acyclic(knowledge_ids, graph_edges)
+        prerequisite_is_acyclic = self._is_acyclic(
+            knowledge_ids,
+            prerequisite_edges,
+        )
         result.add(
             rule="knowledge_coverage",
-            passed=graph_is_acyclic,
-            evidence=[edge.source_knowledge_id for edge in knowledge_graph.edges],
+            passed=prerequisite_is_acyclic,
+            evidence=[source for source, _target in prerequisite_edges],
             owner_id=owner_id,
             severity="blocker",
             target_type="knowledge_graph",
             target_id=owner_id,
-            description="KnowledgeGraph dependencies must be acyclic",
+            description="KnowledgeGraph prerequisite dependencies must be acyclic",
+        )
+        containment_edges = [
+            (edge.source_knowledge_id, edge.target_knowledge_id)
+            for edge in knowledge_graph.edges
+            if edge.source_knowledge_id in knowledge_ids
+            and edge.target_knowledge_id in knowledge_ids
+            and edge.relation == "part_of"
+        ]
+        result.add(
+            rule="knowledge_coverage",
+            passed=self._is_acyclic(knowledge_ids, containment_edges),
+            evidence=[source for source, _target in containment_edges],
+            owner_id=owner_id,
+            severity="blocker",
+            target_type="knowledge_graph",
+            target_id=owner_id,
+            description="KnowledgeGraph containment relationships must be acyclic",
         )
 
         outcome_ids = {item.id for item in capability_graph.outcomes}

@@ -118,7 +118,8 @@ class LearningPipelineRunner:
             evidence_result = self._stage(
                 "evidence_generation",
                 lambda: self.evidence_pipeline_factory(provider).generate(
-                    knowledge_graph
+                    knowledge_graph,
+                    preferred_urls=request.scope.resource_preference.user_supplied_urls,
                 ),
             )
             evidence_graph = evidence_result.evidence_graph

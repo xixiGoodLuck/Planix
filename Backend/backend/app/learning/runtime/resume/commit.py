@@ -87,13 +87,24 @@ class ResumeCommitService:
                     stage.stage_name,
                     new_refs,
                 )
-                self.store.save_checkpoint(checkpoint_after)
+                try:
+                    stored_checkpoint = self.store.save_checkpoint(
+                        checkpoint_after,
+                        expected_version=checkpoint_before.checkpoint_version,
+                    )
+                except TypeError as exc:
+                    if "expected_version" not in str(exc):
+                        raise
+                    stored_checkpoint = self.store.save_checkpoint(checkpoint_after)
+                checkpoint_after = stored_checkpoint or checkpoint_after
                 event = ResumeEvent(
                     runId=run_id,
                     previousStage=decision.previous_stage,
                     resumeStage=stage.stage_name,
                     reason=f"Atomically committed resumed stage {stage.stage_name}.",
                     artifactRefs=checkpoint_after.artifact_refs,
+                    checkpointBefore=checkpoint_before,
+                    checkpointAfter=checkpoint_after,
                 )
                 self.store.save_resume_event(event)
                 self.validator.validate_commit(
@@ -136,6 +147,7 @@ class ResumeCommitService:
         is_complete = stage_name == "quality"
         return LearningRunCheckpoint(
             runId=checkpoint.run_id,
+            checkpointVersion=checkpoint.checkpoint_version + 1,
             currentStage="completed" if is_complete else stage_name,
             status="completed" if is_complete else "running",
             artifactRefs=refs,

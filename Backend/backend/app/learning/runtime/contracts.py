@@ -93,6 +93,7 @@ class LearningArtifactEnvelope(LearningContract):
 
 class LearningRunCheckpoint(LearningContract):
     run_id: str = Field(min_length=1)
+    checkpoint_version: int = Field(default=1, ge=1)
     current_stage: LearningSessionStage
     status: LearningSessionStatus
     artifact_refs: list[LearningArtifactRef] = Field(default_factory=list)

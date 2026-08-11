@@ -10,6 +10,7 @@ from ...evidence.providers import (
     ProviderVideoMetadata,
     VideoSearchQuery,
     VideoSourceProvider,
+    VideoSourceProviderError,
 )
 from ...evidence.transcript import (
     TranscriptProvider,
@@ -124,6 +125,14 @@ class TranscriptBackedVideoProvider:
 
     def fetch_metadata(self, external_id: str) -> VideoResource:
         return self.video_provider.fetch_metadata(external_id)
+
+    def resolve_url(self, value: str) -> VideoResource:
+        resolver = getattr(self.video_provider, "resolve_url", None)
+        if not callable(resolver):
+            raise VideoSourceProviderError(
+                "video provider does not support verified URL resolution",
+            )
+        return resolver(value)
 
     def fetch_evidence(self, external_id: str) -> ProviderVideoDocument:
         resource = self.fetch_metadata(external_id)

@@ -74,9 +74,10 @@ class KnowledgeGenerationPipeline:
 
         knowledge_result = self._stage(
             "learning_knowledge",
-            lambda: self.knowledge_generator.generate(
+            lambda: self.knowledge_generator.generate_validated(
                 scope,
                 capability_result.capability_graph,
+                self.validator,
             ),
         )
         self._stage(

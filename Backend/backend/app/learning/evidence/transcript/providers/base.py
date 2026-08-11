@@ -11,6 +11,10 @@ class TranscriptProviderError(RuntimeError):
     pass
 
 
+class TranscriptUnavailableError(TranscriptProviderError):
+    error_type = "TRANSCRIPT_UNAVAILABLE"
+
+
 class TranscriptSegment(LearningContract):
     """One raw transcript cue. It contains no inferred topic or knowledge data."""
 
@@ -54,6 +58,7 @@ __all__ = [
     "TranscriptDocument",
     "TranscriptProvider",
     "TranscriptProviderError",
+    "TranscriptUnavailableError",
     "TranscriptSegment",
     "TranscriptSourceMetadata",
 ]
