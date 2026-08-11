@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from ...contracts import ContentSelection, EvidenceGraph, KnowledgeGraph, LearningScope
 from ...selection.services.redundancy_analyzer import RedundancyAnalyzer
+from ...selection.validators import ContentSelectionValidator
+from ...selection_semantics import (
+    range_union_duration_seconds,
+    resolve_selected_knowledge_coverage,
+)
 from ...validators import LearningArtifactValidationError, LearningArtifactValidator
 from .base import QualityEvaluation
 
@@ -11,9 +16,14 @@ class SelectionQualityValidator:
         self,
         artifact_validator: LearningArtifactValidator | None = None,
         redundancy_analyzer: RedundancyAnalyzer | None = None,
+        selection_validator: ContentSelectionValidator | None = None,
     ):
         self.artifact_validator = artifact_validator or LearningArtifactValidator()
         self.redundancy_analyzer = redundancy_analyzer or RedundancyAnalyzer()
+        self.selection_validator = selection_validator or ContentSelectionValidator(
+            artifact_validator=self.artifact_validator,
+            redundancy_analyzer=self.redundancy_analyzer,
+        )
 
     def evaluate(
         self,
@@ -31,7 +41,7 @@ class SelectionQualityValidator:
 
         structural_error: LearningArtifactValidationError | None = None
         try:
-            self.artifact_validator.validate_content_selection(
+            self.selection_validator.validate_selection(
                 scope,
                 knowledge_graph,
                 evidence_graph,
@@ -54,14 +64,11 @@ class SelectionQualityValidator:
             ),
         )
 
-        full_selected = {
-            edge.knowledge_id
-            for item in selection.selected_segments
-            for edge_id in item.coverage_edge_refs
-            if (edge := edges.get(edge_id)) is not None
-            and edge.segment_id == item.segment_id
-            and edge.coverage_strength == "full"
-        }
+        resolved_coverage = resolve_selected_knowledge_coverage(
+            evidence_graph,
+            selected_id_set,
+        )
+        full_selected = set(resolved_coverage.selected_knowledge_ids)
         required_ids = {
             item.id for item in knowledge_graph.nodes if item.importance == "required"
         }
@@ -120,7 +127,7 @@ class SelectionQualityValidator:
         )
 
         unique_segments = [segments[item] for item in dict.fromkeys(selected_ids) if item in segments]
-        expected_duration = sum(item.end_seconds - item.start_seconds for item in unique_segments)
+        expected_duration = range_union_duration_seconds(evidence_graph, selected_id_set)
         duration_valid = (
             len(selected_ids) == len(selected_id_set)
             and len(unique_segments) == len(selected_id_set)
@@ -137,19 +144,7 @@ class SelectionQualityValidator:
             severity="blocker",
             target_type="content_selection",
             target_id=owner_id,
-            description="selection duration must equal the sum of unique selected segments",
-        )
-
-        overlaps = self._overlapping_segments(unique_segments)
-        result.add(
-            rule="content_redundancy",
-            passed=not overlaps,
-            evidence=overlaps,
-            owner_id=owner_id,
-            severity="major",
-            target_type="content_segment",
-            target_id=overlaps[0] if overlaps else owner_id,
-            description="overlapping video time must not be counted twice",
+            description="selection duration must equal the union of selected video ranges",
         )
 
         resource_count = len({item.resource_id for item in unique_segments})
@@ -165,11 +160,7 @@ class SelectionQualityValidator:
             description="selected resource count must respect the configured content budget",
         )
 
-        selected_knowledge = {
-            knowledge_id
-            for item in selection.selected_segments
-            for knowledge_id in item.knowledge_refs
-        }
+        selected_knowledge = set(resolved_coverage.selected_knowledge_ids)
         gap_ids = {item.knowledge_id for item in selection.coverage_gaps}
         evidence = {item.id: item for item in evidence_graph.evidence}
         fully_available = {
@@ -205,20 +196,5 @@ class SelectionQualityValidator:
             description="CoverageGap must represent genuinely unavailable verified coverage",
         )
         return result
-
-    @staticmethod
-    def _overlapping_segments(segments) -> list[str]:
-        overlaps: list[str] = []
-        for index, left in enumerate(segments):
-            for right in segments[index + 1 :]:
-                if left.resource_id != right.resource_id:
-                    continue
-                if max(left.start_seconds, right.start_seconds) < min(
-                    left.end_seconds,
-                    right.end_seconds,
-                ):
-                    overlaps.append(f"{left.id}:{right.id}")
-        return sorted(overlaps)
-
 
 __all__ = ["SelectionQualityValidator"]

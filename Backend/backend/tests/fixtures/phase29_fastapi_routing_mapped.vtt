@@ -1,0 +1,31 @@
+WEBVTT
+
+00:10.000 --> 00:18.000
+A FastAPI application starts by creating app = FastAPI(); this application instance owns the route registry and receives incoming requests.
+
+00:18.000 --> 00:26.000
+APIRouter is a smaller route registry for one module; app.include_router attaches its routes to the main FastAPI application.
+
+00:26.000 --> 00:34.000
+HTTP methods express intent, and FastAPI routing binds the combination of a method and URL path to one Python endpoint function.
+
+00:34.000 --> 00:42.000
+Python decorators wrap or register functions; @app.get("/items") and @app.post("/items") register the function immediately below as a path operation.
+
+00:42.000 --> 00:50.000
+The first decorator parameter is the URL path, while status_code, tags, summary, description, and dependencies configure route behavior and documentation grouping.
+
+00:50.000 --> 00:58.000
+A path parameter uses braces such as /items/{item_id}; FastAPI matches that location and passes the value to the same-named function argument.
+
+00:58.000 --> 01:06.000
+A function argument not present in the path is a query parameter; a default value makes it optional, and path and query arguments are parsed differently.
+
+01:06.000 --> 01:14.000
+Python type hints declare expected types. Common FastAPI route types include int, str, float, and bool on endpoint function parameters.
+
+01:14.000 --> 01:22.000
+FastAPI converts incoming text to the declared type and validates it before calling the endpoint, rejecting values that cannot be converted.
+
+01:22.000 --> 01:30.000
+Route registration happens when Python evaluates each decorator, and fixed routes should be declared before overlapping dynamic routes because matching follows declaration order.

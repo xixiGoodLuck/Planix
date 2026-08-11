@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import re
+
 from ....contracts import VideoResource
+from ...providers.base import VideoSearchHit, VideoSearchQuery
 from ..repository import LearningTranscriptRepository
 from ..validators import TranscriptValidator
 from .base import (
@@ -27,6 +30,37 @@ class PersistentTranscriptProvider:
 
     def health_check(self) -> bool:
         return self.repository.health_check()
+
+    def search_registered(self, query: VideoSearchQuery) -> list[VideoSearchHit]:
+        tokens = {
+            token.casefold()
+            for term in query.knowledge_terms
+            for token in re.findall(r"[a-z0-9_+#.]{2,}|[\u4e00-\u9fff]{2,}", term)
+        }
+        ranked: list[tuple[int, str, VideoSearchHit]] = []
+        for source in self.repository.list_active_sources():
+            searchable = " ".join(
+                [source.resource.title, *(segment.text for segment in source.segments)]
+            ).casefold()
+            score = sum(1 for token in tokens if token in searchable)
+            if score <= 0:
+                continue
+            resource = source.resource
+            ranked.append(
+                (
+                    score,
+                    resource.external_id,
+                    VideoSearchHit(
+                        provider=resource.provider,
+                        externalId=resource.external_id,
+                        canonicalUrl=resource.canonical_url,
+                        title=resource.title,
+                        durationSeconds=resource.duration_seconds,
+                    ),
+                )
+            )
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        return [item[2] for item in ranked[: query.maximum_results]]
 
     def fetch_transcript(self, resource: VideoResource) -> TranscriptDocument:
         source = self.repository.find_active_by_resource_fingerprint(

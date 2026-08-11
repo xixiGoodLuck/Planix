@@ -24,6 +24,7 @@ function formatSeconds(value: number) {
 export function LearningResult({ plan, evidenceGraph, qualityReport, t }: LearningResultProps) {
   const resources = new Map(evidenceGraph.resources.map((resource) => [resource.id, resource]));
   const segments = new Map(evidenceGraph.segments.map((segment) => [segment.id, segment]));
+  const deferredKnowledge = new Set((plan.deferredKnowledge ?? []).map((item) => item.knowledgeId));
 
   return (
     <div className="learning-result-stack">
@@ -94,7 +95,11 @@ export function LearningResult({ plan, evidenceGraph, qualityReport, t }: Learni
                 })}
               </div>
             ) : (
-              <div className="learning-evidence-gap">{item.uncoveredReason || t('learning.evidenceMissing')}</div>
+              <div className={deferredKnowledge.has(item.knowledgeId) ? 'learning-selection-omission' : 'learning-evidence-gap'}>
+                {deferredKnowledge.has(item.knowledgeId)
+                  ? t('learning.selectionOmitted')
+                  : item.uncoveredReason || t('learning.evidenceMissing')}
+              </div>
             )}
           </article>
         ))}
@@ -112,8 +117,8 @@ export function LearningResult({ plan, evidenceGraph, qualityReport, t }: Learni
           {qualityReport.score != null && <strong className="learning-quality-score">{Math.round(qualityReport.score)}</strong>}
         </div>
         <div className="learning-quality-grid">
-          {qualityReport.qualityChecks.map((check) => (
-            <div className={check.passed ? 'passed' : 'failed'} key={check.rule}>
+          {qualityReport.qualityChecks.map((check, index) => (
+            <div className={check.passed ? 'passed' : 'failed'} key={`${check.rule}-${index}`}>
               <span>{check.passed ? <Check size={14} /> : '!'}</span>
               <strong>{t(`learning.quality_${check.rule}`)}</strong>
             </div>

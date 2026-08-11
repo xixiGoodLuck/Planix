@@ -25,7 +25,9 @@ URL, video duration, fingerprint, source range, and video time range. You may on
 name its topics, and describe evidence-backed coverage using the supplied zero-based indexes. Never invent or return
 a URL, duration, start time, end time, timestamp, source range, external id, fingerprint, artifact id, or version.
 Coverage must cite verified evidence indexes belonging to the same segment. Return JSON only and do not reveal hidden
-reasoning.
+reasoning. Map by meaning rather than exact wording. When verified transcript evidence explicitly states every side
+of a distinction or comparison knowledge node, that is direct full coverage of the distinction; do not omit it or
+downgrade it merely because the transcript phrases the compared concepts in separate adjacent sentences.
 """.strip()
 
 

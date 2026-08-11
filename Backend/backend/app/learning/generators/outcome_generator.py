@@ -17,8 +17,13 @@ outcome needs observable acceptance criteria. Use required for the direct goal, 
 and optional for a future extension. Every required or important outcome must be directly traceable to an explicit
 phrase in userGoal or targetResult. Do not turn typical framework prerequisites, setup steps, examples, or adjacent
 features into additional outcomes unless the scope names them. When a goal enumerates a bounded set of concepts,
-treat that list as the boundary. For an ambiguous goal, stay conservative and use only assumptions already present
-in the scope. Return semantic fields only. Never return ids, artifact references, versions, timestamps, or source
+treat that list as the boundary. When targetResult is narrower than userGoal, targetResult is the authoritative
+planning boundary and the broader topic must not add required or important outcomes. For an ambiguous goal, stay
+conservative and use only assumptions already present
+in the scope. If the target asks only to learn, understand, explain, or distinguish named concepts, never convert
+that into implementation work: do not require defining routes, writing handlers, processing parameters or request
+bodies, building an app, or testing an API. In that case, acceptance criteria must stay at explain, identify,
+compare, or distinguish. Return semantic fields only. Never return ids, artifact references, versions, timestamps, or source
 references. Return JSON only and do not reveal hidden reasoning.
 """.strip()
 

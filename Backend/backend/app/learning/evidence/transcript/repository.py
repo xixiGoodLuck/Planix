@@ -174,6 +174,22 @@ class LearningTranscriptRepository:
             ).fetchone()
             return self._get_source(conn, row["id"]) if row is not None else None
 
+    def list_active_sources(self, *, limit: int = 100) -> list[TranscriptSourceRecord]:
+        if limit < 1 or limit > 500:
+            raise ValueError("active transcript source limit must be between 1 and 500")
+        with self._connection_factory() as conn:
+            rows = conn.execute(
+                """
+                SELECT id
+                FROM learning_transcript_sources
+                WHERE status = 'active'
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+            return [self._get_source(conn, row["id"]) for row in rows]
+
     def get_source_metadata(self, source_id: str) -> TranscriptSourceSummary | None:
         with self._connection_factory() as conn:
             row = self._metadata_row(conn, source_id)

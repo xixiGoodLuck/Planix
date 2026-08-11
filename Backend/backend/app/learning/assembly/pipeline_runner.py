@@ -165,6 +165,7 @@ class LearningPipelineRunner:
                 lambda: self.content_selector.select(
                     knowledge_graph,
                     evidence_graph,
+                    scope=request.scope,
                 ),
             )
             validated_selection = self._stage(

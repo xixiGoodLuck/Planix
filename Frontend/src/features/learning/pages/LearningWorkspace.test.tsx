@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { enUS } from '../../../i18n/en-US';
 import { LearningFailureNotice } from '../components/LearningFailureNotice';
 import { LearningResult } from '../components/LearningResult';
-import type { LearningContentPlan, LearningEvidenceGraph, LearningQualityReport } from '../types';
+import { LearningScopeReviewPanel, LearningWorkspace } from './LearningWorkspace';
+import type { LearningContentPlan, LearningEvidenceGraph, LearningQualityReport, LearningScopeReview } from '../types';
 
 const t = (key: string): string => {
   const [namespace, item] = key.split('.');
@@ -11,7 +12,7 @@ const t = (key: string): string => {
 };
 
 const plan: LearningContentPlan = {
-  artifactId: 'plan-1', version: 1, totalDurationSeconds: 600, evidenceGaps: [],
+  artifactId: 'plan-1', version: 1, totalDurationSeconds: 600, evidenceGaps: [], deferredKnowledge: [],
   items: [{
     knowledgeId: 'routing', knowledgeName: 'FastAPI Routing', knowledgeExplanation: 'Map HTTP requests to handlers.',
     whyRequired: 'CRUD endpoints require explicit routes.', uncoveredReason: null,
@@ -49,6 +50,78 @@ const quality: LearningQualityReport = {
 };
 
 describe('Learning Workspace results', () => {
+  it('renders a natural-language-first screen without the old fixed four-field form', () => {
+    const html = renderToStaticMarkup(<LearningWorkspace language="en-US" t={t} />);
+
+    expect(html).toContain(enUS.learning.tellPlanix);
+    expect(html).toContain(enUS.learning.progressiveGoalPlaceholder);
+    expect(html).not.toContain(enUS.learning.targetResultPlaceholder);
+    expect(html).not.toContain(enUS.learning.currentLevelPlaceholder);
+    expect(html).not.toContain('type="number"');
+  });
+
+  it('renders known facts, multiple optional gaps, assumptions, and an always-present continue action', () => {
+    const review: LearningScopeReview = {
+      knownInformation: [{ field: 'user_goal', values: ['FastAPI'], sourceRefs: ['user:message:1'] }],
+      recommendedGaps: [
+        { id: 'gap-level', question: 'What do you know?', whyItMatters: 'It changes the starting point.', impact: 'high', blocking: false, affectedFields: ['current_level'] },
+        { id: 'gap-budget', question: 'How much time?', whyItMatters: 'It controls duration.', impact: 'medium', blocking: false, affectedFields: ['content_budget'] }
+      ],
+      assumptions: [{ id: 'assumption-level', statement: 'Current level is unspecified.', basis: 'Code default.', sourceRef: 'system:scope-readiness:current_level', impact: 'high' }],
+      readyForPlanning: false,
+      highImpactGapCount: 1,
+      recommendationRound: 1,
+      autoContinueReason: 'high_impact_gaps_remain'
+    };
+
+    const html = renderToStaticMarkup(
+      <LearningScopeReviewPanel
+        review={review}
+        supplementDraft=""
+        busy={false}
+        analysisFailed={false}
+        onDraftChange={vi.fn()}
+        onSupplement={vi.fn()}
+        onContinue={vi.fn()}
+        t={t}
+      />
+    );
+
+    expect(html).toContain(enUS.learning.knownInformation);
+    expect(html).toContain('FastAPI');
+    expect(html).toContain('What do you know?');
+    expect(html).toContain('How much time?');
+    expect(html).toContain(enUS.learning.optional);
+    expect(html).toContain(enUS.learning.currentAssumptions);
+    expect(html).toContain('Current level is unspecified.');
+    expect(html).toContain(enUS.learning.continueCurrentScope);
+  });
+
+  it('renders the safe scope failure message without backend internals', () => {
+    const review: LearningScopeReview = {
+      knownInformation: [{ field: 'user_goal', values: ['FastAPI'], sourceRefs: [] }],
+      recommendedGaps: [], assumptions: [], readyForPlanning: false,
+      highImpactGapCount: 1, recommendationRound: 1, autoContinueReason: 'high_impact_gaps_remain'
+    };
+    const html = renderToStaticMarkup(
+      <LearningScopeReviewPanel
+        review={review}
+        supplementDraft="I know Python"
+        busy={false}
+        analysisFailed
+        onDraftChange={vi.fn()}
+        onSupplement={vi.fn()}
+        onContinue={vi.fn()}
+        t={t}
+      />
+    );
+
+    expect(html).toContain(enUS.learning.scopeAnalysisFailed);
+    expect(html).not.toContain('Pydantic');
+    expect(html).not.toContain('invalid_model_output');
+    expect(html).not.toContain('stack trace');
+  });
+
   it('renders knowledge, verified video evidence, timestamps, duration, and quality', () => {
     const html = renderToStaticMarkup(<LearningResult plan={plan} evidenceGraph={evidenceGraph} qualityReport={quality} t={t} />);
 
@@ -59,6 +132,36 @@ describe('Learning Workspace results', () => {
     expect(html).toContain('10:00');
     expect(html).toContain(enUS.learning.qualityPassed);
     expect(html).toContain(enUS.learning.quality_knowledge_coverage);
+  });
+
+  it('distinguishes deferred verified knowledge from missing evidence', () => {
+    const deferredPlan: LearningContentPlan = {
+      ...plan,
+      items: [{
+        knowledgeId: 'advanced-topic',
+        knowledgeName: 'Advanced topic',
+        knowledgeExplanation: 'An additional verified topic.',
+        whyRequired: 'Useful after the required path.',
+        uncoveredReason: null,
+        recommendedContent: []
+      }],
+      deferredKnowledge: [{
+        knowledgeId: 'advanced-topic',
+        importance: 'important',
+        reason: 'lower_priority',
+        candidateSegmentRefs: ['segment-2'],
+        marginalDurationSeconds: 120,
+        policyRuleRefs: ['minimum_sufficient_selection'],
+        description: 'Verified but deferred.'
+      }]
+    };
+
+    const html = renderToStaticMarkup(
+      <LearningResult plan={deferredPlan} evidenceGraph={evidenceGraph} qualityReport={quality} t={t} />
+    );
+
+    expect(html).toContain(enUS.learning.selectionOmitted);
+    expect(html).not.toContain(enUS.learning.evidenceMissing);
   });
 
   it('renders a quality failure without internal exception text', () => {

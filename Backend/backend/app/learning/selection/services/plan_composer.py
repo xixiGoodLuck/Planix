@@ -89,6 +89,7 @@ class PlanComposer:
             items=items,
             totalDurationSeconds=0,
             evidenceGaps=selection.coverage_gaps,
+            deferredKnowledge=selection.selection_omissions,
         )
 
 

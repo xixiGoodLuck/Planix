@@ -94,6 +94,7 @@ class LearningPipeline:
         quality_engine: LearningQualityEngine | None = None,
     ):
         semantic_model = model or RouterLearningModel()
+        self.semantic_model = semantic_model
         self.artifact_validator = artifact_validator or LearningArtifactValidator()
         self.selection_validator = selection_validator or ContentSelectionValidator(
             artifact_validator=self.artifact_validator
@@ -204,7 +205,11 @@ class LearningPipeline:
         selection_result = self._stage(
             "learning_selection",
             "content_selection",
-            lambda: self.content_selector.select(knowledge_graph, evidence_graph),
+            lambda: self.content_selector.select(
+                knowledge_graph,
+                evidence_graph,
+                scope=scope,
+            ),
         )
         validated_selection = self._stage(
             "learning_selection_validation",

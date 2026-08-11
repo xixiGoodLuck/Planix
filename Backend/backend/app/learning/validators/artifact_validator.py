@@ -16,6 +16,7 @@ from ..contracts import (
     LearningQualityReport,
     LearningScope,
 )
+from ..selection_semantics import range_union_duration_seconds
 
 
 class LearningArtifactValidationError(ValueError):
@@ -456,9 +457,9 @@ class LearningArtifactValidator:
         segments = {item.id: item for item in evidence_graph.segments}
         evidence = {item.id: item for item in evidence_graph.evidence}
         coverage = {item.id: item for item in evidence_graph.coverage_edges}
-        knowledge_ids = {item.id for item in knowledge_graph.nodes}
+        knowledge = {item.id: item for item in knowledge_graph.nodes}
+        knowledge_ids = set(knowledge)
         selected_knowledge: set[str] = set()
-        total_duration = 0
 
         for item in selection.selected_segments:
             segment = segments.get(item.segment_id)
@@ -536,8 +537,12 @@ class LearningArtifactValidator:
                     f"selection uses invalid evidence: {sorted(invalid_evidence)}",
                 )
             selected_knowledge.update(item.knowledge_refs)
-            total_duration += segment.end_seconds - segment.start_seconds
 
+        self._assert_unique(
+            (item.knowledge_id for item in selection.coverage_gaps),
+            "coverage_gap_knowledge",
+            "contentSelection.coverageGaps",
+        )
         gap_knowledge = {item.knowledge_id for item in selection.coverage_gaps}
         missing_gap_refs = gap_knowledge - knowledge_ids
         if missing_gap_refs:
@@ -546,13 +551,63 @@ class LearningArtifactValidator:
                 "contentSelection.coverageGaps",
                 f"coverage gaps reference missing knowledge: {sorted(missing_gap_refs)}",
             )
-        unaccounted = knowledge_ids - selected_knowledge - gap_knowledge
+        self._assert_unique(
+            (item.knowledge_id for item in selection.selection_omissions),
+            "selection_omission_knowledge",
+            "contentSelection.selectionOmissions",
+        )
+        omission_knowledge = {
+            item.knowledge_id for item in selection.selection_omissions
+        }
+        missing_omission_refs = omission_knowledge - knowledge_ids
+        if missing_omission_refs:
+            self._fail(
+                "selection_omission_truth",
+                "contentSelection.selectionOmissions",
+                f"selection omissions reference missing knowledge: {sorted(missing_omission_refs)}",
+            )
+        segment_ids = set(segments)
+        for omission in selection.selection_omissions:
+            node = knowledge.get(omission.knowledge_id)
+            if node is None:
+                continue
+            if node.importance != omission.importance or node.importance == "required":
+                self._fail(
+                    "selection_omission_truth",
+                    f"contentSelection.selectionOmissions.{omission.knowledge_id}",
+                    "selection omission importance must match a non-required knowledge node",
+                )
+            missing_candidates = set(omission.candidate_segment_refs) - segment_ids
+            if missing_candidates:
+                self._fail(
+                    "selection_omission_truth",
+                    f"contentSelection.selectionOmissions.{omission.knowledge_id}.candidateSegmentRefs",
+                    f"selection omission references missing candidate segments: {sorted(missing_candidates)}",
+                )
+        conflicting = (
+            (selected_knowledge & gap_knowledge)
+            | (selected_knowledge & omission_knowledge)
+            | (gap_knowledge & omission_knowledge)
+        )
+        if conflicting:
+            self._fail(
+                "selection_partition",
+                "contentSelection",
+                f"knowledge cannot be selected, a coverage gap, and an omission at once: {sorted(conflicting)}",
+            )
+        unaccounted = (
+            knowledge_ids - selected_knowledge - gap_knowledge - omission_knowledge
+        )
         if unaccounted:
             self._fail(
                 "knowledge_coverage",
                 "contentSelection",
-                f"knowledge is neither selected nor declared as a gap: {sorted(unaccounted)}",
+                f"knowledge is neither selected, a coverage gap, nor a selection omission: {sorted(unaccounted)}",
             )
+        total_duration = range_union_duration_seconds(
+            evidence_graph,
+            [item.segment_id for item in selection.selected_segments],
+        )
         if selection.total_duration_seconds not in {0, total_duration}:
             self._fail(
                 "selection_duration",
@@ -595,6 +650,22 @@ class LearningArtifactValidator:
         segments = {item.id: item for item in evidence_graph.segments}
         selected = {item.id: item for item in selection.selected_segments}
         gap_knowledge = {item.knowledge_id for item in selection.coverage_gaps}
+        omission_knowledge = {
+            item.knowledge_id for item in selection.selection_omissions
+        }
+
+        if plan.evidence_gaps != selection.coverage_gaps:
+            self._fail(
+                "knowledge_coverage",
+                "learningContentPlan.evidenceGaps",
+                "plan evidence gaps must exactly project ContentSelection coverage gaps",
+            )
+        if plan.deferred_knowledge != selection.selection_omissions:
+            self._fail(
+                "selection_omission_truth",
+                "learningContentPlan.deferredKnowledge",
+                "plan deferred knowledge must exactly project ContentSelection omissions",
+            )
 
         plan_knowledge = {item.knowledge_id for item in plan.items}
         if plan_knowledge != set(knowledge):
@@ -617,13 +688,33 @@ class LearningArtifactValidator:
                     "plan knowledge text is not bound to the current KnowledgeGraph version",
                 )
             if not item.recommended_content:
-                if item.knowledge_id not in gap_knowledge or not (item.uncovered_reason or "").strip():
+                if item.knowledge_id in gap_knowledge:
+                    if not (item.uncovered_reason or "").strip():
+                        self._fail(
+                            "knowledge_coverage",
+                            f"learningContentPlan.items.{item.knowledge_id}",
+                            "knowledge without evidence must disclose a coverage gap",
+                        )
+                elif item.knowledge_id in omission_knowledge:
+                    if item.uncovered_reason is not None:
+                        self._fail(
+                            "selection_omission_truth",
+                            f"learningContentPlan.items.{item.knowledge_id}",
+                            "selection omission must not be presented as missing evidence",
+                        )
+                else:
                     self._fail(
                         "knowledge_coverage",
                         f"learningContentPlan.items.{item.knowledge_id}",
-                        "knowledge without selected content must disclose a coverage gap",
+                        "knowledge without selected content must disclose a gap or omission",
                     )
                 continue
+            if item.knowledge_id in gap_knowledge or item.knowledge_id in omission_knowledge:
+                self._fail(
+                    "selection_partition",
+                    f"learningContentPlan.items.{item.knowledge_id}",
+                    "selected plan content cannot also be a gap or omission",
+                )
             for recommendation in item.recommended_content:
                 selected_item = selected.get(recommendation.selection_id)
                 segment = segments.get(recommendation.segment_id)
@@ -713,6 +804,12 @@ class LearningArtifactValidator:
             "content_selection",
             "learningQualityReport.contentSelectionRef",
         )
+        if report.remaining_gaps != selection.coverage_gaps:
+            self._fail(
+                "knowledge_coverage",
+                "learningQualityReport.remainingGaps",
+                "quality remaining gaps must exactly project ContentSelection coverage gaps",
+            )
 
     @staticmethod
     def _assert_ref(

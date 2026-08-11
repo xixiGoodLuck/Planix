@@ -121,7 +121,27 @@ class TranscriptBackedVideoProvider:
         self.segment_builder = segment_builder or TranscriptSegmentBuilder()
 
     def search(self, query: VideoSearchQuery):
-        return self.video_provider.search(query)
+        registered_search = getattr(self.transcript_provider, "search_registered", None)
+        registered = registered_search(query) if callable(registered_search) else []
+        remaining = query.maximum_results - len(registered)
+        remote = (
+            self.video_provider.search(
+                query.model_copy(update={"maximum_results": remaining})
+            )
+            if remaining > 0
+            else []
+        )
+        seen: set[tuple[str, str]] = set()
+        merged = []
+        for hit in [*registered, *remote]:
+            identity = (hit.provider, hit.external_id)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            merged.append(hit)
+            if len(merged) >= query.maximum_results:
+                break
+        return merged
 
     def fetch_metadata(self, external_id: str) -> VideoResource:
         return self.video_provider.fetch_metadata(external_id)

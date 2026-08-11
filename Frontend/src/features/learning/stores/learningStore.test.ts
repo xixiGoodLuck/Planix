@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { LearningEventHandlers } from '../api/learningApi';
-import type { LearningRunResult, LearningRunState } from '../types';
+import type {
+  LearningIntakeResponse,
+  LearningRunResult,
+  LearningRunState
+} from '../types';
 import { createLearningStore, type LearningApiPort } from './learningStore';
 
 const runningState: LearningRunState = {
@@ -13,9 +17,17 @@ const completedState: LearningRunState = {
   error: null
 };
 
+const transcriptSummary = {
+  source_id: 'transcript-source-1', resource_id: 'video-1', resource_fingerprint: 'bilibili:BV1zV2QBtE39:1200',
+  provider: 'bilibili', external_id: 'BV1zV2QBtE39', canonical_url: 'https://www.bilibili.com/video/BV1zV2QBtE39',
+  title: 'FastAPI Routing', source_type: 'srt_vtt' as const, source_format: 'vtt' as const,
+  source_name: 'routing.vtt', language: 'zh-CN', checksum_prefix: '12345678', authorization_status: 'authorized' as const,
+  status: 'active' as const, segment_count: 2, start_ms: 10000, end_ms: 90000, created_at: '2026-08-12T08:00:00Z'
+};
+
 const result: LearningRunResult = {
   learning_content_plan: {
-    artifactId: 'plan-1', version: 1, totalDurationSeconds: 600, evidenceGaps: [],
+    artifactId: 'plan-1', version: 1, totalDurationSeconds: 600, evidenceGaps: [], deferredKnowledge: [],
     items: [{
       knowledgeId: 'knowledge-routing', knowledgeName: 'Routing', knowledgeExplanation: 'Route requests.',
       whyRequired: 'CRUD needs routes.', uncoveredReason: null,
@@ -46,12 +58,58 @@ const result: LearningRunResult = {
   }
 };
 
+const intake: LearningIntakeResponse = {
+  intakeId: 'learning-intake-1', status: 'waiting_scope_review', runId: null,
+  scope: {
+    artifactId: 'learning-scope-1', version: 1, userGoal: 'FastAPI', targetResult: 'FastAPI', confirmed: false,
+    currentLevel: { summary: '', knownSkills: [], knownTechnologies: [], uncertainAreas: [], sourceRefs: [] },
+    contentBudget: {},
+    languagePreference: { preferredLanguages: [], acceptableLanguages: [], subtitlesAcceptable: true },
+    resourcePreference: { preferredPlatforms: [], excludedPlatforms: [], preferredStyles: [], freeOnly: null, userSuppliedUrls: [] },
+    assumptions: [{ id: 'scope-default-level', statement: 'Current level is unspecified.', basis: 'Code default.', sourceRef: 'system:scope-readiness:current_level', impact: 'high' }],
+    unknowns: [{ id: 'gap-level', question: 'What do you know?', whyItMatters: 'It changes the route.', impact: 'high', blocking: false, affectedFields: ['current_level'] }],
+    sourceRefs: ['user:message:1']
+  },
+  review: {
+    knownInformation: [{ field: 'user_goal', values: ['FastAPI'], sourceRefs: ['user:message:1'] }],
+    recommendedGaps: [
+      { id: 'gap-level', question: 'What do you know?', whyItMatters: 'It changes the route.', impact: 'high', blocking: false, affectedFields: ['current_level'] },
+      { id: 'gap-budget', question: 'How much time?', whyItMatters: 'It controls duration.', impact: 'medium', blocking: false, affectedFields: ['content_budget'] }
+    ],
+    assumptions: [{ id: 'scope-default-level', statement: 'Current level is unspecified.', basis: 'Code default.', sourceRef: 'system:scope-readiness:current_level', impact: 'high' }],
+    readyForPlanning: false, highImpactGapCount: 1, recommendationRound: 1, autoContinueReason: 'high_impact_gaps_remain'
+  }
+};
+
 function fakeApi() {
   let handlers: LearningEventHandlers | null = null;
-  let status: LearningRunState = runningState;
+  let runStatus: LearningRunState = runningState;
+  const supplemented: LearningIntakeResponse = {
+    ...intake,
+    scope: {
+      ...intake.scope,
+      version: 2,
+      currentLevel: { summary: 'Python basics', knownSkills: ['Python'], knownTechnologies: ['Python'], uncertainAreas: [], sourceRefs: ['user:message:2'] }
+    },
+    review: {
+      ...intake.review,
+      knownInformation: [...intake.review.knownInformation, { field: 'current_level', values: ['Python basics'], sourceRefs: ['user:message:2'] }],
+      recommendedGaps: intake.review.recommendedGaps.slice(1),
+      highImpactGapCount: 0,
+      recommendationRound: 2
+    }
+  };
+  const runningIntake: LearningIntakeResponse = {
+    ...supplemented, status: 'running', runId: 'learning-intake-1',
+    review: { ...supplemented.review, readyForPlanning: true, recommendedGaps: [], autoContinueReason: 'scope_has_no_high_impact_gaps' }
+  };
   const api: LearningApiPort = {
-    createRun: vi.fn().mockResolvedValue({ run_id: 'learning-session-1' }),
-    getRun: vi.fn().mockImplementation(async () => status),
+    createIntake: vi.fn().mockResolvedValue(intake),
+    supplementIntake: vi.fn().mockResolvedValue(supplemented),
+    continueIntake: vi.fn().mockResolvedValue(runningIntake),
+    registerTranscript: vi.fn().mockResolvedValue(transcriptSummary),
+    revokeTranscript: vi.fn().mockResolvedValue({ source_id: transcriptSummary.source_id, status: 'revoked' }),
+    getRun: vi.fn().mockImplementation(async () => runStatus),
     getResult: vi.fn().mockResolvedValue(result),
     streamEvents: vi.fn().mockImplementation((_runId, nextHandlers) => {
       handlers = nextHandlers;
@@ -62,36 +120,76 @@ function fakeApi() {
   };
   return {
     api,
+    intake,
+    supplemented,
+    runningIntake,
     emit(event: Parameters<LearningEventHandlers['onEvent']>[0]) { handlers?.onEvent(event); },
-    setStatus(next: LearningRunState) { status = next; }
+    setStatus(next: LearningRunState) { runStatus = next; }
   };
 }
 
-const input = {
-  goal: 'Learn FastAPI', targetResult: 'Build CRUD', currentLevel: 'Python basics',
-  targetMinutes: 120, preferredLanguage: 'en-US', constraints: ['No deployment']
-};
-
-describe('Learning Store', () => {
-  it('creates a run and stores the formal run id', async () => {
+describe('Progressive Learning Store', () => {
+  it('starts with natural language intake and waits for one batch review', async () => {
     const fake = fakeApi();
     const store = createLearningStore(fake.api);
 
-    const runId = await store.actions.start(input);
+    await store.actions.startIntake('I want to learn FastAPI', 'en-US');
 
-    expect(runId).toBe('learning-session-1');
-    expect(fake.api.createRun).toHaveBeenCalledOnce();
-    expect(vi.mocked(fake.api.createRun).mock.calls[0][0]).toMatchObject({
-      goal: 'Learn FastAPI', constraints: ['No deployment']
+    expect(fake.api.createIntake).toHaveBeenCalledWith({ message: 'I want to learn FastAPI', preferredLanguage: 'en-US' });
+    expect(store.getState()).toMatchObject({
+      intakeId: 'learning-intake-1', status: 'waiting_scope_review', runId: null,
+      originalInput: 'I want to learn FastAPI', scopeAnalysisFailed: false
     });
-    expect(store.getState()).toMatchObject({ runId, status: 'running', currentStage: 'knowledge_generating' });
+    expect(store.getState().scope?.confirmed).toBe(false);
+    expect(store.getState().scopeReview?.recommendedGaps).toHaveLength(2);
   });
 
-  it('applies SSE progress and loads the completed result', async () => {
+  it('supplements all at once and preserves only the remaining gaps', async () => {
     const fake = fakeApi();
     const store = createLearningStore(fake.api);
-    await store.actions.start(input);
+    await store.actions.startIntake('I want to learn FastAPI', 'en-US');
+    store.actions.setSupplementDraft('I know Python.');
 
+    await store.actions.supplement();
+
+    expect(fake.api.supplementIntake).toHaveBeenCalledWith('learning-intake-1', {
+      message: 'I know Python.', preferredLanguage: 'en-US', deferAutoStart: false
+    });
+    expect(store.getState().scope?.version).toBe(2);
+    expect(store.getState().scopeReview?.knownInformation.some((item) => item.field === 'current_level')).toBe(true);
+    expect(store.getState().scopeReview?.recommendedGaps).toHaveLength(1);
+  });
+
+  it('continues without supplements and connects the existing run SSE', async () => {
+    const fake = fakeApi();
+    const store = createLearningStore(fake.api);
+    await store.actions.startIntake('I want to learn FastAPI', 'en-US');
+
+    const runId = await store.actions.continueWithCurrentScope();
+
+    expect(runId).toBe('learning-intake-1');
+    expect(fake.api.continueIntake).toHaveBeenCalledWith('learning-intake-1');
+    expect(fake.api.streamEvents).toHaveBeenCalledOnce();
+    expect(store.getState()).toMatchObject({ runId, status: 'running' });
+  });
+
+  it('automatically enters progress when supplement response is ready', async () => {
+    const fake = fakeApi();
+    vi.mocked(fake.api.supplementIntake).mockResolvedValue(fake.runningIntake);
+    const store = createLearningStore(fake.api);
+    await store.actions.startIntake('I want to learn FastAPI', 'en-US');
+
+    await store.actions.supplement('I know Python and want CRUD.');
+
+    expect(store.getState()).toMatchObject({ runId: 'learning-intake-1', status: 'running' });
+    expect(fake.api.streamEvents).toHaveBeenCalledOnce();
+  });
+
+  it('applies SSE progress and preserves existing result rendering data', async () => {
+    const fake = fakeApi();
+    const store = createLearningStore(fake.api);
+    await store.actions.startIntake('I want to learn FastAPI', 'en-US');
+    await store.actions.continueWithCurrentScope();
     fake.emit({
       event_type: 'stage_completed', stage: 'knowledge_generating', status: 'completed',
       message: 'done', timestamp: '2026-08-12T08:00:00Z'
@@ -103,18 +201,39 @@ describe('Learning Store', () => {
     });
     await vi.waitFor(() => expect(store.getState().plan?.artifactId).toBe('plan-1'));
 
-    expect(store.getState()).toMatchObject({ status: 'completed', currentStage: 'completed', failureKind: null });
-    expect(store.getState().events).toHaveLength(2);
+    expect(store.getState().status).toBe('completed');
     expect(store.getState().qualityReport?.passed).toBe(true);
     expect(store.getState().evidenceGraph?.segments[0].startSeconds).toBe(60);
   });
 
-  it('maps an evidence failure to a user-safe failed state', async () => {
+  it('keeps original and supplement text after scope analysis failures', async () => {
+    const fake = fakeApi();
+    vi.mocked(fake.api.createIntake).mockRejectedValueOnce(new Error('invalid_model_output prompt token'));
+    const store = createLearningStore(fake.api);
+
+    await store.actions.startIntake('I want to learn FastAPI', 'en-US');
+
+    expect(store.getState()).toMatchObject({
+      status: 'failed', originalInput: 'I want to learn FastAPI', scopeAnalysisFailed: true
+    });
+
+    vi.mocked(fake.api.createIntake).mockResolvedValueOnce(fake.intake);
+    await store.actions.startIntake('I want to learn FastAPI', 'en-US');
+    vi.mocked(fake.api.supplementIntake).mockRejectedValueOnce(new Error('Pydantic stack trace'));
+    await store.actions.supplement('I know some Python');
+
+    expect(store.getState()).toMatchObject({
+      status: 'waiting_scope_review', supplementDraft: 'I know some Python', scopeAnalysisFailed: true
+    });
+  });
+
+  it('maps an evidence failure to a user-safe runtime state', async () => {
     const fake = fakeApi();
     const store = createLearningStore(fake.api);
-    await store.actions.start(input);
+    await store.actions.startIntake('I want to learn FastAPI', 'en-US');
+    await store.actions.continueWithCurrentScope();
     fake.setStatus({
-      status: 'failed', current_stage: 'failed', completed_stages: ['understanding', 'knowledge_generating'],
+      status: 'failed', current_stage: 'failed', completed_stages: ['understanding'],
       error: { stage: 'evidence_generating', error_type: 'EvidenceUnavailable', message: 'internal detail', validator_rule: '', field_path: '' }
     });
     fake.emit({
@@ -124,5 +243,203 @@ describe('Learning Store', () => {
     await vi.waitFor(() => expect(store.getState().failureKind).toBe('evidence_missing'));
 
     expect(store.getState().status).toBe('failed');
+  });
+
+  it('defaults to automatic resource search without transcript state', () => {
+    const store = createLearningStore(fakeApi().api);
+
+    expect(store.getState().resourceDraft).toMatchObject({ mode: 'automatic', inputSource: 'none' });
+    expect(store.getState().registeredTranscript).toBeNull();
+    expect(JSON.stringify(store.getState())).not.toContain('content');
+  });
+
+  it('pauses supplement auto-start while the user edits a specified resource', async () => {
+    const fake = fakeApi();
+    const store = createLearningStore(fake.api);
+    await store.actions.startIntake('Learn FastAPI', 'en-US');
+    store.actions.setResourceMode('specified');
+
+    await store.actions.supplement('I know Python and want routing.');
+
+    expect(fake.api.supplementIntake).toHaveBeenCalledWith('learning-intake-1', {
+      message: 'I know Python and want routing.', preferredLanguage: 'en-US', deferAutoStart: true
+    });
+    expect(store.getState().runId).toBeNull();
+  });
+
+  it('cancelling specified resource editing resumes a ready scope', async () => {
+    const fake = fakeApi();
+    vi.mocked(fake.api.createIntake).mockResolvedValue({
+      ...fake.intake,
+      review: { ...fake.intake.review, readyForPlanning: true, highImpactGapCount: 0 }
+    });
+    const store = createLearningStore(fake.api);
+    await store.actions.startIntake('Understand FastAPI routing', 'en-US');
+    store.actions.setResourceMode('specified');
+
+    store.actions.setResourceMode('automatic');
+    await vi.waitFor(() => expect(fake.api.continueIntake).toHaveBeenCalledOnce());
+
+    expect(store.getState().runId).toBe('learning-intake-1');
+  });
+
+  it('binds a video URL without calling transcript registration', async () => {
+    const fake = fakeApi();
+    const resourceResponse = {
+      ...fake.supplemented,
+      scope: {
+        ...fake.supplemented.scope,
+        resourcePreference: {
+          ...fake.supplemented.scope.resourcePreference,
+          userSuppliedUrls: [transcriptSummary.canonical_url]
+        }
+      }
+    };
+    vi.mocked(fake.api.supplementIntake).mockResolvedValue(resourceResponse);
+    const store = createLearningStore(fake.api);
+    await store.actions.startIntake('Learn FastAPI', 'en-US');
+    store.actions.setResourceMode('specified');
+    store.actions.setResourceDraft({ videoUrl: transcriptSummary.canonical_url });
+
+    expect(await store.actions.bindVideoOnly()).toBe(true);
+
+    expect(fake.api.registerTranscript).not.toHaveBeenCalled();
+    expect(fake.api.supplementIntake).toHaveBeenCalledWith('learning-intake-1', {
+      message: '', preferredLanguage: 'en-US', resourceUrls: [transcriptSummary.canonical_url], deferAutoStart: true
+    });
+    expect(store.getState()).toMatchObject({ resourceStatus: 'video_only', registeredTranscript: null });
+  });
+
+  it('registers a transcript, binds its canonical URL, and never stores raw text', async () => {
+    const fake = fakeApi();
+    vi.mocked(fake.api.supplementIntake).mockResolvedValue({
+      ...fake.supplemented,
+      scope: {
+        ...fake.supplemented.scope,
+        resourcePreference: {
+          ...fake.supplemented.scope.resourcePreference,
+          userSuppliedUrls: [transcriptSummary.canonical_url]
+        }
+      }
+    });
+    const store = createLearningStore(fake.api);
+    await store.actions.startIntake('Learn FastAPI', 'en-US');
+    store.actions.setResourceMode('specified');
+    store.actions.setResourceDraft({
+      videoUrl: transcriptSummary.canonical_url,
+      subtitleFileName: 'routing.vtt',
+      inputSource: 'file'
+    });
+    const content = 'WEBVTT\n\n00:01.000 --> 00:02.000\nPRIVATE ROUTING TRANSCRIPT';
+
+    expect(await store.actions.registerTranscript({
+      videoUrl: transcriptSummary.canonical_url,
+      format: 'vtt', language: 'zh-CN', content, sourceName: 'routing.vtt'
+    })).toBe(true);
+
+    expect(store.getState().resourceStatus).toBe('registered');
+    expect(store.getState().registeredTranscript?.segment_count).toBe(2);
+    expect(store.getState().scope?.resourcePreference.userSuppliedUrls).toEqual([transcriptSummary.canonical_url]);
+    expect(JSON.stringify(store.getState())).not.toContain('PRIVATE ROUTING TRANSCRIPT');
+    expect(store.getState().resourceDraft.inputSource).toBe('none');
+  });
+
+  it('registers pasted subtitle text through the same safe transcript contract', async () => {
+    const fake = fakeApi();
+    vi.mocked(fake.api.supplementIntake).mockResolvedValue({
+      ...fake.supplemented,
+      scope: {
+        ...fake.supplemented.scope,
+        resourcePreference: {
+          ...fake.supplemented.scope.resourcePreference,
+          userSuppliedUrls: [transcriptSummary.canonical_url]
+        }
+      }
+    });
+    const store = createLearningStore(fake.api);
+    await store.actions.startIntake('Learn FastAPI', 'en-US');
+    store.actions.setResourceMode('specified');
+    store.actions.setResourceDraft({
+      videoUrl: transcriptSummary.canonical_url,
+      inputSource: 'paste',
+      subtitleFormat: 'vtt'
+    });
+    const pasted = 'WEBVTT\n\n00:01.000 --> 00:02.000\nPASTED PRIVATE ROUTING';
+
+    await store.actions.registerTranscript({
+      videoUrl: transcriptSummary.canonical_url,
+      format: 'vtt', language: 'zh-CN', content: pasted, sourceName: 'transcript.vtt'
+    });
+
+    expect(fake.api.registerTranscript).toHaveBeenCalledWith(expect.objectContaining({
+      content: pasted, sourceName: 'transcript.vtt'
+    }));
+    expect(store.getState().resourceStatus).toBe('registered');
+    expect(JSON.stringify(store.getState())).not.toContain('PASTED PRIVATE ROUTING');
+  });
+
+  it('revokes transcript evidence while retaining the bound video URL', async () => {
+    const fake = fakeApi();
+    vi.mocked(fake.api.supplementIntake).mockResolvedValue({
+      ...fake.supplemented,
+      scope: {
+        ...fake.supplemented.scope,
+        resourcePreference: {
+          ...fake.supplemented.scope.resourcePreference,
+          userSuppliedUrls: [transcriptSummary.canonical_url]
+        }
+      }
+    });
+    const store = createLearningStore(fake.api);
+    await store.actions.startIntake('Learn FastAPI', 'en-US');
+    await store.actions.registerTranscript({
+      videoUrl: transcriptSummary.canonical_url, format: 'vtt', language: 'zh-CN',
+      content: 'WEBVTT\n\n00:01.000 --> 00:02.000\nRouting'
+    });
+
+    expect(await store.actions.revokeTranscript()).toBe(true);
+
+    expect(store.getState().resourceStatus).toBe('revoked');
+    expect(store.getState().registeredTranscript).toBeNull();
+    expect(store.getState().scope?.resourcePreference.userSuppliedUrls).toEqual([transcriptSummary.canonical_url]);
+  });
+
+  it('keeps safe resource draft fields after registration failure for immediate retry', async () => {
+    const fake = fakeApi();
+    vi.mocked(fake.api.registerTranscript).mockRejectedValue(new Error('backend secret transcript body'));
+    const store = createLearningStore(fake.api);
+    await store.actions.startIntake('Learn FastAPI', 'en-US');
+    store.actions.setResourceMode('specified');
+    store.actions.setResourceDraft({
+      videoUrl: transcriptSummary.canonical_url,
+      subtitleFileName: 'routing.vtt',
+      inputSource: 'file'
+    });
+
+    expect(await store.actions.registerTranscript({
+      videoUrl: transcriptSummary.canonical_url, format: 'vtt', language: 'zh-CN',
+      content: 'INVALID PRIVATE CONTENT', sourceName: 'routing.vtt'
+    })).toBe(false);
+
+    expect(store.getState()).toMatchObject({
+      resourceStatus: 'failed', resourceError: 'registration_failed',
+      resourceDraft: { videoUrl: transcriptSummary.canonical_url, subtitleFileName: 'routing.vtt' }
+    });
+    expect(JSON.stringify(store.getState())).not.toContain('INVALID PRIVATE CONTENT');
+    expect(JSON.stringify(store.getState())).not.toContain('backend secret');
+  });
+
+  it('reset clears all safe resource state', async () => {
+    const store = createLearningStore(fakeApi().api);
+    await store.actions.startIntake('Learn FastAPI', 'en-US');
+    store.actions.setResourceMode('specified');
+    store.actions.setResourceDraft({ videoUrl: transcriptSummary.canonical_url, subtitleFileName: 'routing.vtt' });
+
+    store.actions.reset();
+
+    expect(store.getState()).toMatchObject({
+      intakeId: null, resourceStatus: 'idle', registeredTranscript: null,
+      resourceDraft: { mode: 'automatic', videoUrl: '', subtitleFileName: '', inputSource: 'none' }
+    });
   });
 });

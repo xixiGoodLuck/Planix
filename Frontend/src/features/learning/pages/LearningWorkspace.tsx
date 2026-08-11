@@ -1,35 +1,142 @@
 import { FormEvent, useState } from 'react';
-import { BookOpenCheck, Sparkles } from 'lucide-react';
+import { ArrowRight, BookOpenCheck, CircleHelp, Sparkles } from 'lucide-react';
 import { LearningFailureNotice } from '../components/LearningFailureNotice';
 import { LearningProgress } from '../components/LearningProgress';
+import { LearningResourceInput } from '../components/LearningResourceInput';
 import { LearningResult } from '../components/LearningResult';
 import { learningStoreActions, useLearningStore } from '../stores/learningStore';
+import type { LearningScopeReview as ScopeReview } from '../types';
 
 interface LearningWorkspaceProps {
   language: 'zh-CN' | 'en-US';
   t: (key: string) => string;
 }
 
+interface ScopeReviewPanelProps {
+  review: ScopeReview;
+  supplementDraft: string;
+  busy: boolean;
+  analysisFailed: boolean;
+  onDraftChange: (value: string) => void;
+  onSupplement: () => void;
+  onContinue: () => void;
+  t: (key: string) => string;
+}
+
+function knownLabel(field: string, t: (key: string) => string) {
+  const labels: Record<string, string> = {
+    user_goal: t('learning.knownTopic'),
+    target_result: t('learning.knownTargetResult'),
+    current_level: t('learning.knownCurrentLevel'),
+    content_budget: t('learning.knownContentBudget'),
+    language_preference: t('learning.knownLanguagePreference'),
+    resource_preference: t('learning.knownResourcePreference'),
+    user_supplied_urls: t('learning.knownUserVideos')
+  };
+  return labels[field] || field;
+}
+
+export function LearningScopeReviewPanel({
+  review,
+  supplementDraft,
+  busy,
+  analysisFailed,
+  onDraftChange,
+  onSupplement,
+  onContinue,
+  t
+}: ScopeReviewPanelProps) {
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    onSupplement();
+  }
+
+  return (
+    <section className="learning-card learning-scope-review" aria-label={t('learning.scopeReview')}>
+      <div className="learning-review-section">
+        <span className="learning-eyebrow">{t('learning.knownInformation')}</span>
+        <h2>{t('learning.understoodSoFar')}</h2>
+        <dl className="learning-known-list">
+          {review.knownInformation.map((item) => (
+            <div key={item.field}>
+              <dt>{knownLabel(item.field, t)}</dt>
+              <dd>{item.values.join(' · ')}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+
+      {review.recommendedGaps.length > 0 && (
+        <div className="learning-review-section learning-gap-section">
+          <div className="learning-section-title">
+            <div>
+              <span className="learning-eyebrow">{t('learning.batchClarification')}</span>
+              <h2>{t('learning.recommendedSupplement')}</h2>
+            </div>
+            <span className="learning-optional-badge">{t('learning.optional')}</span>
+          </div>
+          <ul className="learning-gap-list">
+            {review.recommendedGaps.map((gap) => (
+              <li key={gap.id}>
+                <CircleHelp size={18} aria-hidden="true" />
+                <div>
+                  <strong>{gap.question}</strong>
+                  <p>{gap.whyItMatters}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {review.assumptions.length > 0 && (
+        <div className="learning-review-section learning-assumption-section">
+          <span className="learning-eyebrow">{t('learning.currentAssumptions')}</span>
+          <ul>
+            {review.assumptions.map((assumption) => (
+              <li key={assumption.id}>{assumption.statement}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <form className="learning-supplement-form" onSubmit={submit}>
+        <label>
+          <span>{t('learning.supplementAllAtOnce')}</span>
+          <textarea
+            value={supplementDraft}
+            onChange={(event) => onDraftChange(event.target.value)}
+            placeholder={t('learning.supplementPlaceholder')}
+            rows={4}
+          />
+        </label>
+        {analysisFailed && (
+          <p className="learning-scope-error" role="alert">{t('learning.scopeAnalysisFailed')}</p>
+        )}
+        <div className="learning-intake-actions">
+          <button type="submit" disabled={busy || !supplementDraft.trim()}>
+            <Sparkles size={16} />
+            {t('learning.supplementAndAnalyze')}
+          </button>
+          <button className="learning-primary-action" type="button" disabled={busy} onClick={onContinue}>
+            <ArrowRight size={17} />
+            {t('learning.continueCurrentScope')}
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
 export function LearningWorkspace({ language, t }: LearningWorkspaceProps) {
   const learning = useLearningStore();
   const [goal, setGoal] = useState('');
-  const [targetResult, setTargetResult] = useState('');
-  const [currentLevel, setCurrentLevel] = useState('');
-  const [targetMinutes, setTargetMinutes] = useState('');
-  const [constraints, setConstraints] = useState('');
-  const busy = learning.status === 'creating' || learning.status === 'created' || learning.status === 'running';
+  const busy = learning.status === 'analyzing_scope' || learning.status === 'starting_run';
+  const resourceBusy = learning.resourceStatus === 'registering' || learning.resourceStatus === 'validating';
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    const minutes = Number.parseInt(targetMinutes, 10);
-    void learningStoreActions.start({
-      goal,
-      targetResult,
-      currentLevel,
-      targetMinutes: Number.isFinite(minutes) && minutes > 0 ? minutes : undefined,
-      preferredLanguage: language,
-      constraints: constraints.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean)
-    });
+    void learningStoreActions.startIntake(goal, language);
   }
 
   return (
@@ -47,52 +154,66 @@ export function LearningWorkspace({ language, t }: LearningWorkspaceProps) {
         <form className="learning-card learning-input-card" onSubmit={submit}>
           <div className="learning-card-heading">
             <div>
-              <span className="learning-eyebrow">{t('learning.newRun')}</span>
-              <h2>{t('learning.describeGoal')}</h2>
+              <span className="learning-eyebrow">{t('learning.naturalLanguageFirst')}</span>
+              <h2>{t('learning.tellPlanix')}</h2>
             </div>
           </div>
           <label>
-            <span>{t('learning.goal')}</span>
-            <textarea value={goal} onChange={(event) => setGoal(event.target.value)} placeholder={t('learning.goalPlaceholder')} rows={5} required />
+            <span>{t('learning.learningIntent')}</span>
+            <textarea
+              value={goal}
+              onChange={(event) => setGoal(event.target.value)}
+              placeholder={t('learning.progressiveGoalPlaceholder')}
+              rows={6}
+              required
+              disabled={Boolean(learning.intakeId)}
+            />
           </label>
-          <div className="learning-form-grid">
-            <label>
-              <span>{t('learning.targetResult')}</span>
-              <input value={targetResult} onChange={(event) => setTargetResult(event.target.value)} placeholder={t('learning.targetResultPlaceholder')} />
-            </label>
-            <label>
-              <span>{t('learning.currentLevel')}</span>
-              <input value={currentLevel} onChange={(event) => setCurrentLevel(event.target.value)} placeholder={t('learning.currentLevelPlaceholder')} />
-            </label>
-            <label>
-              <span>{t('learning.contentBudget')}</span>
-              <input type="number" min="1" value={targetMinutes} onChange={(event) => setTargetMinutes(event.target.value)} placeholder={t('learning.contentBudgetPlaceholder')} />
-            </label>
-            <label>
-              <span>{t('learning.constraints')}</span>
-              <input value={constraints} onChange={(event) => setConstraints(event.target.value)} placeholder={t('learning.constraintsPlaceholder')} />
-            </label>
-          </div>
-          <button className="learning-primary-action" type="submit" disabled={busy || !goal.trim()}>
-            <Sparkles size={17} />
-            {busy ? t('learning.generating') : t('learning.generatePlan')}
-          </button>
+          {!learning.intakeId && (
+            <button className="learning-primary-action" type="submit" disabled={busy || !goal.trim()}>
+              <Sparkles size={17} />
+              {busy ? t('learning.analyzingScope') : t('learning.analyzeGoal')}
+            </button>
+          )}
+          {learning.scopeAnalysisFailed && !learning.intakeId && (
+            <p className="learning-scope-error" role="alert">{t('learning.scopeAnalysisFailed')}</p>
+          )}
         </form>
 
-        {learning.submittedInput && (
-          <section className="learning-card learning-understanding-card">
-            <span className="learning-eyebrow">{t('learning.goalUnderstanding')}</span>
-            <h2>{learning.submittedInput.goal}</h2>
-            <dl>
-              <div><dt>{t('learning.targetResult')}</dt><dd>{learning.submittedInput.targetResult || learning.submittedInput.goal}</dd></div>
-              <div><dt>{t('learning.currentLevel')}</dt><dd>{learning.submittedInput.currentLevel || t('learning.notSpecified')}</dd></div>
-              <div><dt>{t('learning.contentBudget')}</dt><dd>{learning.submittedInput.targetMinutes ? `${learning.submittedInput.targetMinutes} ${t('learning.minutes')}` : t('learning.notSpecified')}</dd></div>
-            </dl>
-          </section>
+        {learning.scopeReview && (
+          <>
+            <LearningScopeReviewPanel
+              review={learning.scopeReview}
+              supplementDraft={learning.supplementDraft}
+              busy={busy || resourceBusy || learning.status === 'running'}
+              analysisFailed={learning.scopeAnalysisFailed}
+              onDraftChange={learningStoreActions.setSupplementDraft}
+              onSupplement={() => { void learningStoreActions.supplement(); }}
+              onContinue={() => { void learningStoreActions.continueWithCurrentScope(); }}
+              t={t}
+            />
+            <LearningResourceInput
+              draft={learning.resourceDraft}
+              status={learning.resourceStatus}
+              summary={learning.registeredTranscript}
+              resourceError={learning.resourceError}
+              busy={busy || learning.status === 'running'}
+              onModeChange={learningStoreActions.setResourceMode}
+              onDraftChange={learningStoreActions.setResourceDraft}
+              onRegister={learningStoreActions.registerTranscript}
+              onBindVideoOnly={learningStoreActions.bindVideoOnly}
+              onRevoke={learningStoreActions.revokeTranscript}
+              t={t}
+            />
+          </>
         )}
       </div>
 
-      {learning.status !== 'idle' && (
+      {learning.status === 'starting_run' && (
+        <p className="learning-auto-continue" role="status">{t('learning.autoStartingKnowledge')}</p>
+      )}
+
+      {learning.runId && (
         <LearningProgress
           status={learning.status}
           currentStage={learning.currentStage}

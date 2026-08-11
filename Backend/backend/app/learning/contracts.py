@@ -100,6 +100,7 @@ class LearningUnknown(LearningContract):
     id: str = Field(min_length=1)
     question: str = Field(min_length=1)
     why_it_matters: str = Field(min_length=1)
+    impact: Literal["high", "medium", "low"] = "medium"
     blocking: bool = False
     affected_fields: list[str] = Field(default_factory=list)
 
@@ -311,6 +312,23 @@ class CoverageGap(LearningContract):
     searched_resource_refs: list[str] = Field(default_factory=list)
 
 
+SelectionOmissionReason = Literal[
+    "budget_limit",
+    "lower_priority",
+    "not_required_by_scope",
+]
+
+
+class SelectionOmission(LearningContract):
+    knowledge_id: str = Field(min_length=1)
+    importance: Literal["important", "optional"]
+    reason: SelectionOmissionReason
+    candidate_segment_refs: list[str] = Field(default_factory=list)
+    marginal_duration_seconds: int = Field(default=0, ge=0)
+    policy_rule_refs: list[str] = Field(default_factory=list)
+    description: str = Field(min_length=1)
+
+
 class ContentSelection(LearningArtifact):
     artifact_id: str = Field(default_factory=lambda: _artifact_id("content-selection"))
     scope_ref: LearningArtifactRef
@@ -318,6 +336,7 @@ class ContentSelection(LearningArtifact):
     evidence_graph_ref: LearningArtifactRef
     selected_segments: list[SelectedSegment] = Field(default_factory=list)
     coverage_gaps: list[CoverageGap] = Field(default_factory=list)
+    selection_omissions: list[SelectionOmission] = Field(default_factory=list)
     total_duration_seconds: int = Field(default=0, ge=0)
 
 
@@ -350,6 +369,7 @@ class LearningContentPlan(LearningArtifact):
     items: list[LearningContentItem] = Field(min_length=1)
     total_duration_seconds: int = Field(default=0, ge=0)
     evidence_gaps: list[CoverageGap] = Field(default_factory=list)
+    deferred_knowledge: list[SelectionOmission] = Field(default_factory=list)
 
 
 LearningQualityRule = Literal[
@@ -434,6 +454,8 @@ __all__ = [
     "ResourcePreference",
     "SegmentEvidence",
     "SelectionFacts",
+    "SelectionOmission",
+    "SelectionOmissionReason",
     "SelectedSegment",
     "VideoResource",
 ]

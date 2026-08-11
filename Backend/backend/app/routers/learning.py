@@ -4,12 +4,21 @@ import json
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from threading import RLock
 from typing import Annotated, Callable, Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from ..learning.contracts import (
     ContentBudget,
@@ -22,7 +31,18 @@ from ..learning.contracts import (
     LearningScope,
     ResourcePreference,
 )
+from ..learning.generators import LearningModelOutputError
+from ..learning.scope import (
+    LearningScopeAnalyzer,
+    LearningScopePatcher,
+    LearningScopeReview,
+    canonicalize_bilibili_resource_urls,
+    evaluate_readiness,
+    is_continue_intent,
+    project_scope_review,
+)
 from ..learning.runtime import (
+    ArtifactStoreError,
     LearningRunResult,
     LearningRuntime,
     LearningRuntimeConfig,
@@ -116,8 +136,66 @@ class LearningRunResultResponse(LearningApiModel):
     evidence_graph: EvidenceGraph
 
 
+class LearningIntakeCreateRequest(LearningApiModel):
+    message: str = Field(min_length=1)
+    preferred_language: str = Field(default="zh-CN", alias="preferredLanguage", max_length=32)
+
+    @field_validator("message")
+    @classmethod
+    def valid_message(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("message must not be blank")
+        return normalized
+
+
+class LearningIntakeSupplementRequest(LearningApiModel):
+    message: str = ""
+    preferred_language: str = Field(default="zh-CN", alias="preferredLanguage", max_length=32)
+    resource_urls: list[str] = Field(
+        default_factory=list,
+        alias="resourceUrls",
+        max_length=8,
+    )
+    defer_auto_start: bool = Field(default=False, alias="deferAutoStart")
+
+    @field_validator("message")
+    @classmethod
+    def valid_message(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("resource_urls")
+    @classmethod
+    def valid_resource_urls(cls, value: list[str]) -> list[str]:
+        return canonicalize_bilibili_resource_urls(value)
+
+    @model_validator(mode="after")
+    def has_patch(self) -> "LearningIntakeSupplementRequest":
+        if not self.message and not self.resource_urls:
+            raise ValueError("message or resourceUrls is required")
+        return self
+
+
+LearningIntakeStatus = Literal[
+    "analyzing_scope",
+    "waiting_scope_review",
+    "running",
+    "completed",
+    "failed",
+]
+
+
+class LearningIntakeResponse(LearningApiModel):
+    intake_id: str = Field(alias="intakeId")
+    status: LearningIntakeStatus
+    scope: LearningScope
+    review: LearningScopeReview
+    run_id: str | None = Field(default=None, alias="runId")
+
+
 LearningRuntimeBuilder = Callable[[], LearningRuntime]
 LearningHealthProvider = Callable[[], dict]
+LearningScopeAnalyzerFactory = Callable[[LearningRuntime], LearningScopeAnalyzer]
 
 
 @dataclass
@@ -135,16 +213,133 @@ class LearningRunManager:
         runtime_factory: LearningRuntimeBuilder,
         *,
         health_provider: LearningHealthProvider | None = None,
+        scope_analyzer_factory: LearningScopeAnalyzerFactory | None = None,
         max_workers: int = 2,
     ):
         self._runtime_factory = runtime_factory
         self._health_provider = health_provider
+        self._scope_analyzer_factory = scope_analyzer_factory
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="planix-learning-api",
         )
         self._runs: dict[str, _LearningRunHandle] = {}
         self._lock = RLock()
+
+    def create_intake(self, payload: LearningIntakeCreateRequest) -> LearningIntakeResponse:
+        intake_id = f"learning-intake-{uuid4()}"
+        runtime = self._runtime_factory()
+        analysis = self._analyzer(runtime).analyze(
+            intake_id=intake_id,
+            message=payload.message,
+            source_ref=f"user:{intake_id}:message:1",
+            preferred_language=payload.preferred_language,
+        )
+        runtime.create_session(intake_id)
+        runtime.artifact_store.save_artifact(intake_id, analysis.scope)
+        with self._lock:
+            self._runs[intake_id] = _LearningRunHandle(runtime=runtime)
+        run_id = None
+        if analysis.readiness.ready_for_planning:
+            self._start_existing(intake_id, analysis.scope)
+            run_id = intake_id
+        return self._intake_response(
+            intake_id,
+            runtime,
+            analysis.scope,
+            run_id=run_id,
+        )
+
+    def get_intake(self, intake_id: str) -> LearningIntakeResponse:
+        runtime = self.get_runtime(intake_id)
+        scope = self._latest_scope(runtime, intake_id)
+        state = runtime.get_session(intake_id)
+        with self._lock:
+            handle = self._runs.get(intake_id)
+        started = bool(handle and handle.future is not None)
+        run_id = (
+            intake_id
+            if state is not None and (state.status != "created" or started)
+            else None
+        )
+        return self._intake_response(intake_id, runtime, scope, run_id=run_id)
+
+    def supplement_intake(
+        self,
+        intake_id: str,
+        payload: LearningIntakeSupplementRequest,
+    ) -> LearningIntakeResponse:
+        runtime = self.get_runtime(intake_id)
+        state = runtime.get_session(intake_id)
+        if state is None:
+            raise KeyError(intake_id)
+        if state.status != "created":
+            raise ValueError("Learning intake has already started")
+        if payload.message and is_continue_intent(payload.message) and not payload.resource_urls:
+            return self.continue_intake(intake_id)
+        current = self._latest_scope(runtime, intake_id)
+        source_ref = f"user:{intake_id}:message:{current.version + 1}"
+        scope = current
+        if payload.message:
+            analysis = self._analyzer(runtime).analyze(
+                intake_id=intake_id,
+                current_scope=current,
+                message=payload.message,
+                source_ref=source_ref,
+                preferred_language=payload.preferred_language,
+            )
+            scope = analysis.scope
+        if payload.resource_urls:
+            resource_version = scope.version if payload.message else scope.version + 1
+            resource_source_ref = f"user:{intake_id}:resource:{resource_version}"
+            scope = LearningScopePatcher.patch_resource_urls(
+                scope,
+                payload.resource_urls,
+                resource_source_ref,
+                increment_version=not bool(payload.message),
+            )
+        runtime.artifact_store.save_artifact(intake_id, scope)
+        run_id = None
+        readiness = evaluate_readiness(scope)
+        if readiness.ready_for_planning and not payload.defer_auto_start:
+            self._start_existing(intake_id, scope)
+            run_id = intake_id
+        return self._intake_response(
+            intake_id,
+            runtime,
+            scope,
+            run_id=run_id,
+        )
+
+    def continue_intake(self, intake_id: str) -> LearningIntakeResponse:
+        runtime = self.get_runtime(intake_id)
+        state = runtime.get_session(intake_id)
+        if state is None:
+            raise KeyError(intake_id)
+        scope = self._latest_scope(runtime, intake_id)
+        if state.status == "created":
+            if not scope.confirmed:
+                scope = scope.model_copy(
+                    deep=True,
+                    update={
+                        "version": scope.version + 1,
+                        "created_at": datetime.now(UTC)
+                        .replace(microsecond=0)
+                        .isoformat()
+                        .replace("+00:00", "Z"),
+                        "confirmed": True,
+                        "source_refs": [
+                            *scope.source_refs,
+                            f"user:{intake_id}:action:continue",
+                        ],
+                    },
+                )
+                runtime.artifact_store.save_artifact(intake_id, scope)
+            self._start_existing(intake_id, scope)
+            return self._intake_response(intake_id, runtime, scope, run_id=intake_id)
+        if state.status in {"running", "completed"}:
+            return self._intake_response(intake_id, runtime, scope, run_id=intake_id)
+        raise ValueError("Learning intake cannot continue after failure")
 
     def create_run(self, payload: LearningRunCreateRequest) -> str:
         runtime = self._runtime_factory()
@@ -158,6 +353,16 @@ class LearningRunManager:
                 self._scope(payload),
             )
         return session.session_id
+
+    def _start_existing(self, run_id: str, scope: LearningScope) -> None:
+        with self._lock:
+            handle = self._runs.get(run_id)
+            if handle is None:
+                handle = _LearningRunHandle(runtime=self.get_runtime(run_id))
+                self._runs[run_id] = handle
+            if handle.future is not None:
+                return
+            handle.future = self._executor.submit(self._execute, run_id, scope)
 
     def get_runtime(self, run_id: str) -> LearningRuntime:
         with self._lock:
@@ -231,6 +436,46 @@ class LearningRunManager:
             return
         with self._lock:
             self._runs[run_id].result = result.model_copy(deep=True)
+
+    def _analyzer(self, runtime: LearningRuntime) -> LearningScopeAnalyzer:
+        if self._scope_analyzer_factory is not None:
+            return self._scope_analyzer_factory(runtime)
+        model = getattr(runtime.pipeline, "semantic_model", None)
+        if model is None:
+            raise RuntimeError("Learning semantic model is unavailable")
+        return LearningScopeAnalyzer(model)
+
+    @staticmethod
+    def _latest_scope(runtime: LearningRuntime, intake_id: str) -> LearningScope:
+        scope = runtime.artifact_store.get_latest_artifact(intake_id, "learning_scope")
+        if not isinstance(scope, LearningScope):
+            raise KeyError(intake_id)
+        return scope
+
+    @staticmethod
+    def _intake_response(
+        intake_id: str,
+        runtime: LearningRuntime,
+        scope: LearningScope,
+        *,
+        run_id: str | None,
+    ) -> LearningIntakeResponse:
+        state = runtime.get_session(intake_id)
+        if state is None:
+            raise KeyError(intake_id)
+        status: LearningIntakeStatus
+        if state.status == "created":
+            status = "running" if run_id is not None else "waiting_scope_review"
+        else:
+            status = state.status
+        readiness = evaluate_readiness(scope)
+        return LearningIntakeResponse(
+            intakeId=intake_id,
+            status=status,
+            scope=scope,
+            review=project_scope_review(scope, readiness),
+            runId=run_id,
+        )
 
     @staticmethod
     def _scope(payload: LearningRunCreateRequest) -> LearningScope:
@@ -336,6 +581,79 @@ def get_learning_health(
     if health.get("status") != "ready":
         response.status_code = 503
     return health
+
+
+@router.post(
+    "/intakes",
+    response_model=LearningIntakeResponse,
+    status_code=201,
+)
+def create_learning_intake(
+    payload: LearningIntakeCreateRequest,
+    manager: LearningManagerDependency,
+) -> LearningIntakeResponse:
+    try:
+        return manager.create_intake(payload)
+    except (LearningModelOutputError, ArtifactStoreError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Learning scope analysis is temporarily unavailable",
+        ) from exc
+
+
+@router.get("/intakes/{intake_id}", response_model=LearningIntakeResponse)
+def get_learning_intake(
+    intake_id: str,
+    manager: LearningManagerDependency,
+) -> LearningIntakeResponse:
+    try:
+        return manager.get_intake(intake_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Learning intake not found") from exc
+
+
+@router.post(
+    "/intakes/{intake_id}/supplements",
+    response_model=LearningIntakeResponse,
+)
+def supplement_learning_intake(
+    intake_id: str,
+    payload: LearningIntakeSupplementRequest,
+    manager: LearningManagerDependency,
+) -> LearningIntakeResponse:
+    try:
+        return manager.supplement_intake(intake_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Learning intake not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Learning intake has already started") from exc
+    except (LearningModelOutputError, ArtifactStoreError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Learning scope analysis is temporarily unavailable",
+        ) from exc
+
+
+@router.post(
+    "/intakes/{intake_id}/continue",
+    response_model=LearningIntakeResponse,
+    status_code=202,
+)
+def continue_learning_intake(
+    intake_id: str,
+    manager: LearningManagerDependency,
+) -> LearningIntakeResponse:
+    try:
+        return manager.continue_intake(intake_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Learning intake not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Learning intake cannot continue") from exc
+    except (ArtifactStoreError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Learning run is temporarily unavailable",
+        ) from exc
 
 
 @router.post("/runs", response_model=LearningRunCreateResponse, status_code=202)
@@ -576,6 +894,9 @@ def _runtime_or_404(manager: LearningRunManager, run_id: str) -> LearningRuntime
 
 
 __all__ = [
+    "LearningIntakeCreateRequest",
+    "LearningIntakeResponse",
+    "LearningIntakeSupplementRequest",
     "LearningRunCreateRequest",
     "LearningRunManager",
     "LearningRunPreferences",

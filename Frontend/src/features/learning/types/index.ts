@@ -1,5 +1,12 @@
 export type LearningRunStatus = 'created' | 'running' | 'completed' | 'failed';
-export type LearningWorkspaceStatus = 'idle' | 'creating' | LearningRunStatus;
+export type LearningWorkspaceStatus =
+  | 'idle'
+  | 'analyzing_scope'
+  | 'waiting_scope_review'
+  | 'starting_run'
+  | 'running'
+  | 'completed'
+  | 'failed';
 export type LearningFailureKind =
   | 'backend_unavailable'
   | 'provider_unavailable'
@@ -7,13 +14,147 @@ export type LearningFailureKind =
   | 'quality_failed'
   | 'run_failed';
 
-export interface LearningWorkspaceInput {
-  goal: string;
-  targetResult: string;
-  currentLevel: string;
-  targetMinutes?: number;
+export interface LearningIntakeCreateRequest {
+  message: string;
   preferredLanguage: string;
-  constraints: string[];
+}
+
+export interface LearningIntakeSupplementRequest {
+  message: string;
+  preferredLanguage: string;
+  resourceUrls?: string[];
+  deferAutoStart?: boolean;
+}
+
+export type LearningTranscriptFormat = 'srt' | 'vtt';
+export type LearningResourceMode = 'automatic' | 'specified';
+export type LearningResourceStatus =
+  | 'idle'
+  | 'validating'
+  | 'registering'
+  | 'registered'
+  | 'failed'
+  | 'revoked'
+  | 'video_only';
+
+export interface LearningTranscriptSourceSummary {
+  source_id: string;
+  resource_id: string;
+  resource_fingerprint: string;
+  provider: string;
+  external_id: string;
+  canonical_url: string;
+  title: string;
+  source_type: 'authorized' | 'srt_vtt';
+  source_format: LearningTranscriptFormat;
+  source_name: string;
+  language: string;
+  checksum_prefix: string;
+  authorization_status: 'authorized';
+  status: 'active' | 'stale' | 'invalid' | 'revoked';
+  segment_count: number;
+  start_ms: number | null;
+  end_ms: number | null;
+  created_at: string;
+}
+
+export interface LearningTranscriptRegistrationRequest {
+  videoUrl: string;
+  format: LearningTranscriptFormat;
+  language: string;
+  content: string;
+  sourceName?: string;
+}
+
+export interface LearningTranscriptRevokeResponse {
+  source_id: string;
+  status: 'revoked';
+}
+
+export interface LearningResourceDraft {
+  mode: LearningResourceMode;
+  videoUrl: string;
+  subtitleFormat: LearningTranscriptFormat;
+  subtitleLanguage: string;
+  subtitleFileName: string;
+  inputSource: 'none' | 'file' | 'paste';
+}
+
+export interface LearningAssumption {
+  id: string;
+  statement: string;
+  basis: string;
+  sourceRef: string;
+  impact: 'high' | 'medium' | 'low';
+}
+
+export interface LearningUnknown {
+  id: string;
+  question: string;
+  whyItMatters: string;
+  impact: 'high' | 'medium' | 'low';
+  blocking: boolean;
+  affectedFields: string[];
+}
+
+export interface LearningScope {
+  artifactId: string;
+  version: number;
+  userGoal: string;
+  targetResult: string;
+  currentLevel: {
+    summary: string;
+    knownSkills: string[];
+    knownTechnologies: string[];
+    uncertainAreas: string[];
+    sourceRefs: string[];
+  };
+  contentBudget: {
+    targetTotalMinutes?: number | null;
+    maximumTotalMinutes?: number | null;
+    maximumVideoCount?: number | null;
+    maximumSegmentMinutes?: number | null;
+  };
+  languagePreference: {
+    preferredLanguages: string[];
+    acceptableLanguages: string[];
+    subtitlesAcceptable: boolean;
+  };
+  resourcePreference: {
+    preferredPlatforms: string[];
+    excludedPlatforms: string[];
+    preferredStyles: string[];
+    freeOnly?: boolean | null;
+    userSuppliedUrls: string[];
+  };
+  assumptions: LearningAssumption[];
+  unknowns: LearningUnknown[];
+  sourceRefs: string[];
+  confirmed: boolean;
+}
+
+export interface LearningKnownInformation {
+  field: string;
+  values: string[];
+  sourceRefs: string[];
+}
+
+export interface LearningScopeReview {
+  knownInformation: LearningKnownInformation[];
+  recommendedGaps: LearningUnknown[];
+  assumptions: LearningAssumption[];
+  readyForPlanning: boolean;
+  highImpactGapCount: number;
+  recommendationRound: number;
+  autoContinueReason: string;
+}
+
+export interface LearningIntakeResponse {
+  intakeId: string;
+  status: 'analyzing_scope' | 'waiting_scope_review' | 'running' | 'completed' | 'failed';
+  scope: LearningScope;
+  review: LearningScopeReview;
+  runId: string | null;
 }
 
 export interface LearningRunCreateRequest {
@@ -94,6 +235,16 @@ export interface LearningCoverageGap {
   searchedResourceRefs: string[];
 }
 
+export interface LearningSelectionOmission {
+  knowledgeId: string;
+  importance: 'important' | 'optional';
+  reason: 'budget_limit' | 'lower_priority' | 'not_required_by_scope';
+  candidateSegmentRefs: string[];
+  marginalDurationSeconds: number;
+  policyRuleRefs: string[];
+  description: string;
+}
+
 export interface LearningSelectionFacts {
   knowledgeCovered: string[];
   evidenceLevel: 'transcript' | 'caption' | 'chapter' | 'manual' | 'metadata';
@@ -128,6 +279,7 @@ export interface LearningContentPlan {
   items: LearningContentItem[];
   totalDurationSeconds: number;
   evidenceGaps: LearningCoverageGap[];
+  deferredKnowledge: LearningSelectionOmission[];
 }
 
 export interface LearningQualityCheck {
@@ -200,6 +352,11 @@ export interface LearningRunResult {
 }
 
 export interface LearningWorkspaceState {
+  intakeId: string | null;
+  scope: LearningScope | null;
+  scopeReview: LearningScopeReview | null;
+  intakeStatus: LearningWorkspaceStatus;
+  supplementDraft: string;
   runId: string | null;
   status: LearningWorkspaceStatus;
   currentStage: string;
@@ -208,6 +365,12 @@ export interface LearningWorkspaceState {
   plan: LearningContentPlan | null;
   qualityReport: LearningQualityReport | null;
   evidenceGraph: LearningEvidenceGraph | null;
-  submittedInput: LearningWorkspaceInput | null;
+  originalInput: string;
+  preferredLanguage: string;
+  scopeAnalysisFailed: boolean;
   failureKind: LearningFailureKind | null;
+  resourceDraft: LearningResourceDraft;
+  registeredTranscript: LearningTranscriptSourceSummary | null;
+  resourceStatus: LearningResourceStatus;
+  resourceError: 'video_invalid' | 'binding_failed' | 'registration_failed' | 'revoke_failed' | null;
 }

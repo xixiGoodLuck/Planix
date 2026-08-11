@@ -12,6 +12,7 @@ from ...contracts import (
     LearningContract,
 )
 from ...generators.base import artifact_ref
+from ...selection_semantics import verified_coverage_edges
 
 
 CoverageStrength = Literal["full", "partial", "supplementary"]
@@ -20,14 +21,6 @@ _STRENGTH_RANK: dict[CoverageStrength, int] = {
     "partial": 2,
     "full": 3,
 }
-_CONTENT_EVIDENCE = {
-    "transcript_span",
-    "caption_span",
-    "chapter_marker",
-    "manual_verified",
-}
-
-
 class KnowledgeCoverage(LearningContract):
     knowledge_id: str = Field(min_length=1)
     covered: bool
@@ -87,21 +80,7 @@ class CoverageAnalyzer:
 
     @staticmethod
     def valid_coverage_edges(evidence_graph: EvidenceGraph) -> list[CoverageEdge]:
-        segments = {item.id for item in evidence_graph.segments}
-        evidence = {item.id: item for item in evidence_graph.evidence}
-        valid: list[CoverageEdge] = []
-        for edge in evidence_graph.coverage_edges:
-            if edge.segment_id not in segments or not edge.evidence_refs:
-                continue
-            if all(
-                evidence_id in evidence
-                and evidence[evidence_id].segment_id == edge.segment_id
-                and evidence[evidence_id].verification_status == "verified"
-                and evidence[evidence_id].kind in _CONTENT_EVIDENCE
-                for evidence_id in edge.evidence_refs
-            ):
-                valid.append(edge)
-        return valid
+        return list(verified_coverage_edges(evidence_graph))
 
 
 __all__ = [

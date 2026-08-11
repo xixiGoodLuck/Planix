@@ -1,10 +1,16 @@
 import { ApiHttpError, ApiNetworkError, apiUrl, callApi } from '../../../lib/api';
 import type {
+  LearningIntakeCreateRequest,
+  LearningIntakeResponse,
+  LearningIntakeSupplementRequest,
   LearningProgressEvent,
   LearningRunCreateRequest,
   LearningRunCreateResponse,
   LearningRunResult,
-  LearningRunState
+  LearningRunState,
+  LearningTranscriptRegistrationRequest,
+  LearningTranscriptRevokeResponse,
+  LearningTranscriptSourceSummary
 } from '../types';
 
 export interface LearningEventHandlers {
@@ -20,6 +26,50 @@ export interface LearningEventStream {
 }
 
 export type LearningEventStreamFactory = (url: string) => LearningEventStream;
+
+export function createLearningIntake(payload: LearningIntakeCreateRequest) {
+  return callApi<LearningIntakeResponse>('POST', '/api/learning/intakes', payload);
+}
+
+export function supplementLearningIntake(intakeId: string, payload: LearningIntakeSupplementRequest) {
+  return callApi<LearningIntakeResponse>(
+    'POST',
+    `/api/learning/intakes/${encodeURIComponent(intakeId)}/supplements`,
+    payload,
+  );
+}
+
+export function continueLearningIntake(intakeId: string) {
+  return callApi<LearningIntakeResponse>(
+    'POST',
+    `/api/learning/intakes/${encodeURIComponent(intakeId)}/continue`,
+  );
+}
+
+export function fetchLearningIntake(intakeId: string) {
+  return callApi<LearningIntakeResponse>(
+    'GET',
+    `/api/learning/intakes/${encodeURIComponent(intakeId)}`,
+  );
+}
+
+export function registerLearningTranscript(payload: LearningTranscriptRegistrationRequest) {
+  return callApi<LearningTranscriptSourceSummary>('POST', '/api/learning/transcripts', payload);
+}
+
+export function fetchLearningTranscriptMetadata(sourceId: string) {
+  return callApi<LearningTranscriptSourceSummary>(
+    'GET',
+    `/api/learning/transcripts/${encodeURIComponent(sourceId)}`,
+  );
+}
+
+export function revokeLearningTranscript(sourceId: string) {
+  return callApi<LearningTranscriptRevokeResponse>(
+    'DELETE',
+    `/api/learning/transcripts/${encodeURIComponent(sourceId)}`,
+  );
+}
 
 export function createLearningRun(payload: LearningRunCreateRequest) {
   return callApi<LearningRunCreateResponse>('POST', '/api/learning/runs', payload);

@@ -8,12 +8,20 @@ from ...contracts import (
     CoverageGap,
     EvidenceGraph,
     KnowledgeGraph,
+    LearningScope,
     SelectedSegment,
     SelectionFacts,
+    SelectionOmission,
 )
 from ...evidence.validators import EvidenceValidator
 from ...generators import LearningGenerationError
 from ...generators.base import artifact_ref, generated_id
+from ...selection_semantics import (
+    explicit_budget_seconds,
+    marginal_duration_seconds,
+    range_union_duration_seconds,
+    resolve_selected_knowledge_coverage,
+)
 from .coverage_analyzer import CoverageAnalyzer, KnowledgeCoverageReport
 from .redundancy_analyzer import RedundancyAnalyzer, RedundancyReport
 
@@ -48,6 +56,7 @@ class ContentSelector:
         self,
         knowledge_graph: KnowledgeGraph,
         evidence_graph: EvidenceGraph,
+        scope: LearningScope | None = None,
     ) -> ContentSelectionResult:
         self.evidence_validator.validate_graph(knowledge_graph, evidence_graph)
         coverage_report = self.coverage_analyzer.analyze(knowledge_graph, evidence_graph)
@@ -105,6 +114,39 @@ class ContentSelector:
             uncovered -= full_required_by_segment[chosen.id]
 
         self._add_context_segments(selected_ids, segments)
+        budget_seconds = explicit_budget_seconds(scope)
+        if budget_seconds is not None:
+            self._add_priority_segments(
+                {
+                    node.id
+                    for node in knowledge_graph.nodes
+                    if node.importance == "important"
+                },
+                budget_seconds,
+                selected_ids,
+                valid_edges,
+                evidence_graph,
+                segments,
+                resources,
+                evidence,
+                redundancy,
+            )
+            self._add_priority_segments(
+                {
+                    node.id
+                    for node in knowledge_graph.nodes
+                    if node.importance == "optional"
+                    and self._scope_requests_knowledge(scope, node.name)
+                },
+                budget_seconds,
+                selected_ids,
+                valid_edges,
+                evidence_graph,
+                segments,
+                resources,
+                evidence,
+                redundancy,
+            )
         selected = [
             self._selected_segment(
                 segment_id,
@@ -129,6 +171,23 @@ class ContentSelector:
             self._coverage_gap(node.id, node.importance, coverage_by_knowledge[node.id], resource_refs)
             for node in knowledge_graph.nodes
             if node.id not in selected_knowledge
+            and not coverage_by_knowledge[node.id].sufficient
+        ]
+        omissions = [
+            self._selection_omission(
+                node.id,
+                node.name,
+                node.importance,
+                coverage_by_knowledge[node.id],
+                selected_ids,
+                evidence_graph,
+                segments,
+                scope,
+            )
+            for node in knowledge_graph.nodes
+            if node.id not in selected_knowledge
+            and coverage_by_knowledge[node.id].sufficient
+            and node.importance in {"important", "optional"}
         ]
         selection_id = generated_id(
             "content-selection",
@@ -144,10 +203,160 @@ class ContentSelector:
                 evidenceGraphRef=artifact_ref("evidence_graph", evidence_graph),
                 selectedSegments=selected,
                 coverageGaps=gaps,
+                selectionOmissions=omissions,
                 totalDurationSeconds=0,
             ),
             coverage_report=coverage_report,
             redundancy_report=redundancy_report,
+        )
+
+    def _add_priority_segments(
+        self,
+        target_knowledge: set[str],
+        budget_seconds: int,
+        selected_ids: list[str],
+        valid_edges,
+        evidence_graph: EvidenceGraph,
+        segments,
+        resources,
+        evidence,
+        redundancy,
+    ) -> None:
+        while target_knowledge:
+            resolved = resolve_selected_knowledge_coverage(evidence_graph, selected_ids)
+            remaining = target_knowledge - set(resolved.selected_knowledge_ids)
+            if not remaining:
+                return
+            selected_resources = {
+                segments[segment_id].resource_id for segment_id in selected_ids
+            }
+            candidates: list[tuple[tuple, list[str]]] = []
+            for segment in evidence_graph.segments:
+                if segment.id in selected_ids:
+                    continue
+                if redundancy[segment.id].classification == "REDUNDANT":
+                    continue
+                if not any(
+                    edge.segment_id == segment.id
+                    and edge.knowledge_id in remaining
+                    and edge.coverage_strength == "full"
+                    for edge in valid_edges
+                ):
+                    continue
+                bundle = [segment.id]
+                self._add_context_segments(bundle, segments)
+                added = [segment_id for segment_id in bundle if segment_id not in selected_ids]
+                marginal = marginal_duration_seconds(
+                    evidence_graph,
+                    selected_ids,
+                    added,
+                )
+                new_resources = len(
+                    {
+                        segments[segment_id].resource_id
+                        for segment_id in added
+                        if segments[segment_id].resource_id not in selected_resources
+                    }
+                )
+                candidates.append(
+                    (
+                        (
+                            -self._segment_evidence_rank(segment, evidence),
+                            marginal,
+                            len(added),
+                            new_resources,
+                            segment.id,
+                        ),
+                        bundle,
+                    )
+                )
+            current_duration = range_union_duration_seconds(evidence_graph, selected_ids)
+            fitting = [
+                candidate
+                for candidate in candidates
+                if current_duration + candidate[0][1] <= budget_seconds
+            ]
+            if not fitting:
+                return
+            _, chosen_bundle = sorted(fitting, key=lambda item: item[0])[0]
+            for segment_id in chosen_bundle:
+                if segment_id not in selected_ids:
+                    selected_ids.append(segment_id)
+
+    @staticmethod
+    def _scope_requests_knowledge(scope: LearningScope | None, knowledge_name: str) -> bool:
+        if scope is None:
+            return False
+        normalized_name = " ".join(knowledge_name.casefold().split())
+        normalized_scope = " ".join(
+            f"{scope.user_goal} {scope.target_result}".casefold().split()
+        )
+        return bool(normalized_name and normalized_name in normalized_scope)
+
+    def _selection_omission(
+        self,
+        knowledge_id: str,
+        knowledge_name: str,
+        importance: str,
+        coverage,
+        selected_ids: list[str],
+        evidence_graph: EvidenceGraph,
+        segments,
+        scope: LearningScope | None,
+    ) -> SelectionOmission:
+        full_candidates = sorted(
+            {
+                edge.segment_id
+                for edge in self.coverage_analyzer.valid_coverage_edges(evidence_graph)
+                if edge.knowledge_id == knowledge_id
+                and edge.coverage_strength == "full"
+            }
+        )
+        marginal_candidates: list[int] = []
+        for segment_id in full_candidates:
+            bundle = [segment_id]
+            self._add_context_segments(bundle, segments)
+            marginal_candidates.append(
+                marginal_duration_seconds(evidence_graph, selected_ids, bundle)
+            )
+        marginal = min(marginal_candidates, default=0)
+        budget_seconds = explicit_budget_seconds(scope)
+        remaining_budget = (
+            None
+            if budget_seconds is None
+            else max(
+                0,
+                budget_seconds
+                - range_union_duration_seconds(evidence_graph, selected_ids),
+            )
+        )
+        requested_optional = importance == "optional" and self._scope_requests_knowledge(
+            scope, knowledge_name
+        )
+        if importance == "optional" and not requested_optional:
+            reason = "not_required_by_scope"
+        elif remaining_budget is not None and marginal > remaining_budget:
+            reason = "budget_limit"
+        else:
+            reason = "lower_priority"
+        descriptions = {
+            "budget_limit": "Verified content exists, but its marginal viewing time exceeds the remaining content budget.",
+            "lower_priority": "Verified content exists, but it was not added to the current minimum sufficient content set.",
+            "not_required_by_scope": "Verified content exists, but the current learning scope does not require this optional knowledge.",
+        }
+        policy_refs = {
+            "budget_limit": ["content_budget", "marginal_duration_union"],
+            "lower_priority": ["minimum_sufficient_selection", "importance_priority"],
+            "not_required_by_scope": ["minimum_sufficient_selection", "scope_relevance"],
+        }
+        return SelectionOmission(
+            knowledgeId=knowledge_id,
+            importance=importance,
+            reason=reason,
+            candidateSegmentRefs=full_candidates,
+            marginalDurationSeconds=marginal,
+            policyRuleRefs=policy_refs[reason],
+            description=descriptions[reason],
         )
 
     def _candidate_key(
@@ -222,10 +431,7 @@ class ContentSelector:
             edge
             for edge in valid_edges
             if edge.segment_id == segment_id
-            and (
-                knowledge[edge.knowledge_id].importance != "required"
-                or edge.coverage_strength == "full"
-            )
+            and edge.coverage_strength == "full"
         ]
         if not usable_edges:
             raise LearningGenerationError(
@@ -350,11 +556,9 @@ class ContentSelector:
     @staticmethod
     def _coverage_gap(knowledge_id, importance, coverage, resource_refs) -> CoverageGap:
         if coverage.covered:
-            reason = "available evidence is insufficient for full required coverage"
+            reason = "available evidence is insufficient for full coverage"
         else:
             reason = "no verified content segment covers this knowledge"
-        if importance != "required" and coverage.sufficient:
-            reason = "not selected by the current minimum sufficient required-content set"
         return CoverageGap(
             knowledgeId=knowledge_id,
             reason=reason,

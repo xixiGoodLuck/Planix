@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  continueLearningIntake,
+  createLearningIntake,
   createLearningRun,
+  fetchLearningTranscriptMetadata,
+  registerLearningTranscript,
+  revokeLearningTranscript,
+  supplementLearningIntake,
   streamLearningRunEvents,
   type LearningEventStream
 } from './learningApi';
@@ -64,6 +70,57 @@ describe('Learning API client', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:8003/api/learning/runs');
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({ goal: 'Learn FastAPI' });
+  });
+
+  it('uses typed intake, supplement, and continue endpoints', async () => {
+    const payload = { intakeId: 'learning-intake-1', status: 'waiting_scope_review', scope: {}, review: {}, runId: null };
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(
+      JSON.stringify(payload),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createLearningIntake({ message: 'Learn FastAPI', preferredLanguage: 'en-US' });
+    await supplementLearningIntake('learning-intake-1', {
+      message: '', preferredLanguage: 'en-US',
+      resourceUrls: ['https://www.bilibili.com/video/BV1zV2QBtE39'], deferAutoStart: true
+    });
+    await continueLearningIntake('learning-intake-1');
+
+    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:8003/api/learning/intakes');
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ message: 'Learn FastAPI', preferredLanguage: 'en-US' });
+    expect(fetchMock.mock.calls[1][0]).toContain('/api/learning/intakes/learning-intake-1/supplements');
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({
+      message: '', preferredLanguage: 'en-US',
+      resourceUrls: ['https://www.bilibili.com/video/BV1zV2QBtE39'], deferAutoStart: true
+    });
+    expect(fetchMock.mock.calls[2][0]).toContain('/api/learning/intakes/learning-intake-1/continue');
+    expect(fetchMock.mock.calls[2][1]?.body).toBeUndefined();
+  });
+
+  it('registers, fetches, and revokes transcript sources through the existing registry API', async () => {
+    const summary = {
+      source_id: 'source-1', resource_id: 'video-1', provider: 'bilibili', external_id: 'BV1zV2QBtE39',
+      canonical_url: 'https://www.bilibili.com/video/BV1zV2QBtE39', source_type: 'srt_vtt',
+      source_format: 'vtt', source_name: 'routing.vtt', language: 'zh-CN', segment_count: 2,
+      status: 'active', created_at: '2026-08-12T08:00:00Z'
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(summary), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(summary), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ source_id: 'source-1', status: 'revoked' }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await registerLearningTranscript({
+      videoUrl: summary.canonical_url, format: 'vtt', language: 'zh-CN',
+      content: 'WEBVTT\n\n00:01.000 --> 00:02.000\nRouting', sourceName: 'routing.vtt'
+    });
+    await fetchLearningTranscriptMetadata('source-1');
+    await revokeLearningTranscript('source-1');
+
+    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:8003/api/learning/transcripts');
+    expect(fetchMock.mock.calls[1][0]).toContain('/api/learning/transcripts/source-1');
+    expect(fetchMock.mock.calls[2][1]?.method).toBe('DELETE');
   });
 
   it('parses named SSE progress events and closes on completion', () => {

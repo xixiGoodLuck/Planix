@@ -6,6 +6,7 @@ import pytest
 
 from app.db import ALEMBIC_REVISION, get_conn
 from app.learning.contracts import VideoResource
+from app.learning.evidence.providers import VideoSearchQuery
 from app.learning.evidence.transcript import (
     LearningTranscriptRepository,
     NormalizedTranscriptSegment,
@@ -112,6 +113,25 @@ def test_register_read_provider_idempotency_and_revoke_purge() -> None:
         PersistentTranscriptProvider(repository).fetch_transcript(
             transcript_resource()
         )
+
+
+def test_active_registered_transcript_resources_are_searchable_before_remote_candidates() -> None:
+    repository = LearningTranscriptRepository()
+    source = register_source(repository)
+    provider = PersistentTranscriptProvider(repository)
+
+    hits = provider.search_registered(
+        VideoSearchQuery(
+            knowledgeTerms=["FastAPI Routing GET POST"],
+            maximumResults=5,
+        )
+    )
+
+    assert [item.external_id for item in hits] == [transcript_resource().external_id]
+    assert repository.list_active_sources()[0].source_id == source.source_id
+    assert provider.search_registered(
+        VideoSearchQuery(knowledgeTerms=["Rust ownership"], maximumResults=5)
+    ) == []
 
 
 def test_same_source_name_with_different_content_conflicts() -> None:
