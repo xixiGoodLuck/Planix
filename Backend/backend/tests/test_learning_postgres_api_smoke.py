@@ -37,16 +37,6 @@ def _wait(client, run_id: str):
 
 
 def test_production_api_run_survives_manager_and_repository_recreation(client) -> None:
-    with get_conn() as connection:
-        pure_v2_before = connection.execute(
-            """
-            SELECT
-              (SELECT COUNT(*) FROM planning_sessions) AS sessions,
-              (SELECT COUNT(*) FROM planning_artifacts) AS artifacts,
-              (SELECT COUNT(*) FROM harness_states) AS harness
-            """
-        ).fetchone()
-
     manager_a = LearningRunManager(_runtime)
     app.dependency_overrides[get_learning_run_manager] = lambda: manager_a
     try:
@@ -101,16 +91,7 @@ def test_production_api_run_survives_manager_and_repository_recreation(client) -
             """,
             (run_id, run_id, run_id, run_id),
         ).fetchone()
-        pure_v2_after = connection.execute(
-            """
-            SELECT
-              (SELECT COUNT(*) FROM planning_sessions) AS sessions,
-              (SELECT COUNT(*) FROM planning_artifacts) AS artifacts,
-              (SELECT COUNT(*) FROM harness_states) AS harness
-            """
-        ).fetchone()
     assert learning["runs"] == 1
     assert learning["artifacts"] == 7
     assert learning["checkpoints"] == 1
     assert learning["events"] > 0
-    assert pure_v2_after == pure_v2_before

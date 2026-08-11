@@ -1,34 +1,37 @@
-# Planix V2 architecture
+# Planix Learning architecture
 
-## Authority
+## Product boundary
 
-- Entry: `Backend/backend/app/cognitive_planning.get_planning_orchestrator`
-- Runtime: `CognitiveOSRuntime`
-- Graph: `Backend/backend/app/cognitive_planning/graph/planning_graph.py`
-- Contracts: `Backend/backend/app/cognitive_planning/contracts`
-- Policy and control: `Backend/backend/app/harness`
+Planix has one business domain: Learning. The frontend exposes only Learning and Settings. The backend exposes Learning, AI Settings, and Health APIs.
+
+## Runtime flow
 
 ```text
-session_guard -> understanding -> understanding_readiness -> wait_for_understanding
--> compile_constraints -> build_context -> generate_plan -> validate_plan
--> semantic_review -> repair_plan -> validate_repaired_plan
--> generate_schedule -> validate_schedule -> repair_schedule
--> materialize_calendar -> wait_for_final_review
--> feedback_router / record_learning -> calendar_gate
+LearningScope
+-> LearningOutcome + CapabilityGraph
+-> KnowledgeGraph
+-> Video metadata + verified Transcript Evidence
+-> EvidenceGraph + CoverageReport
+-> bounded Gap Completion
+-> ContentSelection
+-> LearningContentPlan
+-> LearningQualityReport
 ```
 
-Repair nodes execute only when required and have a maximum of two rounds. `QualityReport.passed` is code-owned: every hard rule must pass and no blocker or major issue may remain. Score is diagnostic only.
+The model owns semantic decomposition and mapping. Code owns IDs, versions, references, timestamps, validation, coverage strength, quality pass/fail, and bounded retries.
 
-## Persistence and safety
+## Evidence boundary
 
-New sessions store lifecycle state in `planning_sessions`; versioned bodies live in `planning_artifacts`. Existing retired database tables and columns are preserved but production code does not read or write them. Final approval binds the current Understanding, Constraint, Context, Plan, quality, Schedule, Calendar proposal, and Calendar snapshot versions. Its checkpoint version is an immutable audit anchor; protected Artifact freshness is enforced by the exact bound version set rather than comparing the approval-creation checkpoint with later audit-only checkpoints. Calendar writes additionally require Command approval, Harness policy, permission checks, current versions, and idempotent `sourceKey` writes.
+`ContentSegment` is the only Learning artifact that owns recommended start/end seconds. Those values must originate from a validated transcript. Metadata and model output cannot create exact time ranges. A search result remains a candidate until qualification, transcript validation, semantic mapping, and coverage validation complete.
 
-## Models
+## Runtime reliability
 
-The model layer is OpenAI-compatible and supports DeepSeek, GLM, Kimi, OpenAI, Custom, and Local providers. Formal planning routes are limited to the four V2 task types. Provider testing is an internal Settings operation and never becomes a planning route.
+`LearningRuntime` is assembled by `LearningRuntimeFactory` during FastAPI lifespan startup. Versioned artifacts use `ArtifactStore`; production uses the PostgreSQL repository. Checkpoints, recovery, resume decisions, atomic resume commits, and progress events remain isolated inside `backend/app/learning/runtime`.
 
-## Independent capabilities
+## Persistence
 
-- Calendar persists manual and approved V2 events.
-- Settings manages providers and the four V2 routing rules.
-- Tauri packages the same FastAPI and Vite application.
+PostgreSQL 17 is required. Learning tables are isolated from AI Settings tables. Alembic is the schema authority; runtime DDL and embedded database fallbacks are prohibited.
+
+## Model routing
+
+All current semantic Learning calls use the single `learning_semantic` route. Settings retains provider selection, fallback ordering, Local/OpenAI-compatible support, secure secret storage, and global non-thinking behavior. Production configuration never silently falls back to Mock.

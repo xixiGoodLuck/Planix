@@ -175,37 +175,17 @@ Write-Host "OK: settings saved provider=$($settings.provider) hasApiKey=$($setti
 $ai = Invoke-Json -Method POST -Uri "$ApiBaseUrl/api/ai/test" -Body @{ prompt = "Say OK in one short sentence." } -TimeoutSec 60
 Write-Host "OK: AI test mode=$($ai.mode) ok=$($ai.ok)" -ForegroundColor Green
 
-$today = Get-Date -Format "yyyy-MM-dd"
-$planBody = @{
-    date = $today
-    time = "09:00"
-    content = "MSI user-path verification task"
-    done = $false
-    result = ""
-    priority = "medium"
-    estimatedMinutes = 30
-    source = "manual"
+$run = Invoke-Json -Method POST -Uri "$ApiBaseUrl/api/learning/runs" -Body @{
+    goal = "Learn FastAPI and build a CRUD API"
+    preferences = @{
+        target_result = "Build a working FastAPI CRUD API"
+        current_level = @{ summary = "Python basics" }
+        content_budget = @{ targetTotalMinutes = 60 }
+        confirmed = $true
+    }
+    constraints = @()
 }
-$plan = Invoke-Json -Method POST -Uri "$ApiBaseUrl/api/plans" -Body $planBody
-Write-Host "OK: plan created id=$($plan.id)" -ForegroundColor Green
-
-$documents = Invoke-Json -Method POST -Uri "$ApiBaseUrl/api/rag/documents" -Body @{
-    title = "MSI verification material"
-    content = "Planix verifies calendar, sidecar, PostgreSQL, RAG, and AI settings in a Windows MSI install."
-    sourceType = "paste"
-}
-Write-Host "OK: RAG document created id=$($documents.id)" -ForegroundColor Green
-
-$rag = Invoke-Json -Method POST -Uri "$ApiBaseUrl/api/rag/query" -Body @{
-    goal = "Verify Planix MSI"
-    deadline = ""
-    dailyHours = 1
-    materials = "Which capabilities were verified?"
-    preferences = ""
-    date = $today
-    data = @{}
-} -TimeoutSec 60
-Write-Host "OK: RAG query mode=$($rag.mode) sources=$($rag.sources.Count)" -ForegroundColor Green
+Write-Host "OK: Learning run created id=$($run.run_id)" -ForegroundColor Green
 
 Write-Step "Restart app and verify persistence"
 if ($started -and -not $started.HasExited) {
@@ -214,11 +194,9 @@ if ($started -and -not $started.HasExited) {
 Start-Sleep -Seconds 3
 $restarted = Start-Process -FilePath $AppExe -PassThru
 Wait-Api -BaseUrl $ApiBaseUrl -Timeout $TimeoutSeconds | Out-Null
-$plans = Invoke-Json -Method GET -Uri "$ApiBaseUrl/api/plans?date=$today"
-if (-not ($plans | Where-Object { $_.id -eq $plan.id })) {
-    throw "Created plan was not found after restart."
-}
-Write-Host "OK: plan persisted after restart" -ForegroundColor Green
+$runState = Invoke-Json -Method GET -Uri "$ApiBaseUrl/api/learning/runs/$($run.run_id)"
+if (-not $runState.status) { throw "Learning run was not found after restart." }
+Write-Host "OK: Learning run persisted after restart" -ForegroundColor Green
 
 Write-Step "Desktop log scan"
 Require-Path -Path $DesktopLog -Label "desktop log"

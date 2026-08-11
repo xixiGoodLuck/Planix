@@ -1,35 +1,35 @@
-# Planix
+# Planix Learning
 
-简体中文 | [English](README.en.md)
+Planix Learning 根据用户的技术学习目标建立知识路线，搜索并分析真实视频内容，使用可验证的字幕/Transcript Evidence，筛选需要观看的具体片段，并解释知识、视频内容、推荐原因和推荐观看时长。
 
-Planix 是本地优先的 AI 规划应用。作品集文档版本为 **v3.0.0**。
+## 产品能力
 
-## Pure Planix V2
+- 将学习目标拆解为成果、能力与知识图谱。
+- 从真实 Provider 获取视频元数据，禁止模型编造 URL、视频 ID 或时长。
+- 只从已验证字幕生成时间范围和内容证据。
+- 分析知识覆盖、缺口、重复与版本冲突，并执行有限轮次的证据补全。
+- 输出可追溯的 `LearningContentPlan` 与代码判定的 `LearningQualityReport`。
+- 使用 PostgreSQL 17 持久化 Learning Run、Artifact、Checkpoint、Resume Event 和 Transcript Evidence。
 
-正式 P Mode 只有一套原生规划运行时：用户目标经过 Understanding、约束与上下文编译、Plan 生成与验证、Schedule 生成与验证、Final Review，最后在显式批准和权限检查后写入 Calendar。模型失败会保留有效 Artifact 并停在失败节点，不使用模板、Mock 或旧运行时兜底。
+## 页面与 API
 
-模型路由仅包含：
+正式页面只有：
 
-- `planning_understanding`
-- `planning_plan`
-- `planning_review`
-- `planning_learning`
+- `#/learning`（默认）
+- `#/settings`
 
-Calendar、Settings 和桌面打包是独立产品能力，不是正式规划的替代路径。V2 Context 仅使用可追溯的请求上下文、日历快照和正式学习记忆。
+正式业务 API：
 
-## 启动
+- `/api/learning/*`
+- `/api/ai/*`
+- `/health`
 
-Planix requires PostgreSQL 17. Start the pinned local service and apply the Alembic schema first:
+## 本地运行
 
 ```powershell
 docker compose up -d postgres
-$env:DATABASE_URL="postgresql://planix:planix@127.0.0.1:5432/planix"
 cd Backend
 ..\.venv\Scripts\python.exe -m alembic upgrade head
-```
-
-```powershell
-cd Backend
 ..\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --env-file ..\.env --port 8003
 ```
 
@@ -38,8 +38,4 @@ cd Frontend
 npm run dev -- --port 5176
 ```
 
-- Frontend: `http://localhost:5176`
-- Backend: `http://127.0.0.1:8003`
-- API 文档: `http://127.0.0.1:8003/docs`
-
-详见 [架构说明](docs/architecture.md) 和 [V2 验收标准](docs/cognitive-planning-acceptance.md)。
+访问 `http://127.0.0.1:5176/#/learning`。架构说明见 [docs/architecture.md](docs/architecture.md)。

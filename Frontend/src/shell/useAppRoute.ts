@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { AppRoute } from '../types';
 
-export const appRoutes: AppRoute[] = ['calendar', 'learning', 'settings', 'command'];
-export const appMenuRoutes = ['learning', 'calendar', 'settings'] as const satisfies readonly AppRoute[];
-export const defaultRoute: AppRoute = 'command';
+export const appRoutes: AppRoute[] = ['learning', 'settings'];
+export const appMenuRoutes = ['learning', 'settings'] as const satisfies readonly AppRoute[];
+export const defaultRoute: AppRoute = 'learning';
 
 export function normalizeAppRoute(candidate: string): AppRoute {
-  return appRoutes.includes(candidate as AppRoute) ? (candidate as AppRoute) : defaultRoute;
+  return appRoutes.includes(candidate as AppRoute) ? candidate as AppRoute : defaultRoute;
 }
 
 function readRouteFromHash(): AppRoute {
@@ -18,20 +18,14 @@ function readRouteFromHash(): AppRoute {
 
 export function useAppRoute() {
   const [route, setRouteState] = useState<AppRoute>(() => readRouteFromHash());
-
   useEffect(() => {
     const handleHashChange = () => setRouteState(readRouteFromHash());
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
-
   const setRoute = useCallback((nextRoute: AppRoute) => {
-    if (readRouteFromHash() === nextRoute) {
-      setRouteState(nextRoute);
-      return;
-    }
-    window.location.hash = `/${nextRoute}`;
+    if (readRouteFromHash() === nextRoute) setRouteState(nextRoute);
+    else window.location.hash = `/${nextRoute}`;
   }, []);
-
   return { route, setRoute };
 }

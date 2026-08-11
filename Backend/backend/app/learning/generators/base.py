@@ -79,7 +79,7 @@ class RouterLearningModel:
             max_token_cap=4000,
             temperature=0.1,
             response_format_json=True,
-            task_type="planning_learning",
+            task_type="learning_semantic",
             record_run=False,
         )
         if not result:

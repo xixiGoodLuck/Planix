@@ -82,7 +82,7 @@ def test_transcript_schema_is_current_and_separate_from_pure_v2() -> None:
                 """
             ).fetchall()
         }
-    assert revision["version_num"] == ALEMBIC_REVISION == "20260811_02"
+    assert revision["version_num"] == ALEMBIC_REVISION == "20260812_01"
     assert tables == {
         "learning_transcript_sources",
         "learning_transcript_segments",

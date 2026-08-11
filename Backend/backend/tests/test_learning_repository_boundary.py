@@ -99,9 +99,9 @@ def test_repository_boundary_saves_reads_lists_and_checkpoints() -> None:
     assert store.get_checkpoint("learning-session-22") == checkpoint
 
 
-def test_repository_rejects_pure_v2_namespace() -> None:
+def test_repository_rejects_shared_settings_namespace() -> None:
     repository = LearningRepositoryFixture()
-    repository.repository_namespace = "planning_artifacts"
+    repository.repository_namespace = "ai_settings"
 
     with pytest.raises(ArtifactStoreError, match="dedicated learning_artifacts"):
         PostgresArtifactStore(repository)

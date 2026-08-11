@@ -31,11 +31,9 @@ from app.services.secret_store import get_secret_store, provider_secret_key  # n
 
 
 def _truncate() -> None:
-    tables = ", ".join(sorted(REQUIRED_TABLES - {"calendar_state"}))
+    tables = ", ".join(sorted(REQUIRED_TABLES))
     with get_conn() as conn:
         conn.execute(f"TRUNCATE TABLE {tables} CASCADE")
-        conn.execute("TRUNCATE TABLE calendar_state CASCADE")
-        conn.execute("INSERT INTO calendar_state(id, revision) VALUES ('local', 0)")
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -41,7 +41,7 @@ def test_learning_schema_is_postgresql17_current_and_isolated() -> None:
             ).fetchall()
         }
     assert 170000 <= server_version < 180000
-    assert revision == ALEMBIC_REVISION == "20260811_02"
+    assert revision == ALEMBIC_REVISION == "20260812_01"
     assert tables == {
         "learning_runs",
         "learning_artifacts",
@@ -52,9 +52,7 @@ def test_learning_schema_is_postgresql17_current_and_isolated() -> None:
         "learning_transcript_segments",
     }
     source = inspect.getsource(PostgresLearningArtifactRepository)
-    assert "planning_artifacts" not in source
-    assert "planning_sessions" not in source
-    assert "harness_states" not in source
+    assert "ai_settings" not in source
 
 
 def test_repository_saves_reads_versions_and_health() -> None:

@@ -399,7 +399,7 @@ def test_invalid_model_output_is_rejected_by_draft_contract() -> None:
 
     assert caught.value.stage == "learning_outcomes"
     assert len(llm.calls) == 1
-    assert llm.calls[0]["task_type"] == "planning_learning"
+    assert llm.calls[0]["task_type"] == "learning_semantic"
     assert llm.calls[0]["record_run"] is False
 
 

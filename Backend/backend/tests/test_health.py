@@ -8,10 +8,9 @@ def test_health_endpoint(client):
         assert body["version"] == "3.11-demo-reliability"
         assert body["startupTime"]
         assert body["features"] == {
-            "planQualityGate": True,
-            "contextAwareRefinement": True,
-            "calendarDraftContextRecovery": True,
-            "demoMetrics": True,
+            "learningRuntime": True,
+            "evidenceValidation": True,
+            "artifactRecovery": True,
         }
 
 

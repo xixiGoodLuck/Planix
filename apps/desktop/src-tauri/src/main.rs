@@ -35,13 +35,8 @@ struct ProxyResponse {
 #[tauri::command]
 fn proxy_api(req: ProxyRequest) -> Result<ProxyResponse, String> {
     let url = format!("http://127.0.0.1:{}{}", api_port(), req.path);
-    let timeout_seconds = if req.path == "/api/planning/goal-plan" {
-        85
-    } else {
-        45
-    };
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(timeout_seconds))
+        .timeout(Duration::from_secs(45))
         .build()
         .map_err(|e| format!("failed to create HTTP client: {e}"))?;
 

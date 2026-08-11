@@ -1,30 +1,28 @@
-# Planix
+# Planix Learning
 
-[简体中文](README.md) | English
+Planix Learning turns a technical learning goal into a knowledge route, searches and analyzes real video resources, uses verifiable transcript evidence, selects exact viewing segments, and explains what to learn, why it matters, what each video covers, and how long to watch.
 
-Planix is a local-first AI planning application. Portfolio documentation version: **v3.0.0**.
+## Product capabilities
 
-## Pure Planix V2
+- Decompose a goal into outcomes, capabilities, and a knowledge graph.
+- Retrieve real video metadata without letting a model invent URLs, video IDs, or duration.
+- Create timestamped evidence only from validated transcripts.
+- Analyze coverage, gaps, redundancy, and version conflicts, then run a bounded evidence-completion loop.
+- Produce a traceable `LearningContentPlan` and a code-owned `LearningQualityReport`.
+- Persist Learning runs, artifacts, checkpoints, resume events, and transcript evidence in PostgreSQL 17.
 
-Formal P Mode has one native planning runtime. A user goal moves through Understanding, constraint and context compilation, Plan generation and validation, Schedule generation and validation, Final Review, and an explicitly approved Calendar write. Model failures preserve valid Artifacts and stop at the failed node; no template, mock, or retired runtime replaces a formal model call.
+## Pages and APIs
 
-The only model routes are `planning_understanding`, `planning_plan`, `planning_review`, and `planning_learning`.
+The product pages are `#/learning` (default) and `#/settings`.
 
-Calendar, Settings, and desktop packaging remain independent product capabilities, not alternate planning paths. V2 Context uses only traceable request context, Calendar snapshots, and formal learning memory.
+The product APIs are `/api/learning/*`, `/api/ai/*`, and `/health`.
 
-## Run locally
-
-Planix requires PostgreSQL 17. Start the pinned local service and apply the Alembic schema first:
+## Local development
 
 ```powershell
 docker compose up -d postgres
-$env:DATABASE_URL="postgresql://planix:planix@127.0.0.1:5432/planix"
 cd Backend
 ..\.venv\Scripts\python.exe -m alembic upgrade head
-```
-
-```powershell
-cd Backend
 ..\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --env-file ..\.env --port 8003
 ```
 
@@ -33,8 +31,4 @@ cd Frontend
 npm run dev -- --port 5176
 ```
 
-- Frontend: `http://localhost:5176`
-- Backend: `http://127.0.0.1:8003`
-- API docs: `http://127.0.0.1:8003/docs`
-
-See [Architecture](docs/architecture.md) and [V2 acceptance](docs/cognitive-planning-acceptance.md).
+Open `http://127.0.0.1:5176/#/learning`. See [docs/architecture.md](docs/architecture.md) for details.

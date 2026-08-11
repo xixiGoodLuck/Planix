@@ -7,25 +7,20 @@ from app.services.model_provider import ModelCallError, ModelCallResult, ModelRo
 from app.services.secret_store import get_secret_store, provider_secret_key
 
 
-EXPECTED_TASKS = [
-    "planning_understanding",
-    "planning_plan",
-    "planning_review",
-    "planning_learning",
-]
+EXPECTED_TASKS = ["learning_semantic"]
 
 
-def test_public_settings_returns_exact_v2_routes(client):
+def test_public_settings_returns_exact_learning_routes(client):
     response = client.get("/api/ai/settings")
     assert response.status_code == 200
     assert [rule["taskType"] for rule in response.json()["routingRules"]] == EXPECTED_TASKS
     assert list(ROUTABLE_TASK_TYPES) == EXPECTED_TASKS
 
 
-def test_v2_routing_save_is_idempotent(client):
+def test_learning_routing_save_is_idempotent(client):
     rules = client.get("/api/ai/settings").json()["routingRules"]
-    rules[1]["primaryProvider"] = "auto"
-    rules[1]["fallbackProviders"] = ["deepseek"]
+    rules[0]["primaryProvider"] = "auto"
+    rules[0]["fallbackProviders"] = ["deepseek"]
     first = client.put("/api/ai/settings/routing", json={"routingRules": rules})
     second = client.put("/api/ai/settings/routing", json={"routingRules": rules})
     assert first.status_code == second.status_code == 200

@@ -11,29 +11,13 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 
-ALEMBIC_REVISION = "20260811_02"
+ALEMBIC_REVISION = "20260812_01"
 REQUIRED_TABLES = {
-    "plans",
-    "month_notes",
-    "planning_sessions",
-    "planning_artifacts",
-    "agent_decisions",
-    "agent_messages",
-    "harness_states",
-    "harness_events",
     "ai_settings",
     "ai_provider_configs",
     "ai_model_routing_rules",
-    "calendar_state",
     "user_preferences",
-    "user_planning_hypotheses",
-    "user_model_memories",
     "ai_runs",
-    "command_threads",
-    "command_messages",
-    "command_drafts",
-    "command_actions",
-    "command_approvals",
     "learning_runs",
     "learning_artifacts",
     "learning_checkpoints",

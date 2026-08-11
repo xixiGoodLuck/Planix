@@ -54,10 +54,7 @@ STANDARD_ERROR_TYPES = {
 }
 DIRECT_ROUTING_TASK_TYPES = {"settings_test"}
 TRUNCATION_RETRY_TASK_TYPES = {
-    "planning_understanding",
-    "planning_plan",
-    "planning_review",
-    "planning_learning",
+    "learning_semantic",
 }
 
 
@@ -546,7 +543,7 @@ class ModelRouter:
         return result, error
 
     @staticmethod
-    def _can_retry_planning_truncation(
+    def _can_retry_learning_truncation(
         request: ModelCallRequest,
         error: ModelCallError | None,
         *,
@@ -561,7 +558,7 @@ class ModelRouter:
         )
 
     @staticmethod
-    def _planning_retry_request(request: ModelCallRequest) -> ModelCallRequest:
+    def _learning_retry_request(request: ModelCallRequest) -> ModelCallRequest:
         retry_tokens = min(request.max_token_cap, max(request.max_tokens, request.max_tokens * 2))
         return replace(request, max_tokens=retry_tokens)
 
@@ -598,11 +595,11 @@ class ModelRouter:
         initial_start = time.perf_counter()
         result, error = self._complete_direct(request)
         initial_elapsed_ms = max(1, int((time.perf_counter() - initial_start) * 1000))
-        if not self._can_retry_planning_truncation(request, error, automatic_retry_attempted=False):
+        if not self._can_retry_learning_truncation(request, error, automatic_retry_attempted=False):
             return result, error
 
         initial_attempt = self._route_attempt(self.settings, result, error, initial_elapsed_ms)
-        retry_request = self._planning_retry_request(request)
+        retry_request = self._learning_retry_request(request)
         start = time.perf_counter()
         retry_result, retry_error = self._complete_direct(retry_request)
         elapsed_ms = max(1, int((time.perf_counter() - start) * 1000))
@@ -699,13 +696,13 @@ class ModelRouter:
                 last_error = error
                 if provider == "local":
                     break
-                if self._can_retry_planning_truncation(
+                if self._can_retry_learning_truncation(
                     request,
                     error,
                     automatic_retry_attempted=automatic_retry_attempted,
                 ):
                     automatic_retry_attempted = True
-                    retry_request = self._planning_retry_request(request)
+                    retry_request = self._learning_retry_request(request)
                     retry_start = time.perf_counter()
                     retry_result, retry_error = self._complete_direct(retry_request, routed_settings)
                     retry_elapsed_ms = max(1, int((time.perf_counter() - retry_start) * 1000))

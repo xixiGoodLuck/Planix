@@ -10,10 +10,9 @@ router = APIRouter()
 APP_VERSION = os.getenv("PLANIX_API_VERSION", "3.11-demo-reliability")
 STARTUP_TIME = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 FEATURES = {
-    "planQualityGate": True,
-    "contextAwareRefinement": True,
-    "calendarDraftContextRecovery": True,
-    "demoMetrics": True,
+    "learningRuntime": True,
+    "evidenceValidation": True,
+    "artifactRecovery": True,
 }
 
 

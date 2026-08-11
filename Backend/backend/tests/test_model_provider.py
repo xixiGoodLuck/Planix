@@ -309,14 +309,11 @@ def test_deepseek_v4_force_non_thinking_applies_to_every_request(monkeypatch):
         routing_enabled=False,
     )
 
-    for feature in (
-            "planning_blueprint_generation",
-        "planning_plan_repair",
-    ):
+    for feature in ("learning_knowledge_generation", "learning_evidence_mapping"):
         result, error = router.complete(
             _request(
                 response_format_json=True,
-                task_type="planning_plan",
+                task_type="learning_semantic",
                 feature=feature,
             )
         )
@@ -328,8 +325,8 @@ def test_deepseek_v4_force_non_thinking_applies_to_every_request(monkeypatch):
     result, error = router.complete(
         _request(
             response_format_json=True,
-            task_type="planning_plan",
-            feature="planning_semantic_review",
+            task_type="learning_semantic",
+            feature="learning_quality_review",
         )
     )
     assert error is None
@@ -339,8 +336,8 @@ def test_deepseek_v4_force_non_thinking_applies_to_every_request(monkeypatch):
     result, error = router.complete(
         _request(
             response_format_json=True,
-            task_type="planning_review",
-            feature="planning_plan_generation",
+            task_type="learning_semantic",
+            feature="learning_content_generation",
         )
     )
     assert error is None
@@ -353,7 +350,7 @@ def test_deepseek_v4_force_non_thinking_applies_to_every_request(monkeypatch):
         routing_enabled=False,
     )
     result, error = default_router.complete(
-        _request(response_format_json=True, task_type="planning_plan", feature="planning_blueprint_generation")
+        _request(response_format_json=True, task_type="learning_semantic", feature="learning_knowledge_generation")
     )
     assert error is None
     assert result is not None
@@ -633,21 +630,10 @@ def test_model_router_primary_success_does_not_use_fallback(monkeypatch):
     assert calls == ["kimi"]
 
 
-@pytest.mark.parametrize(
-    ("task_type", "initial_budget", "hard_cap"),
-    [
-        ("planning_understanding", 5400, 10800),
-        ("planning_plan", 12000, 24000),
-        ("planning_review", 6600, 13200),
-        ("planning_learning", 5400, 10800),
-    ],
-)
-def test_planning_truncation_retries_same_provider_once_with_larger_budget(
+def test_learning_truncation_retries_same_provider_once_with_larger_budget(
     monkeypatch,
-    task_type,
-    initial_budget,
-    hard_cap,
 ):
+    task_type, initial_budget, hard_cap = "learning_semantic", 5400, 10800
     def fake_rule(task_type, active_provider):
         return ModelRoutingRuleConfig(task_type, "kimi", ("deepseek",), False)
 
@@ -704,7 +690,7 @@ def test_planning_truncation_retries_same_provider_once_with_larger_budget(
     assert "detail" not in result.attempts[0].to_dict()
 
 
-def test_direct_planning_truncation_retries_same_provider_once(monkeypatch):
+def test_direct_learning_truncation_retries_same_provider_once(monkeypatch):
     calls = []
 
     def fake_complete(self, request):
@@ -736,7 +722,7 @@ def test_direct_planning_truncation_retries_same_provider_once(monkeypatch):
         routing_enabled=False,
     ).complete(
         _request(
-            task_type="planning_review",
+            task_type="learning_semantic",
             response_format_json=True,
             max_tokens=6600,
             max_token_cap=13200,
@@ -754,7 +740,7 @@ def test_direct_planning_truncation_retries_same_provider_once(monkeypatch):
     assert result.attempts[0].latency_ms >= 1
 
 
-def test_planning_stage_uses_only_one_automatic_retry_then_continues_fallback(monkeypatch):
+def test_learning_stage_uses_only_one_automatic_retry_then_continues_fallback(monkeypatch):
     def fake_rule(task_type, active_provider):
         return ModelRoutingRuleConfig(task_type, "kimi", ("deepseek", "zhipu_glm"), False)
 
@@ -788,7 +774,7 @@ def test_planning_stage_uses_only_one_automatic_retry_then_continues_fallback(mo
 
     result, error = ModelRouter(_settings(provider="kimi", base_url="https://api.moonshot.ai/v1", model="kimi-k2.7-code")).complete(
         _request(
-            task_type="planning_review",
+            task_type="learning_semantic",
             response_format_json=True,
             max_tokens=6600,
             max_token_cap=13200,
@@ -808,7 +794,7 @@ def test_planning_stage_uses_only_one_automatic_retry_then_continues_fallback(mo
     ]
 
 
-def test_truncated_non_planning_task_does_not_use_planning_retry_budget(monkeypatch):
+def test_truncated_non_learning_task_does_not_use_learning_retry_budget(monkeypatch):
     def fake_rule(task_type, active_provider):
         return ModelRoutingRuleConfig(task_type, "kimi", ("deepseek",), False)
 
@@ -859,7 +845,7 @@ def test_truncated_non_planning_task_does_not_use_planning_retry_budget(monkeypa
     ("response_format_json", "error_type"),
     [(False, "model_output_truncated"), (True, "timeout")],
 )
-def test_planning_retry_requires_json_truncation(monkeypatch, response_format_json, error_type):
+def test_learning_retry_requires_json_truncation(monkeypatch, response_format_json, error_type):
     def fake_rule(task_type, active_provider):
         return ModelRoutingRuleConfig(task_type, "kimi", ("deepseek",), False)
 
@@ -903,7 +889,7 @@ def test_planning_retry_requires_json_truncation(monkeypatch, response_format_js
         _settings(provider="kimi", base_url="https://api.moonshot.ai/v1", model="kimi-k2.7-code")
     ).complete(
         _request(
-            task_type="planning_review",
+            task_type="learning_semantic",
             response_format_json=response_format_json,
             max_tokens=6600,
             max_token_cap=13200,
@@ -1030,7 +1016,7 @@ def test_model_router_primary_only_failure_is_not_reported_as_fallback(monkeypat
 
     result, error = ModelRouter(
         _settings(provider="kimi", base_url="https://api.moonshot.cn/v1", model="kimi-k2.7-code")
-    ).complete(_request(task_type="planning_understanding"))
+    ).complete(_request(task_type="learning_semantic"))
 
     assert result is None
     assert error is not None

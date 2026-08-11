@@ -176,7 +176,7 @@ The project also includes `.github/workflows/desktop-release.yml`. Pushing a `v*
 - Open `Planix`.
 - Confirm the web UI loads.
 - Confirm the FastAPI sidecar responds on `/api/health`.
-- Try calendar, Native V2 planning, model settings, Final Review, and approved Calendar write.
+- Open Learning, run a controlled learning-content case, inspect evidence, and verify model settings.
 - Close the app and confirm every `planix-api` sidecar process exits, including the PyInstaller parent/child process tree.
 
 Run the installed-app smoke test:
@@ -201,10 +201,6 @@ API keys are stored only in Windows Credential Manager; PostgreSQL keeps provide
 | MSI missing | Check `apps/desktop/src-tauri/target/release/bundle/msi` and rerun the release build |
 | `asset not found: index.html` | Rebuild with `.\scripts\build-release.ps1 -Version 3.0.0`; `Frontend/dist/index.html` must exist |
 | App opens but API is unavailable | Check port `8003`, sidecar file, and `%APPDATA%\Planix\logs\desktop.log` |
-
-## Historical Notes
-
-Older release notes under `docs/release-v*.md` are retained as historical records. They are not the current portfolio-facing documentation version.
 
 ## Packaging Roadmap
 

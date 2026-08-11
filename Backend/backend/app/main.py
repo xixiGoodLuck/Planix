@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 from .db import close_db_pool, open_db_pool
 from .learning.runtime.bootstrap import get_learning_runtime_bootstrap
-from .routers import command, context_settings, health, learning, month_notes, planning, plans, settings
+from .routers import health, learning, settings
 
 APP_VERSION = "1.1.4"
 
@@ -120,12 +120,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health.router)
-    app.include_router(command.router)
-    app.include_router(plans.router)
-    app.include_router(month_notes.router)
-    app.include_router(planning.router)
     app.include_router(settings.router)
-    app.include_router(context_settings.router)
     app.include_router(learning.router)
 
     logger.info("Planix API configured version=%s database=postgresql", APP_VERSION)
