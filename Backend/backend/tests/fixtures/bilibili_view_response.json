@@ -1,0 +1,32 @@
+{
+  "code": 0,
+  "message": "OK",
+  "ttl": 1,
+  "data": {
+    "bvid": "BV1zV2QBtE39",
+    "aid": 115688651884489,
+    "videos": 2,
+    "title": "黑马程序员PythonWeb开发：FastAPI从入门到实战视频教程",
+    "pubdate": 1765328400,
+    "state": 0,
+    "duration": 53729,
+    "owner": {
+      "mid": 37974444,
+      "name": "黑马程序员"
+    },
+    "pages": [
+      {
+        "cid": 39971917419,
+        "page": 1,
+        "part": "FastAPI从入门到实战导学课程",
+        "duration": 541
+      },
+      {
+        "cid": 39971979363,
+        "page": 2,
+        "part": "FastAPI框架简介",
+        "duration": 543
+      }
+    ]
+  }
+}

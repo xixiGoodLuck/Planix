@@ -1,0 +1,32 @@
+{
+  "code": 0,
+  "message": "OK",
+  "ttl": 1,
+  "data": {
+    "page": 1,
+    "pagesize": 3,
+    "numResults": 1000,
+    "result": [
+      {
+        "type": "video",
+        "aid": 115688651884489,
+        "bvid": "BV1zV2QBtE39",
+        "title": "黑马程序员PythonWeb开发：<em class=\"keyword\">FastAPI</em>从入门到实战",
+        "author": "黑马程序员",
+        "arcurl": "http://www.bilibili.com/video/av115688651884489",
+        "duration": "895:29",
+        "pubdate": 1765328400
+      },
+      {
+        "type": "video",
+        "aid": 1202754474,
+        "bvid": "BV18F4m1K7N3",
+        "title": "FastAPI零基础教程",
+        "author": "程序员青戈",
+        "arcurl": "http://www.bilibili.com/video/av1202754474",
+        "duration": "67:54",
+        "pubdate": 1720108800
+      }
+    ]
+  }
+}

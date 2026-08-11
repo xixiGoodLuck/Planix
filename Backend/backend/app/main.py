@@ -9,7 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .db import close_db_pool, open_db_pool
-from .routers import command, context_settings, health, month_notes, planning, plans, settings
+from .learning.runtime.bootstrap import get_learning_runtime_bootstrap
+from .routers import command, context_settings, health, learning, month_notes, planning, plans, settings
 
 APP_VERSION = "1.1.4"
 
@@ -57,9 +58,27 @@ def _redact_request_validation_errors(errors: list[dict[str, Any]]) -> list[dict
 async def lifespan(_app: FastAPI):
     open_db_pool()
     logger.info("Planix PostgreSQL connection pool is ready")
+    bootstrap = get_learning_runtime_bootstrap()
     try:
+        report = bootstrap.startup()
+        learning.configure_learning_runtime_factory(
+            bootstrap.create_runtime,
+            health_provider=bootstrap.health,
+        )
+        log = logger.info if report.status == "ready" else logger.warning
+        log(
+            "Planix Learning Runtime startup status=%s unavailable=%s",
+            report.status,
+            [
+                item.component
+                for item in report.checks
+                if item.status == "unavailable"
+            ],
+        )
         yield
     finally:
+        learning.shutdown_learning_runtime_manager()
+        bootstrap.shutdown()
         close_db_pool()
 
 
@@ -102,6 +121,7 @@ def create_app() -> FastAPI:
     app.include_router(planning.router)
     app.include_router(settings.router)
     app.include_router(context_settings.router)
+    app.include_router(learning.router)
 
     logger.info("Planix API configured version=%s database=postgresql", APP_VERSION)
     return app
