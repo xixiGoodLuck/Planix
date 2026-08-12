@@ -1,4 +1,4 @@
-name: CI
+name: Planix Learning Release Gate
 
 on:
   push:
@@ -29,7 +29,7 @@ jobs:
         env:
           POSTGRES_DB: planix_test
           POSTGRES_USER: planix
-          POSTGRES_PASSWORD: planix
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 5432:5432
         options: >-
@@ -38,7 +38,7 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     env:
-      DATABASE_URL: postgresql://planix:planix@127.0.0.1:5432/planix_test
+      DATABASE_URL: postgresql://planix@127.0.0.1:5432/planix_test
       PLANIX_TEST_DATABASE: "1"
       PLANIX_SECRET_STORE: memory
       USE_REAL_LLM: "0"
@@ -55,10 +55,50 @@ jobs:
       - run: python -m pytest backend/tests
         working-directory: Backend
 
-  desktop-config:
+  controlled-canonical-e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: planix_e2e_test
+          POSTGRES_USER: planix
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U planix -d planix_e2e_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://planix@127.0.0.1:5432/planix_e2e_test
+      PLANIX_TEST_DATABASE: "1"
+      PLANIX_SECRET_STORE: memory
+      USE_REAL_LLM: "0"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r requirements.txt
+      - run: python -m alembic upgrade head
+        working-directory: Backend
+      - name: Controlled narrow, waiting, same-run resume, and invalid-model flows
+        run: >-
+          python -m pytest
+          backend/tests/test_learning_final_backend_e2e.py
+          backend/tests/test_learning_recoverable_evidence_flow.py
+        working-directory: Backend
+
+  desktop:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Check desktop scaffold
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cargo check
+        working-directory: apps/desktop/src-tauri
+        run: cargo check --locked
+      - name: Check desktop configuration
         shell: pwsh
         run: .\scripts\check-desktop-config.ps1

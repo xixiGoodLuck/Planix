@@ -40,6 +40,7 @@ describe('Learning evidence intervention', () => {
         busy={false}
         onAddEvidence={vi.fn()}
         onResume={vi.fn()}
+        onReturnToScope={vi.fn()}
         t={t}
       />
     );
@@ -50,8 +51,9 @@ describe('Learning evidence intervention', () => {
     expect(html).toContain('FastAPI Routing');
     expect(html).toContain('BV1missing');
     expect(html).toContain(enUS.learning.interventionTimestampBoundary);
-    expect(html).toContain(enUS.learning.interventionAddEvidence);
+    expect(html).toContain(enUS.learning.interventionAddVideo);
+    expect(html).toContain(enUS.learning.interventionAddTranscript);
     expect(html).toContain(enUS.learning.interventionResume);
-    expect(html).not.toContain(enUS.learning.failure_run_failed_title);
+    expect(html).not.toContain(enUS.learning.failure_unknown_runtime_error_title);
   });
 });

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime
+import json
+from statistics import median
 import time
 
 from app.learning.contracts import VideoResource
@@ -14,8 +17,10 @@ from app.learning.runtime import (
     LearningRuntimeFactory,
     PostgresLearningArtifactRepository,
 )
+from app.learning.scope import LearningScopeAnalyzer
 from app.main import app
 from app.routers.learning import (
+    LearningIntakeCreateRequest,
     LearningRunManager,
     get_learning_run_manager,
     get_learning_transcript_service,
@@ -251,6 +256,115 @@ def _wait(client, run_id: str):
             return response
         time.sleep(0.02)
     raise AssertionError("Learning run did not finish")
+
+
+def _latency_report(manager, run_id: str, *, model_calls: int) -> dict:
+    """Test observer for safe release timing metadata; never includes prompts or transcripts."""
+    runtime = manager.get_runtime(run_id)
+    progress = runtime.get_events(run_id)
+    started: dict[str, datetime] = {}
+    durations: dict[str, int] = {}
+    for event in progress:
+        timestamp = datetime.fromisoformat(event.timestamp.replace("Z", "+00:00"))
+        if event.event_type == "stage_started":
+            started[event.stage] = timestamp
+        elif event.event_type == "stage_completed" and event.stage in started:
+            durations[event.stage] = max(
+                0,
+                int((timestamp - started[event.stage]).total_seconds() * 1000),
+            )
+    all_times = [datetime.fromisoformat(item.timestamp.replace("Z", "+00:00")) for item in progress]
+    return {
+        "stage_latency_ms": durations,
+        "total_latency_ms": int((max(all_times) - min(all_times)).total_seconds() * 1000),
+        "model_call_count": model_calls,
+        "provider_call_count": 1,
+        "transcript_lookup_count": 1,
+    }
+
+
+def _scope_latency_report(manager) -> int:
+    handle = ControlledSemanticAdapter(
+        [{
+            "goalIdentified": True,
+            "userGoal": "Understand FastAPI routing",
+            "targetResult": "Explain routing, GET, POST, and Swagger UI",
+            "recommendedGaps": [],
+        }]
+    )
+    manager._scope_analyzer_factory = lambda _runtime: LearningScopeAnalyzer(handle)
+    start = time.perf_counter()
+    payload = manager.create_intake(
+        LearningIntakeCreateRequest(
+            message="I want to understand FastAPI routing.",
+            preferredLanguage="en-US",
+        )
+    )
+    assert payload.scope.user_goal
+    return max(1, int((time.perf_counter() - start) * 1000))
+
+
+def test_controlled_release_timing_observer_records_safe_stage_metadata(client) -> None:
+    reports = []
+    scope_latencies = []
+    for _ in range(3):
+        manager, transcript_service, semantic, _build = _setup(_narrow_responses())
+        app.dependency_overrides[get_learning_run_manager] = lambda: manager
+        app.dependency_overrides[get_learning_transcript_service] = lambda: transcript_service
+        try:
+            scope_latencies.append(_scope_latency_report(manager))
+            total_start = time.perf_counter()
+            _register(client)
+            run_id = _create(
+                client,
+                "Understand GET, POST, Path Operation, and Swagger UI from this video",
+            )
+            terminal = _wait(client, run_id)
+            assert terminal.json()["status"] == "completed", terminal.json()
+            report = _latency_report(manager, run_id, model_calls=len(semantic.calls))
+            report["total_latency_ms"] = max(1, int((time.perf_counter() - total_start) * 1000))
+            reports.append(report)
+        finally:
+            app.dependency_overrides.pop(get_learning_run_manager, None)
+            app.dependency_overrides.pop(get_learning_transcript_service, None)
+            manager.shutdown()
+
+    totals = [item["total_latency_ms"] for item in reports]
+    assert min(totals) <= median(totals) <= max(totals)
+    assert all(item["model_call_count"] == 4 for item in reports)
+    assert all(item["provider_call_count"] == 1 for item in reports)
+    assert all(item["transcript_lookup_count"] == 1 for item in reports)
+    summary = {
+        "stage_latency_ms": {
+            stage: {
+                "min": min(values),
+                "median": median(values),
+                "max": max(values),
+            }
+            for stage in sorted({stage for item in reports for stage in item["stage_latency_ms"]})
+            if (values := [item["stage_latency_ms"].get(stage, 0) for item in reports])
+        },
+        "scope_analysis_ms": {
+            "min": min(scope_latencies),
+            "median": median(scope_latencies),
+            "max": max(scope_latencies),
+        },
+        "knowledge_generation_ms": None,
+        "evidence_generation_ms": None,
+        "gap_completion_ms": None,
+        "selection_ms": None,
+        "quality_ms": None,
+        "total_latency_ms": {
+            "min": min(totals), "median": median(totals), "max": max(totals)
+        },
+        "model_call_count": 4,
+        "provider_call_count": 1,
+        "transcript_lookup_count": 1,
+    }
+    for stage in ["knowledge_generation", "evidence_generation", "gap_completion", "selection", "quality"]:
+        values = [item["stage_latency_ms"].get(stage, 0) for item in reports]
+        summary[f"{stage}_ms"] = {"min": min(values), "median": median(values), "max": max(values)}
+    print("PLANIX_RELEASE_TIMING=" + json.dumps(summary, sort_keys=True))
 
 
 def _setup(responses):

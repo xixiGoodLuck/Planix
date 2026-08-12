@@ -10,11 +10,35 @@ on:
         description: "Release version without the leading v"
         required: true
         default: "1.1.4"
+      run_real_deepseek_preflight:
+        description: "Run the secrets-enabled DeepSeek provider preflight"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
+  deepseek-preflight:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_real_deepseek_preflight }}
+    runs-on: windows-latest
+    env:
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      USE_REAL_LLM: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Require release secret without printing it
+        shell: pwsh
+        run: if (-not $env:DEEPSEEK_API_KEY) { throw 'DEEPSEEK_API_KEY release secret is unavailable' }
+      - run: python -m pip install -r requirements.txt
+      - name: Real DeepSeek provider preflight
+        shell: pwsh
+        run: .\scripts\test-deepseek-real.ps1
+
   windows-release:
     runs-on: windows-latest
     steps:

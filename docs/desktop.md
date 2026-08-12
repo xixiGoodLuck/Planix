@@ -2,8 +2,6 @@
 
 Planix packages a React/Vite frontend and a FastAPI backend sidecar into a Windows desktop app through Tauri. These notes describe the intended installer experience and local packaging flow.
 
-The portfolio-facing documentation version is `v3.0.0`. It is a presentation label for documentation and release naming, not a package or backend version bump by itself.
-
 ## Target Shape
 
 ```mermaid
@@ -26,20 +24,20 @@ The release app should bundle:
 Normal users should download the Setup.exe installer first:
 
 ```text
-Planix-v3.0.0-windows-x64-setup.exe
+Planix-v1.1.4-windows-x64-setup.exe
 ```
 
 The MSI is kept as a backup or enterprise installer:
 
 ```text
-Planix-v3.0.0-windows-x64.msi
+Planix-v1.1.4-windows-x64.msi
 ```
 
 Checksum files are for verification only:
 
 ```text
-Planix-v3.0.0-windows-x64-setup.exe.sha256
-Planix-v3.0.0-windows-x64.msi.sha256
+Planix-v1.1.4-windows-x64-setup.exe.sha256
+Planix-v1.1.4-windows-x64.msi.sha256
 ```
 
 Users should not download `Source code.zip` as the installer, run `planix-api.exe` directly, open `.sha256` checksum files as installers, or set `$env:PLANIX_SKIP_SIDECAR="1"`. After installation, open `Planix` from the Windows Start menu.
@@ -149,16 +147,16 @@ Run the static desktop check:
 ## Build The Release Package
 
 ```powershell
-.\scripts\build-release.ps1 -Version 3.0.0
+.\scripts\build-release.ps1 -Version 1.1.4
 ```
 
-Expected portfolio release outputs:
+Expected release outputs:
 
 ```text
-release/Planix-v3.0.0-windows-x64-setup.exe
-release/Planix-v3.0.0-windows-x64-setup.exe.sha256
-release/Planix-v3.0.0-windows-x64.msi
-release/Planix-v3.0.0-windows-x64.msi.sha256
+release/Planix-v1.1.4-windows-x64-setup.exe
+release/Planix-v1.1.4-windows-x64-setup.exe.sha256
+release/Planix-v1.1.4-windows-x64.msi
+release/Planix-v1.1.4-windows-x64.msi.sha256
 ```
 
 Publish locally with the official GitHub CLI after the build succeeds:
@@ -172,7 +170,7 @@ The project also includes `.github/workflows/desktop-release.yml`. Pushing a `v*
 
 ## Manual Acceptance
 
-- Install `Planix-v3.0.0-windows-x64-setup.exe`.
+- Install `Planix-v1.1.4-windows-x64-setup.exe`.
 - Open `Planix`.
 - Confirm the web UI loads.
 - Confirm the FastAPI sidecar responds on `/api/health`.
@@ -199,7 +197,7 @@ API keys are stored only in Windows Credential Manager; PostgreSQL keeps provide
 | `gh.ps1` blocked | Use official `gh.exe`, or publish through GitHub Actions |
 | Setup.exe missing | Check `apps/desktop/src-tauri/target/release/bundle/nsis` and rerun the release build |
 | MSI missing | Check `apps/desktop/src-tauri/target/release/bundle/msi` and rerun the release build |
-| `asset not found: index.html` | Rebuild with `.\scripts\build-release.ps1 -Version 3.0.0`; `Frontend/dist/index.html` must exist |
+| `asset not found: index.html` | Rebuild with `.\scripts\build-release.ps1 -Version 1.1.4`; `Frontend/dist/index.html` must exist |
 | App opens but API is unavailable | Check port `8003`, sidecar file, and `%APPDATA%\Planix\logs\desktop.log` |
 
 ## Packaging Roadmap

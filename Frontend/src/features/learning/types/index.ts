@@ -9,11 +9,15 @@ export type LearningWorkspaceStatus =
   | 'completed'
   | 'failed';
 export type LearningFailureKind =
-  | 'backend_unavailable'
   | 'provider_unavailable'
-  | 'evidence_missing'
-  | 'quality_failed'
-  | 'run_failed';
+  | 'invalid_model_output'
+  | 'database_unavailable'
+  | 'transcript_invalid'
+  | 'waiting_evidence'
+  | 'quality_invariant_failed'
+  | 'unknown_runtime_error';
+
+export type LearningConnectionMode = 'idle' | 'sse' | 'polling' | 'degraded';
 
 export interface LearningIntakeCreateRequest {
   message: string;
@@ -206,6 +210,8 @@ export interface LearningRunState {
   status: LearningRunStatus;
   current_stage: string;
   completed_stages: string[];
+  created_at?: string;
+  updated_at?: string;
   error: LearningRunError | null;
   intervention?: LearningEvidenceIntervention | null;
 }
@@ -407,6 +413,12 @@ export interface LearningWorkspaceState {
   currentStage: string;
   completedStages: string[];
   events: LearningProgressEvent[];
+  runStartedAt: string | null;
+  stageStartedAt: string | null;
+  latestEventAt: string | null;
+  providerReady: boolean | null;
+  connectionMode: LearningConnectionMode;
+  recoveryExhausted: boolean;
   plan: LearningContentPlan | null;
   qualityReport: LearningQualityReport | null;
   evidenceGraph: LearningEvidenceGraph | null;
@@ -414,6 +426,7 @@ export interface LearningWorkspaceState {
   originalInput: string;
   preferredLanguage: string;
   scopeAnalysisFailed: boolean;
+  scopeReviewExpanded: boolean;
   failureKind: LearningFailureKind | null;
   resourceDraft: LearningResourceDraft;
   registeredTranscript: LearningTranscriptSourceSummary | null;

@@ -6,12 +6,12 @@ param(
 $ErrorActionPreference = "Stop"
 
 if (-not $env:DEEPSEEK_API_KEY) {
-    Write-Host "DEEPSEEK_API_KEY is not set. Real DeepSeek test skipped."
+    Write-Host "DEEPSEEK_API_KEY is not set. Real DeepSeek preflight skipped."
     exit 0
 }
 
 if ($env:USE_REAL_LLM -ne "1") {
-    Write-Host "USE_REAL_LLM is not 1. Real DeepSeek test skipped."
+    Write-Host "USE_REAL_LLM is not 1. Real DeepSeek preflight skipped."
     exit 0
 }
 
@@ -28,7 +28,7 @@ $Payload = @{
     messages = @(
         @{
             role = "user"
-            content = "只回复 OK"
+            content = "Reply with OK only."
         }
     )
     max_tokens = 20
@@ -45,13 +45,12 @@ try {
     $Response = Invoke-WebRequest -Uri $Endpoint -Method POST -Headers $Headers -Body $Payload -TimeoutSec 20 -UseBasicParsing
     $Json = $Response.Content | ConvertFrom-Json
     $Text = [string]$Json.choices[0].message.content
-    if ($Text.Length -gt 100) {
-        $Text = $Text.Substring(0, 100)
+    if (-not $Text.Trim()) {
+        throw "DeepSeek returned an empty response."
     }
     Write-Host "statusCode=$($Response.StatusCode)"
     Write-Host "model=$Model"
     Write-Host "ok=true"
-    Write-Host "contentPreview=$Text"
 }
 catch {
     $StatusCode = $null
@@ -74,6 +73,5 @@ catch {
     Write-Host "model=$Model"
     Write-Host "ok=false"
     Write-Host "reason=$Reason"
-    Write-Host "detail=$($_.Exception.Message)"
     exit 1
 }

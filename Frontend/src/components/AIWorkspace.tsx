@@ -119,6 +119,7 @@ export function AIWorkspace({ t }: AIWorkspaceProps) {
       if (backendResult.status === 'fulfilled' && backendResult.value.status === 'ok') {
         setBackendOnline(true);
         setBackendVersion(backendResult.value.version || 'online');
+        if (settingsResult.status === 'fulfilled') setStatus('');
       } else {
         setBackendOnline(false);
         setBackendVersion('');

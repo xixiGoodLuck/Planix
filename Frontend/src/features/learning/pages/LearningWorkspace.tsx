@@ -1,4 +1,4 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { ArrowRight, BookOpenCheck, CircleHelp, Sparkles } from 'lucide-react';
 import { LearningFailureNotice } from '../components/LearningFailureNotice';
 import { LearningEvidenceIntervention } from '../components/LearningEvidenceIntervention';
@@ -135,6 +135,10 @@ export function LearningWorkspace({ language, t }: LearningWorkspaceProps) {
   const busy = learning.status === 'analyzing_scope' || learning.status === 'starting_run';
   const resourceBusy = learning.resourceStatus === 'registering' || learning.resourceStatus === 'validating';
 
+  useEffect(() => {
+    void learningStoreActions.restoreActiveRun();
+  }, []);
+
   function submit(event: FormEvent) {
     event.preventDefault();
     void learningStoreActions.startIntake(goal, language);
@@ -149,7 +153,7 @@ export function LearningWorkspace({ language, t }: LearningWorkspaceProps) {
   }
 
   return (
-    <section className="learning-workspace" aria-label={t('learning.title')}>
+    <section className="learning-workspace" id="learning-workspace" aria-label={t('learning.title')}>
       <header className="learning-hero">
         <div className="learning-hero-mark"><BookOpenCheck size={28} /></div>
         <div>
@@ -191,7 +195,7 @@ export function LearningWorkspace({ language, t }: LearningWorkspaceProps) {
 
         {learning.scopeReview && (
           <>
-            {learning.status !== 'waiting_evidence' && (
+            {(learning.status !== 'waiting_evidence' || learning.scopeReviewExpanded) && (
               <LearningScopeReviewPanel
                 review={learning.scopeReview}
                 supplementDraft={learning.supplementDraft}
@@ -230,6 +234,17 @@ export function LearningWorkspace({ language, t }: LearningWorkspaceProps) {
           currentStage={learning.currentStage}
           completedStages={learning.completedStages}
           events={learning.events}
+          runStartedAt={learning.runStartedAt}
+          stageStartedAt={learning.stageStartedAt}
+          latestEventAt={learning.latestEventAt}
+          providerReady={learning.providerReady}
+          connectionMode={learning.connectionMode}
+          recoveryExhausted={learning.recoveryExhausted}
+          onRefresh={() => { void learningStoreActions.refreshStatus(); }}
+          onReturnToScope={() => {
+            learningStoreActions.returnToScopeReview();
+            document.querySelector('.learning-scope-review')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
           t={t}
         />
       )}
@@ -244,6 +259,10 @@ export function LearningWorkspace({ language, t }: LearningWorkspaceProps) {
           busy={resourceBusy}
           onAddEvidence={openEvidenceInput}
           onResume={() => { void learningStoreActions.resumeEvidence(); }}
+          onReturnToScope={() => {
+            learningStoreActions.returnToScopeReview();
+            document.querySelector('.learning-scope-review')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
           t={t}
         />
       )}

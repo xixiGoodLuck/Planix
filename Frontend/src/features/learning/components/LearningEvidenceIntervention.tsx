@@ -1,4 +1,4 @@
-import { Captions, RefreshCw, ShieldAlert } from 'lucide-react';
+import { Captions, Link, RefreshCw, ShieldAlert, Undo2 } from 'lucide-react';
 import type { LearningEvidenceIntervention } from '../types';
 
 interface LearningEvidenceInterventionProps {
@@ -6,6 +6,7 @@ interface LearningEvidenceInterventionProps {
   busy: boolean;
   onAddEvidence: () => void;
   onResume: () => void;
+  onReturnToScope: () => void;
   t: (key: string) => string;
 }
 
@@ -14,6 +15,7 @@ export function LearningEvidenceIntervention({
   busy,
   onAddEvidence,
   onResume,
+  onReturnToScope,
   t,
 }: LearningEvidenceInterventionProps) {
   return (
@@ -47,6 +49,11 @@ export function LearningEvidenceIntervention({
 
         <div className="learning-intervention-facts">
           <h3>{t('learning.interventionEvidenceChecked')}</h3>
+          {intervention.searchedResources.length > 0 && (
+            <ul>
+              {intervention.searchedResources.map((resource) => <li key={resource}>{resource}</li>)}
+            </ul>
+          )}
           {intervention.verifiedResources.length > 0 ? (
             <ul>
               {intervention.verifiedResources.map((resource) => (
@@ -70,12 +77,20 @@ export function LearningEvidenceIntervention({
 
       <div className="learning-intervention-actions">
         <button type="button" onClick={onAddEvidence} disabled={busy}>
+          <Link size={17} />
+          {t('learning.interventionAddVideo')}
+        </button>
+        <button type="button" onClick={onAddEvidence} disabled={busy}>
           <Captions size={17} />
-          {t('learning.interventionAddEvidence')}
+          {t('learning.interventionAddTranscript')}
         </button>
         <button className="learning-primary-action" type="button" onClick={onResume} disabled={busy || !intervention.canResume}>
           <RefreshCw size={17} />
           {t('learning.interventionResume')}
+        </button>
+        <button type="button" onClick={onReturnToScope} disabled={busy}>
+          <Undo2 size={17} />
+          {t('learning.returnAndAdjustGoal')}
         </button>
       </div>
     </section>

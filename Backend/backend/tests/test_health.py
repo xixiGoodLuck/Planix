@@ -1,3 +1,6 @@
+from app.version import APP_VERSION
+
+
 def test_health_endpoint(client):
     for path in ("/health", "/api/health"):
         body = client.get(path).json()
@@ -5,7 +8,7 @@ def test_health_endpoint(client):
         assert body["app"] == "planix-api"
         assert body["name"] == "planix-api"
         assert isinstance(body["pid"], int)
-        assert body["version"] == "3.11-demo-reliability"
+        assert body["version"] == APP_VERSION
         assert body["startupTime"]
         assert body["features"] == {
             "learningRuntime": True,

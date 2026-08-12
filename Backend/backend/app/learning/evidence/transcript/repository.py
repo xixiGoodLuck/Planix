@@ -174,6 +174,31 @@ class LearningTranscriptRepository:
             ).fetchone()
             return self._get_source(conn, row["id"]) if row is not None else None
 
+    def find_active_by_external_identity(
+        self,
+        provider: str,
+        external_id: str,
+        fingerprint: str,
+    ) -> TranscriptSourceRecord | None:
+        with self._connection_factory() as conn:
+            row = conn.execute(
+                """
+                SELECT source.id
+                FROM learning_transcript_sources AS source
+                JOIN learning_video_resources AS video
+                  ON video.id = source.resource_id
+                 AND video.content_fingerprint = source.resource_fingerprint
+                WHERE video.provider = %s
+                  AND video.external_id = %s
+                  AND video.content_fingerprint = %s
+                  AND source.status = 'active'
+                ORDER BY source.created_at DESC, source.id DESC
+                LIMIT 1
+                """,
+                (provider, external_id, fingerprint),
+            ).fetchone()
+            return self._get_source(conn, row["id"]) if row is not None else None
+
     def list_active_sources(self, *, limit: int = 100) -> list[TranscriptSourceRecord]:
         if limit < 1 or limit > 500:
             raise ValueError("active transcript source limit must be between 1 and 500")

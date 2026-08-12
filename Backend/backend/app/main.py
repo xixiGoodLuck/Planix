@@ -11,8 +11,7 @@ from fastapi.responses import JSONResponse
 from .db import close_db_pool, open_db_pool
 from .learning.runtime.bootstrap import get_learning_runtime_bootstrap
 from .routers import health, learning, settings
-
-APP_VERSION = "1.1.4"
+from .version import APP_VERSION
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s %(message)s")
 logger = logging.getLogger("planix.api")

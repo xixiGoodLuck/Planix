@@ -1,4 +1,5 @@
 import { ApiHttpError, ApiNetworkError, apiUrl, callApi } from '../../../lib/api';
+import type { LearningRuntimeHealth } from '../../../types';
 import type {
   LearningIntakeCreateRequest,
   LearningIntakeResponse,
@@ -81,6 +82,10 @@ export function fetchLearningRun(runId: string) {
 
 export function fetchLearningRunResult(runId: string) {
   return callApi<LearningRunResult>('GET', `/api/learning/runs/${encodeURIComponent(runId)}/result`);
+}
+
+export function fetchLearningRuntimeHealth() {
+  return callApi<LearningRuntimeHealth>('GET', '/api/learning/health');
 }
 
 export function resumeLearningEvidence(runId: string) {

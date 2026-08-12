@@ -68,6 +68,12 @@ class PersistentTranscriptProvider:
             resource.content_fingerprint,
         )
         if source is None:
+            source = self.repository.find_active_by_external_identity(
+                resource.provider,
+                resource.external_id,
+                resource.content_fingerprint,
+            )
+        if source is None:
             raise TranscriptUnavailableError(
                 "TRANSCRIPT_UNAVAILABLE: no active transcript matches the video fingerprint"
             )

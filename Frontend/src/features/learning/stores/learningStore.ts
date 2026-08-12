@@ -2,6 +2,8 @@ import { useSyncExternalStore } from 'react';
 import {
   continueLearningIntake,
   createLearningIntake,
+  fetchLearningIntake,
+  fetchLearningRuntimeHealth,
   fetchLearningRun,
   fetchLearningRunResult,
   isLearningBackendUnavailable,
@@ -26,15 +28,34 @@ import type {
   LearningTranscriptSourceSummary,
   LearningWorkspaceState
 } from '../types';
+import type { LearningRuntimeHealth } from '../../../types';
+
+const ACTIVE_RUN_STORAGE_KEY = 'planix.learning.active-run';
+const ACTIVE_RUN_SCHEMA_VERSION = 1;
+const RECOVERY_DELAYS_MS = [0, 1_000, 2_000, 4_000, 8_000, 16_000] as const;
+
+interface ActiveRunPointer {
+  schemaVersion: 1;
+  intakeId: string;
+  runId: string | null;
+}
+
+export interface LearningPointerStorage {
+  getItem: (key: string) => string | null;
+  setItem: (key: string, value: string) => void;
+  removeItem: (key: string) => void;
+}
 
 export interface LearningApiPort {
   createIntake: (payload: LearningIntakeCreateRequest) => Promise<LearningIntakeResponse>;
   supplementIntake: (intakeId: string, payload: LearningIntakeSupplementRequest) => Promise<LearningIntakeResponse>;
   continueIntake: (intakeId: string) => Promise<LearningIntakeResponse>;
+  getIntake: (intakeId: string) => Promise<LearningIntakeResponse>;
   registerTranscript: (payload: LearningTranscriptRegistrationRequest) => Promise<LearningTranscriptSourceSummary>;
   revokeTranscript: (sourceId: string) => Promise<LearningTranscriptRevokeResponse>;
   getRun: (runId: string) => Promise<LearningRunState>;
   getResult: (runId: string) => Promise<LearningRunResult>;
+  getHealth: () => Promise<LearningRuntimeHealth>;
   streamEvents: (runId: string, handlers: LearningEventHandlers, after?: number) => () => void;
   resumeEvidence: (runId: string) => Promise<LearningRunState>;
   runtimeUnavailable: (error: unknown) => boolean;
@@ -45,10 +66,12 @@ const defaultApi: LearningApiPort = {
   createIntake: createLearningIntake,
   supplementIntake: supplementLearningIntake,
   continueIntake: continueLearningIntake,
+  getIntake: fetchLearningIntake,
   registerTranscript: registerLearningTranscript,
   revokeTranscript: revokeLearningTranscript,
   getRun: fetchLearningRun,
   getResult: fetchLearningRunResult,
+  getHealth: fetchLearningRuntimeHealth,
   streamEvents: (runId, handlers, after) => streamLearningRunEvents(
     runId,
     handlers,
@@ -80,6 +103,12 @@ const emptyState = (): LearningWorkspaceState => ({
   currentStage: '',
   completedStages: [],
   events: [],
+  runStartedAt: null,
+  stageStartedAt: null,
+  latestEventAt: null,
+  providerReady: null,
+  connectionMode: 'idle',
+  recoveryExhausted: false,
   plan: null,
   qualityReport: null,
   evidenceGraph: null,
@@ -87,6 +116,7 @@ const emptyState = (): LearningWorkspaceState => ({
   originalInput: '',
   preferredLanguage: 'zh-CN',
   scopeAnalysisFailed: false,
+  scopeReviewExpanded: false,
   failureKind: null,
   resourceDraft: emptyResourceDraft(),
   registeredTranscript: null,
@@ -99,24 +129,79 @@ function failureKindFor(status: LearningRunState | null, runtimeUnavailable = fa
   const stage = `${status?.error?.stage || status?.current_stage || ''}`.toLowerCase();
   const type = `${status?.error?.error_type || ''}`.toLowerCase();
   const rule = `${status?.error?.validator_rule || ''}`.toLowerCase();
-  if (stage.includes('quality') || type.includes('quality')) return 'quality_failed' as const;
-  if (stage.includes('evidence') || type.includes('evidence') || type.includes('transcript') || type.includes('coverage') || rule.includes('coverage')) return 'evidence_missing' as const;
-  if (type.includes('provider') || type.includes('model') || type.includes('runtimeunavailable')) return 'provider_unavailable' as const;
-  return 'run_failed' as const;
+  if (stage.includes('quality') || type.includes('quality') || rule.includes('quality')) return 'quality_invariant_failed' as const;
+  if (type.includes('database') || type.includes('postgres') || type.includes('artifactstore')) return 'database_unavailable' as const;
+  if (type.includes('transcript') || rule.includes('transcript')) return 'transcript_invalid' as const;
+  if (type.includes('invalidmodel') || type.includes('modeloutput') || type.includes('contract') || rule.includes('generation_contract')) return 'invalid_model_output' as const;
+  if (type.includes('provider') || type.includes('runtimeunavailable') || type.includes('timeout')) return 'provider_unavailable' as const;
+  return 'unknown_runtime_error' as const;
 }
 
-export function createLearningStore(api: LearningApiPort = defaultApi) {
+function browserStorage(): LearningPointerStorage | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readPointer(storage: LearningPointerStorage | null): ActiveRunPointer | null {
+  if (!storage) return null;
+  try {
+    const parsed = JSON.parse(storage.getItem(ACTIVE_RUN_STORAGE_KEY) || 'null') as Partial<ActiveRunPointer> | null;
+    if (
+      parsed?.schemaVersion !== ACTIVE_RUN_SCHEMA_VERSION
+      || typeof parsed.intakeId !== 'string'
+      || (parsed.runId !== null && typeof parsed.runId !== 'string')
+    ) return null;
+    return parsed as ActiveRunPointer;
+  } catch {
+    return null;
+  }
+}
+
+export function createLearningStore(
+  api: LearningApiPort = defaultApi,
+  storage?: LearningPointerStorage | null,
+) {
+  const pointerStorage = storage === undefined ? browserStorage() : storage;
   const listeners = new Set<() => void>();
   let state = emptyState();
   let stopEvents: (() => void) | null = null;
+  let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
   let generation = 0;
 
   const emit = () => listeners.forEach((listener) => listener());
+  const persistPointer = () => {
+    if (!pointerStorage) return;
+    if (!state.intakeId) {
+      pointerStorage.removeItem(ACTIVE_RUN_STORAGE_KEY);
+      return;
+    }
+    pointerStorage.setItem(ACTIVE_RUN_STORAGE_KEY, JSON.stringify({
+      schemaVersion: ACTIVE_RUN_SCHEMA_VERSION,
+      intakeId: state.intakeId,
+      runId: state.runId,
+    } satisfies ActiveRunPointer));
+  };
   const update = (patch: Partial<LearningWorkspaceState>) => {
     state = { ...state, ...patch };
+    persistPointer();
     emit();
   };
   const active = (runId: string, token: number) => state.runId === runId && generation === token;
+
+  const clearRecoveryTimer = () => {
+    if (recoveryTimer !== null) clearTimeout(recoveryTimer);
+    recoveryTimer = null;
+  };
+
+  async function refreshProviderHealth(runId: string, token: number) {
+    const health = await api.getHealth().catch(() => null);
+    if (!active(runId, token)) return;
+    update({ providerReady: health?.status === 'ready' });
+  }
 
   async function loadTerminal(runId: string, token: number, knownStatus?: LearningRunState) {
     try {
@@ -130,10 +215,14 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
           intakeStatus: result.learning_quality_report.passed ? 'completed' : 'failed',
           currentStage: runStatus.current_stage,
           completedStages: runStatus.completed_stages,
+          runStartedAt: runStatus.created_at ?? state.runStartedAt,
+          latestEventAt: runStatus.updated_at ?? state.latestEventAt,
           plan: result.learning_content_plan,
           qualityReport: result.learning_quality_report,
           evidenceGraph: result.evidence_graph,
-          failureKind: result.learning_quality_report.passed ? null : 'quality_failed'
+          failureKind: result.learning_quality_report.passed ? null : 'quality_invariant_failed',
+          connectionMode: 'idle',
+          recoveryExhausted: false,
         });
         return;
       }
@@ -143,7 +232,10 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
           intakeStatus: 'failed',
           currentStage: runStatus.current_stage,
           completedStages: runStatus.completed_stages,
-          failureKind: failureKindFor(runStatus)
+          runStartedAt: runStatus.created_at ?? state.runStartedAt,
+          latestEventAt: runStatus.updated_at ?? state.latestEventAt,
+          failureKind: failureKindFor(runStatus),
+          connectionMode: 'idle',
         });
         return;
       }
@@ -153,20 +245,34 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
           intakeStatus: 'waiting_evidence',
           currentStage: runStatus.current_stage,
           completedStages: runStatus.completed_stages,
+          runStartedAt: runStatus.created_at ?? state.runStartedAt,
+          latestEventAt: runStatus.updated_at ?? state.latestEventAt,
           intervention: runStatus.intervention ?? null,
           failureKind: null,
+          connectionMode: 'idle',
+          recoveryExhausted: false,
         });
       }
     } catch (error) {
-      if (active(runId, token)) {
+      if (!active(runId, token)) return;
+      if (api.backendUnavailable(error)) {
         update({
-          status: 'failed',
-          intakeStatus: 'failed',
-          failureKind: api.backendUnavailable(error)
-            ? 'backend_unavailable'
-            : api.runtimeUnavailable(error) ? 'provider_unavailable' : 'run_failed'
+          status: 'running',
+          intakeStatus: 'running',
+          connectionMode: 'polling',
+          providerReady: false,
+          failureKind: null,
         });
+        scheduleRecovery(runId, token);
+        return;
       }
+      update({
+        status: 'failed',
+        intakeStatus: 'failed',
+        failureKind: api.runtimeUnavailable(error)
+          ? 'provider_unavailable'
+          : 'unknown_runtime_error'
+      });
     }
   }
 
@@ -188,7 +294,10 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
       currentStage: event.stage,
       completedStages,
       status: nextStatus,
-      intakeStatus: nextStatus
+      intakeStatus: nextStatus,
+      stageStartedAt: event.event_type === 'stage_started' ? event.timestamp : state.stageStartedAt,
+      latestEventAt: event.timestamp,
+      recoveryExhausted: false,
     });
     if (
       event.event_type === 'session_completed'
@@ -197,8 +306,58 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
     ) {
       stopEvents?.();
       stopEvents = null;
+      clearRecoveryTimer();
       void loadTerminal(runId, token);
     }
+  }
+
+  async function reconcileRun(runId: string, token: number): Promise<'terminal' | 'running' | 'unavailable'> {
+    try {
+      if (state.intakeId && !state.scopeReview) {
+        const intake = await api.getIntake(state.intakeId);
+        if (!active(runId, token)) return 'terminal';
+        update({ scope: intake.scope, scopeReview: intake.review });
+      }
+      const runStatus = await api.getRun(runId);
+      if (!active(runId, token)) return 'terminal';
+      if (runStatus.status === 'completed' || runStatus.status === 'failed' || runStatus.status === 'waiting_evidence') {
+        await loadTerminal(runId, token, runStatus);
+        return 'terminal';
+      }
+      update({
+        status: 'running',
+        intakeStatus: 'running',
+        currentStage: runStatus.current_stage,
+        completedStages: runStatus.completed_stages,
+        connectionMode: 'polling',
+        runStartedAt: runStatus.created_at ?? state.runStartedAt,
+        latestEventAt: runStatus.updated_at ?? state.latestEventAt,
+      });
+      return 'running';
+    } catch {
+      if (active(runId, token)) {
+        update({ connectionMode: 'degraded', providerReady: false });
+      }
+      return 'unavailable';
+    }
+  }
+
+  function scheduleRecovery(runId: string, token: number, attempt = 0) {
+    clearRecoveryTimer();
+    if (!active(runId, token)) return;
+    if (attempt >= RECOVERY_DELAYS_MS.length) {
+      update({ recoveryExhausted: true, connectionMode: 'degraded' });
+      void refreshProviderHealth(runId, token);
+      return;
+    }
+    recoveryTimer = setTimeout(async () => {
+      recoveryTimer = null;
+      if (!active(runId, token)) return;
+      const outcome = await reconcileRun(runId, token);
+      await refreshProviderHealth(runId, token);
+      if (outcome === 'terminal' || !active(runId, token)) return;
+      scheduleRecovery(runId, token, attempt + 1);
+    }, RECOVERY_DELAYS_MS[attempt]);
   }
 
   async function connectRun(runId: string, token: number, resumingEvidence = false) {
@@ -209,30 +368,27 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
       intakeStatus: 'running',
       currentStage: resumingEvidence ? 'evidence_generation' : 'scope',
       intervention: null,
+      connectionMode: 'sse',
+      recoveryExhausted: false,
+      runStartedAt: state.runStartedAt ?? new Date().toISOString(),
+      stageStartedAt: new Date().toISOString(),
     });
+    clearRecoveryTimer();
     stopEvents?.();
     stopEvents = api.streamEvents(runId, {
       onEvent: (event) => receiveEvent(runId, token, event),
       onError: () => {
         if (!active(runId, token)) return;
-        void api.getRun(runId).then((runStatus) => {
-          if (!active(runId, token)) return;
-          if (
-            runStatus.status === 'completed'
-            || runStatus.status === 'failed'
-            || runStatus.status === 'waiting_evidence'
-          ) {
-            stopEvents?.();
-            stopEvents = null;
-            void loadTerminal(runId, token, runStatus);
-          }
-        }).catch(() => {
-          stopEvents?.();
-          stopEvents = null;
-          update({ status: 'failed', intakeStatus: 'failed', failureKind: 'backend_unavailable' });
-        });
+        stopEvents?.();
+        stopEvents = null;
+        update({ connectionMode: 'polling' });
+        scheduleRecovery(runId, token);
       }
-    }, state.events.length);
+    }, state.events.reduce(
+      (cursor, event, index) => Math.max(cursor, Number(event.stream_id) || index + 1),
+      0,
+    ));
+    void refreshProviderHealth(runId, token);
     try {
       const initial = await api.getRun(runId);
       if (!active(runId, token)) return;
@@ -247,12 +403,18 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
           status: 'running',
           intakeStatus: 'running',
           currentStage: initial.current_stage,
-          completedStages: initial.completed_stages
+          completedStages: initial.completed_stages,
+          connectionMode: 'sse',
+          runStartedAt: initial.created_at ?? state.runStartedAt,
+          latestEventAt: initial.updated_at ?? state.latestEventAt,
         });
       }
     } catch (error) {
       if (active(runId, token) && api.backendUnavailable(error)) {
-        update({ status: 'failed', intakeStatus: 'failed', failureKind: 'backend_unavailable' });
+        stopEvents?.();
+        stopEvents = null;
+        update({ connectionMode: 'polling' });
+        scheduleRecovery(runId, token);
       }
     }
   }
@@ -292,9 +454,14 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
     try {
       const response = await api.createIntake({ message: normalized, preferredLanguage });
       return await applyIntake(response, token);
-    } catch {
+    } catch (error) {
       if (generation === token) {
-        update({ status: 'failed', intakeStatus: 'failed', scopeAnalysisFailed: true });
+        update({
+          status: 'failed', intakeStatus: 'failed', scopeAnalysisFailed: true,
+          failureKind: api.backendUnavailable(error)
+            ? 'database_unavailable'
+            : api.runtimeUnavailable(error) ? 'provider_unavailable' : 'invalid_model_output',
+        });
       }
       return null;
     }
@@ -351,7 +518,7 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
           status: 'waiting_scope_review',
           intakeStatus: 'waiting_scope_review',
           failureKind: api.backendUnavailable(error)
-            ? 'backend_unavailable'
+            ? 'database_unavailable'
             : api.runtimeUnavailable(error) ? 'provider_unavailable' : null
         });
       }
@@ -539,8 +706,8 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
             status: 'failed',
             intakeStatus: 'failed',
             failureKind: api.backendUnavailable(error)
-              ? 'backend_unavailable'
-              : api.runtimeUnavailable(error) ? 'provider_unavailable' : 'run_failed',
+              ? 'database_unavailable'
+              : api.runtimeUnavailable(error) ? 'provider_unavailable' : 'unknown_runtime_error',
           });
         }
       }
@@ -550,10 +717,63 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
 
   function reset() {
     generation += 1;
+    clearRecoveryTimer();
     stopEvents?.();
     stopEvents = null;
     state = emptyState();
+    persistPointer();
     emit();
+  }
+
+  async function restoreActiveRun(): Promise<boolean> {
+    if (state.intakeId && state.scopeReview) return true;
+    const pointer = readPointer(pointerStorage);
+    if (!pointer) return false;
+    const token = ++generation;
+    try {
+      const intake = await api.getIntake(pointer.intakeId);
+      if (generation !== token) return false;
+      state = {
+        ...emptyState(),
+        intakeId: intake.intakeId,
+        scope: intake.scope,
+        scopeReview: intake.review,
+        runId: intake.runId,
+        status: intake.runId ? 'running' : 'waiting_scope_review',
+        intakeStatus: intake.runId ? 'running' : 'waiting_scope_review',
+      };
+      persistPointer();
+      emit();
+      const runId = intake.runId;
+      if (runId) await connectRun(runId, token);
+      return true;
+    } catch {
+      if (generation === token) {
+        state = {
+          ...emptyState(),
+          intakeId: pointer.intakeId,
+          runId: pointer.runId,
+          status: pointer.runId ? 'running' : 'analyzing_scope',
+          intakeStatus: pointer.runId ? 'running' : 'analyzing_scope',
+          connectionMode: 'polling',
+          providerReady: false,
+        };
+        persistPointer();
+        emit();
+        if (pointer.runId) scheduleRecovery(pointer.runId, token);
+      }
+      return true;
+    }
+  }
+
+  async function refreshStatus(): Promise<boolean> {
+    const runId = state.runId;
+    if (!runId) return false;
+    return (await reconcileRun(runId, generation)) !== 'unavailable';
+  }
+
+  function returnToScopeReview() {
+    if (state.scopeReview) update({ scopeReviewExpanded: true });
   }
 
   return {
@@ -573,6 +793,9 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
       registerTranscript: registerTranscriptForIntake,
       revokeTranscript: revokeTranscriptForIntake,
       resumeEvidence,
+      restoreActiveRun,
+      refreshStatus,
+      returnToScopeReview,
       reset
     }
   };

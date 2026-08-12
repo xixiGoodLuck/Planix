@@ -132,6 +132,8 @@ class LearningRunStatusResponse(LearningApiModel):
     status: str
     current_stage: str
     completed_stages: list[str]
+    created_at: str
+    updated_at: str
     error: LearningRunErrorResponse | None = None
     intervention: "LearningEvidenceInterventionResponse | None" = None
 
@@ -977,6 +979,8 @@ def get_learning_run(
         status=state.status,
         current_stage=state.current_stage,
         completed_stages=list(state.completed_stages),
+        created_at=state.created_at,
+        updated_at=state.updated_at,
         error=error,
         intervention=(
             manager.get_intervention(run_id)

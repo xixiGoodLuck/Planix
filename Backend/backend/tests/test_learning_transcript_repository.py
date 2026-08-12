@@ -134,6 +134,21 @@ def test_active_registered_transcript_resources_are_searchable_before_remote_can
     ) == []
 
 
+def test_persistent_provider_accepts_lineage_resource_id_for_same_verified_identity() -> None:
+    repository = LearningTranscriptRepository()
+    register_source(repository)
+    lineage_resource = transcript_resource().model_copy(
+        update={"id": "video-resource-qualified-lineage"}
+    )
+
+    document = PersistentTranscriptProvider(repository).fetch_transcript(
+        lineage_resource
+    )
+
+    assert document.resource_id == lineage_resource.id
+    assert document.fingerprint == lineage_resource.content_fingerprint
+
+
 def test_same_source_name_with_different_content_conflicts() -> None:
     repository = LearningTranscriptRepository()
     register_source(repository)

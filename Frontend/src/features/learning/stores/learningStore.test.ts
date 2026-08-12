@@ -125,10 +125,12 @@ function fakeApi() {
     createIntake: vi.fn().mockResolvedValue(intake),
     supplementIntake: vi.fn().mockResolvedValue(supplemented),
     continueIntake: vi.fn().mockResolvedValue(runningIntake),
+    getIntake: vi.fn().mockResolvedValue(intake),
     registerTranscript: vi.fn().mockResolvedValue(transcriptSummary),
     revokeTranscript: vi.fn().mockResolvedValue({ source_id: transcriptSummary.source_id, status: 'revoked' }),
     getRun: vi.fn().mockImplementation(async () => runStatus),
     getResult: vi.fn().mockResolvedValue(result),
+    getHealth: vi.fn().mockResolvedValue({ status: 'ready' }),
     streamEvents: vi.fn().mockImplementation((_runId, nextHandlers) => {
       handlers = nextHandlers;
       return vi.fn();
@@ -148,6 +150,16 @@ function fakeApi() {
 }
 
 describe('Progressive Learning Store', () => {
+  function pointerStorage(initial: string | null = null) {
+    let value = initial;
+    return {
+      getItem: vi.fn(() => value),
+      setItem: vi.fn((_key: string, next: string) => { value = next; }),
+      removeItem: vi.fn(() => { value = null; }),
+      value: () => value,
+    };
+  }
+
   it('starts with natural language intake and waits for one batch review', async () => {
     const fake = fakeApi();
     const store = createLearningStore(fake.api);
@@ -190,6 +202,129 @@ describe('Progressive Learning Store', () => {
     expect(fake.api.continueIntake).toHaveBeenCalledWith('learning-intake-1');
     expect(fake.api.streamEvents).toHaveBeenCalledOnce();
     expect(store.getState()).toMatchObject({ runId, status: 'running' });
+  });
+
+  it('persists only a versioned active-run pointer and clears it on reset', async () => {
+    const fake = fakeApi();
+    const storage = pointerStorage();
+    const store = createLearningStore(fake.api, storage);
+
+    await store.actions.startIntake('I want to learn FastAPI', 'en-US');
+    await store.actions.continueWithCurrentScope();
+
+    expect(JSON.parse(storage.value() || '{}')).toEqual({
+      schemaVersion: 1, intakeId: 'learning-intake-1', runId: 'learning-intake-1'
+    });
+    expect(storage.value()).not.toContain('FastAPI');
+    expect(storage.value()).not.toContain('transcript');
+    store.actions.reset();
+    expect(storage.value()).toBeNull();
+  });
+
+  it('restores Scope Review from the backend-authoritative intake state', async () => {
+    const fake = fakeApi();
+    const storage = pointerStorage(JSON.stringify({
+      schemaVersion: 1, intakeId: 'learning-intake-1', runId: null
+    }));
+    const store = createLearningStore(fake.api, storage);
+
+    expect(await store.actions.restoreActiveRun()).toBe(true);
+
+    expect(fake.api.getIntake).toHaveBeenCalledWith('learning-intake-1');
+    expect(store.getState()).toMatchObject({
+      intakeId: 'learning-intake-1', runId: null, status: 'waiting_scope_review'
+    });
+    expect(fake.api.streamEvents).not.toHaveBeenCalled();
+  });
+
+  it('restores a completed run and fetches its result after refresh', async () => {
+    const fake = fakeApi();
+    fake.setStatus(completedState);
+    vi.mocked(fake.api.getIntake).mockResolvedValue({ ...fake.runningIntake, status: 'completed' });
+    const storage = pointerStorage(JSON.stringify({
+      schemaVersion: 1, intakeId: 'learning-intake-1', runId: 'learning-intake-1'
+    }));
+    const store = createLearningStore(fake.api, storage);
+
+    await store.actions.restoreActiveRun();
+
+    expect(store.getState()).toMatchObject({ status: 'completed', runId: 'learning-intake-1' });
+    expect(store.getState().qualityReport?.passed).toBe(true);
+    expect(fake.api.getResult).toHaveBeenCalledWith('learning-intake-1');
+  });
+
+  it('retains the safe pointer and begins bounded recovery when refresh happens during backend restart', async () => {
+    vi.useFakeTimers();
+    const fake = fakeApi();
+    vi.mocked(fake.api.getIntake).mockRejectedValueOnce(new Error('backend restarting'));
+    const storage = pointerStorage(JSON.stringify({
+      schemaVersion: 1, intakeId: 'learning-intake-1', runId: 'learning-intake-1'
+    }));
+    const store = createLearningStore(fake.api, storage);
+
+    expect(await store.actions.restoreActiveRun()).toBe(true);
+
+    expect(store.getState()).toMatchObject({
+      intakeId: 'learning-intake-1', runId: 'learning-intake-1',
+      status: 'running', connectionMode: 'polling', providerReady: false
+    });
+    expect(storage.value()).toContain('learning-intake-1');
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('lets bounded polling take over after an SSE disconnect', async () => {
+    vi.useFakeTimers();
+    const fake = fakeApi();
+    const store = createLearningStore(fake.api, pointerStorage());
+    await store.actions.startIntake('I want to learn FastAPI', 'en-US');
+    await store.actions.continueWithCurrentScope();
+
+    fake.emit({
+      event_type: 'stage_started', stage: 'knowledge_generation', status: 'started',
+      message: 'start', timestamp: '2026-08-12T08:00:00Z'
+    });
+    const streamHandlers = vi.mocked(fake.api.streamEvents).mock.calls[0][1];
+    streamHandlers.onError(new Error('disconnected'));
+    expect(store.getState().connectionMode).toBe('polling');
+
+    fake.setStatus(completedState);
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(store.getState().status).toBe('completed');
+    expect(fake.api.getResult).toHaveBeenCalledWith('learning-intake-1');
+    expect(fake.api.streamEvents).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+
+  it('retries a completed result when the backend disconnects before result retrieval', async () => {
+    vi.useFakeTimers();
+    const fake = fakeApi();
+    vi.mocked(fake.api.backendUnavailable).mockImplementation((error) => (
+      error instanceof Error && error.message === 'backend disconnected'
+    ));
+    vi.mocked(fake.api.getResult)
+      .mockRejectedValueOnce(new Error('backend disconnected'))
+      .mockResolvedValue(result);
+    const store = createLearningStore(fake.api, pointerStorage());
+    await store.actions.startIntake('I want to learn FastAPI', 'en-US');
+    await store.actions.continueWithCurrentScope();
+    fake.setStatus(completedState);
+
+    fake.emit({
+      event_type: 'session_completed', stage: 'completed', status: 'completed',
+      message: 'complete', timestamp: '2026-08-12T08:00:01Z'
+    });
+    await vi.waitFor(() => expect(store.getState()).toMatchObject({
+      status: 'running', connectionMode: 'polling', failureKind: null
+    }));
+
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(store.getState().status).toBe('completed');
+    expect(store.getState().qualityReport?.passed).toBe(true);
+    expect(fake.api.getResult).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
   });
 
   it('automatically enters progress when supplement response is ready', async () => {
@@ -289,7 +424,7 @@ describe('Progressive Learning Store', () => {
       event_type: 'session_failed', stage: 'failed', status: 'failed',
       message: 'failed', timestamp: '2026-08-12T08:00:01Z'
     });
-    await vi.waitFor(() => expect(store.getState().failureKind).toBe('evidence_missing'));
+    await vi.waitFor(() => expect(store.getState().failureKind).toBe('unknown_runtime_error'));
 
     expect(store.getState().status).toBe('failed');
   });
