@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...quality import LearningQualityEngine
+from ...evidence.coverage import CoverageAggregator
+from ...evidence.mapping import CoverageMapper
+from ...evidence.orchestration import GapCompletionOrchestrator
+from ...evidence.supplement import EvidenceSupplementer
 from ...services import LearningPipeline
 from ..artifact_store import ArtifactStore, ArtifactStoreError, InMemoryArtifactStore
 from ..learning_runtime import LearningRuntime
@@ -101,6 +105,13 @@ class LearningRuntimeFactory:
             provider=evidence_provider,
             model=components.model_provider,
             quality_engine=LearningQualityEngine(),
+            coverage_aggregator=CoverageAggregator(),
+            gap_orchestrator=GapCompletionOrchestrator(
+                components.transcript_provider,
+                evidence_supplementer=EvidenceSupplementer(
+                    coverage_mapper=CoverageMapper(model=components.model_provider)
+                ),
+            ),
         )
         return LearningRuntime(
             pipeline,

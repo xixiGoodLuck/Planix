@@ -11,7 +11,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 
-ALEMBIC_REVISION = "20260812_01"
+ALEMBIC_REVISION = "20260812_02"
 REQUIRED_TABLES = {
     "ai_settings",
     "ai_provider_configs",

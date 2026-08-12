@@ -16,14 +16,11 @@ def evaluate_readiness(scope: LearningScope) -> LearningScopeReadiness:
     high_impact = [item for item in scope.unknowns if item.impact == "high"]
     goal_missing = any("user_goal" in item.affected_fields for item in scope.unknowns)
     recommendation_round = min(scope.version, 2)
-    recommendation_limit_reached = scope.version > 2
-    ready = not goal_missing and (not high_impact or recommendation_limit_reached)
+    ready = not goal_missing and not high_impact
     if goal_missing:
         reason = "learning_goal_unresolved"
     elif not high_impact:
         reason = "scope_has_no_high_impact_gaps"
-    elif recommendation_limit_reached:
-        reason = "recommendation_round_limit_reached"
     else:
         reason = "high_impact_gaps_remain"
     return LearningScopeReadiness(

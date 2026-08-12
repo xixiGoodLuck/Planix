@@ -1,3 +1,7 @@
+from .anchors import (
+    build_explicit_scope_anchors,
+    refresh_explicit_scope_anchors,
+)
 from .analyzer import (
     LearningScopeAnalysis,
     LearningScopeAnalyzer,
@@ -16,6 +20,7 @@ from .validators import (
 )
 
 __all__ = [
+    "build_explicit_scope_anchors",
     "LearningKnownInformation",
     "LearningScopeAnalysis",
     "LearningScopeAnalyzer",
@@ -31,4 +36,5 @@ __all__ = [
     "extract_bilibili_urls",
     "is_continue_intent",
     "project_scope_review",
+    "refresh_explicit_scope_anchors",
 ]

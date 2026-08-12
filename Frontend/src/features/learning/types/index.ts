@@ -1,10 +1,11 @@
-export type LearningRunStatus = 'created' | 'running' | 'completed' | 'failed';
+export type LearningRunStatus = 'created' | 'running' | 'completed' | 'failed' | 'waiting_evidence';
 export type LearningWorkspaceStatus =
   | 'idle'
   | 'analyzing_scope'
   | 'waiting_scope_review'
   | 'starting_run'
   | 'running'
+  | 'waiting_evidence'
   | 'completed'
   | 'failed';
 export type LearningFailureKind =
@@ -102,6 +103,7 @@ export interface LearningScope {
   version: number;
   userGoal: string;
   targetResult: string;
+  targetResultStatus?: 'explicit' | 'assumed' | 'unknown';
   currentLevel: {
     summary: string;
     knownSkills: string[];
@@ -151,7 +153,7 @@ export interface LearningScopeReview {
 
 export interface LearningIntakeResponse {
   intakeId: string;
-  status: 'analyzing_scope' | 'waiting_scope_review' | 'running' | 'completed' | 'failed';
+  status: 'analyzing_scope' | 'waiting_scope_review' | 'running' | 'completed' | 'failed' | 'waiting_evidence';
   scope: LearningScope;
   review: LearningScopeReview;
   runId: string | null;
@@ -205,6 +207,48 @@ export interface LearningRunState {
   current_stage: string;
   completed_stages: string[];
   error: LearningRunError | null;
+  intervention?: LearningEvidenceIntervention | null;
+}
+
+export interface LearningEvidenceGap {
+  knowledgeId: string;
+  knowledgeName: string;
+  gapType: 'missing_knowledge' | 'weak_coverage' | 'unsupported_required';
+  coverageStrength: 'FULL' | 'PARTIAL' | 'WEAK' | 'MISSING';
+  missingOrPartialReason: string;
+}
+
+export interface LearningInterventionResource {
+  id: string;
+  title: string;
+  canonicalUrl: string;
+  availability: string;
+}
+
+export interface LearningInterventionSegment {
+  id: string;
+  resourceId: string;
+  startSeconds: number;
+  endSeconds: number;
+  contentSummary: string;
+}
+
+export interface LearningInterventionKnowledge {
+  id: string;
+  name: string;
+  importance: 'required' | 'important' | 'optional';
+  coverageStrength: 'FULL' | 'PARTIAL' | 'WEAK' | 'MISSING';
+}
+
+export interface LearningEvidenceIntervention {
+  kind: 'additional_evidence_required';
+  requiredGaps: LearningEvidenceGap[];
+  searchedResources: string[];
+  transcriptUnavailableResources: string[];
+  verifiedResources: LearningInterventionResource[];
+  verifiedSegments: LearningInterventionSegment[];
+  knowledgeCoverage: LearningInterventionKnowledge[];
+  canResume: boolean;
 }
 
 export interface LearningProgressEvent {
@@ -215,9 +259,10 @@ export interface LearningProgressEvent {
     | 'artifact_saved'
     | 'stage_completed'
     | 'session_completed'
-    | 'session_failed';
+    | 'session_failed'
+    | 'session_waiting_evidence';
   stage: string;
-  status: 'created' | 'started' | 'saved' | 'completed' | 'failed';
+  status: 'created' | 'started' | 'saved' | 'completed' | 'failed' | 'waiting_evidence';
   message: string;
   timestamp: string;
 }
@@ -365,6 +410,7 @@ export interface LearningWorkspaceState {
   plan: LearningContentPlan | null;
   qualityReport: LearningQualityReport | null;
   evidenceGraph: LearningEvidenceGraph | null;
+  intervention: LearningEvidenceIntervention | null;
   originalInput: string;
   preferredLanguage: string;
   scopeAnalysisFailed: boolean;

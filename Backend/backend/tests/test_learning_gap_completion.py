@@ -212,7 +212,7 @@ def test_one_round_completes_missing_required_knowledge() -> None:
     assert model.calls == 1
 
 
-def test_two_rounds_complete_two_required_knowledge_nodes() -> None:
+def test_one_round_can_complete_two_required_knowledge_nodes() -> None:
     videos = [
         _video("routing-a", "FastAPI routing demonstration", "a"),
         _video("database-a", "FastAPI database persistence demonstration", "b"),
@@ -223,9 +223,8 @@ def test_two_rounds_complete_two_required_knowledge_nodes() -> None:
     )
 
     assert result.status == "COMPLETED"
-    assert [item.round_number for item in result.rounds] == [1, 2]
-    assert result.rounds[0].status == "RUNNING"
-    assert result.rounds[1].status == "COMPLETED"
+    assert [item.round_number for item in result.rounds] == [1]
+    assert result.rounds[0].status == "COMPLETED"
     assert transcript_provider.fetch_calls == ["routing-a", "database-a"]
 
 
@@ -244,7 +243,7 @@ def test_completed_result_requires_all_required_coverage_full() -> None:
     )
 
 
-def test_max_rounds_stops_an_incomplete_run() -> None:
+def test_one_round_budget_still_processes_multiple_gaps() -> None:
     videos = [
         _video("routing-a", "FastAPI routing demonstration", "a"),
         _video("database-a", "FastAPI database persistence demonstration", "b"),
@@ -255,8 +254,8 @@ def test_max_rounds_stops_an_incomplete_run() -> None:
         max_rounds=1,
     )
 
-    assert result.status == "INCOMPLETE"
-    assert result.termination_reason == "MAX_ROUNDS_REACHED"
+    assert result.status == "COMPLETED"
+    assert result.termination_reason == "REQUIRED_COVERAGE_FULL"
     assert len(result.rounds) == 1
 
 
@@ -336,7 +335,7 @@ def test_validator_rejects_rounds_beyond_maximum() -> None:
         ["knowledge-routing", "knowledge-database"],
         videos,
     )
-    forged = result.model_copy(update={"max_rounds": 1})
+    forged = result.model_copy(update={"max_rounds": 0})
 
     with pytest.raises(GapCompletionValidationError, match="exceeded MAX_ROUNDS"):
         GapCompletionValidator().validate_result(knowledge_graph, graph, forged)

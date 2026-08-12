@@ -1,6 +1,7 @@
 import { FormEvent, useState } from 'react';
 import { ArrowRight, BookOpenCheck, CircleHelp, Sparkles } from 'lucide-react';
 import { LearningFailureNotice } from '../components/LearningFailureNotice';
+import { LearningEvidenceIntervention } from '../components/LearningEvidenceIntervention';
 import { LearningProgress } from '../components/LearningProgress';
 import { LearningResourceInput } from '../components/LearningResourceInput';
 import { LearningResult } from '../components/LearningResult';
@@ -139,6 +140,14 @@ export function LearningWorkspace({ language, t }: LearningWorkspaceProps) {
     void learningStoreActions.startIntake(goal, language);
   }
 
+  function openEvidenceInput() {
+    learningStoreActions.setResourceMode('specified');
+    document.getElementById('learning-resource-input')?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    });
+  }
+
   return (
     <section className="learning-workspace" aria-label={t('learning.title')}>
       <header className="learning-hero">
@@ -182,16 +191,18 @@ export function LearningWorkspace({ language, t }: LearningWorkspaceProps) {
 
         {learning.scopeReview && (
           <>
-            <LearningScopeReviewPanel
-              review={learning.scopeReview}
-              supplementDraft={learning.supplementDraft}
-              busy={busy || resourceBusy || learning.status === 'running'}
-              analysisFailed={learning.scopeAnalysisFailed}
-              onDraftChange={learningStoreActions.setSupplementDraft}
-              onSupplement={() => { void learningStoreActions.supplement(); }}
-              onContinue={() => { void learningStoreActions.continueWithCurrentScope(); }}
-              t={t}
-            />
+            {learning.status !== 'waiting_evidence' && (
+              <LearningScopeReviewPanel
+                review={learning.scopeReview}
+                supplementDraft={learning.supplementDraft}
+                busy={busy || resourceBusy || Boolean(learning.runId)}
+                analysisFailed={learning.scopeAnalysisFailed}
+                onDraftChange={learningStoreActions.setSupplementDraft}
+                onSupplement={() => { void learningStoreActions.supplement(); }}
+                onContinue={() => { void learningStoreActions.continueWithCurrentScope(); }}
+                t={t}
+              />
+            )}
             <LearningResourceInput
               draft={learning.resourceDraft}
               status={learning.resourceStatus}
@@ -225,6 +236,16 @@ export function LearningWorkspace({ language, t }: LearningWorkspaceProps) {
 
       {learning.failureKind && (
         <LearningFailureNotice kind={learning.failureKind} onRetry={learningStoreActions.reset} t={t} />
+      )}
+
+      {learning.status === 'waiting_evidence' && learning.intervention && (
+        <LearningEvidenceIntervention
+          intervention={learning.intervention}
+          busy={resourceBusy}
+          onAddEvidence={openEvidenceInput}
+          onResume={() => { void learningStoreActions.resumeEvidence(); }}
+          t={t}
+        />
       )}
 
       {learning.plan && learning.qualityReport && learning.evidenceGraph && (

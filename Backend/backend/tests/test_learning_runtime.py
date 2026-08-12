@@ -36,11 +36,13 @@ def test_runtime_executes_the_complete_phase_one_to_five_pipeline() -> None:
     assert result.session.status == "completed"
     assert result.session.current_stage == "completed"
     assert result.session.completed_stages == [
-        "understanding",
-        "knowledge_generating",
-        "evidence_generating",
-        "content_selecting",
-        "quality_checking",
+        "scope",
+        "knowledge_generation",
+        "evidence_generation",
+        "coverage_analysis",
+        "gap_completion",
+        "selection",
+        "quality",
     ]
     assert result.final_plan.total_duration_seconds == 1200
     assert result.quality_report.passed is True
@@ -62,18 +64,22 @@ def test_runtime_emits_each_stage_state_change() -> None:
     events = runtime.get_events(result.session.session_id)
 
     assert [item.stage for item in events if item.event_type == "stage_started"] == [
-        "understanding",
-        "knowledge_generating",
-        "evidence_generating",
-        "content_selecting",
-        "quality_checking",
+        "scope",
+        "knowledge_generation",
+        "evidence_generation",
+        "coverage_analysis",
+        "gap_completion",
+        "selection",
+        "quality",
     ]
     assert [item.stage for item in events if item.event_type == "stage_completed"] == [
-        "understanding",
-        "knowledge_generating",
-        "evidence_generating",
-        "content_selecting",
-        "quality_checking",
+        "scope",
+        "knowledge_generation",
+        "evidence_generation",
+        "coverage_analysis",
+        "gap_completion",
+        "selection",
+        "quality",
     ]
     serialized = "".join(item.model_dump_json() for item in events).casefold()
     assert all(item not in serialized for item in ("prompt", "token", "reasoning"))
@@ -96,9 +102,9 @@ def test_runtime_stops_at_the_failed_pipeline_stage() -> None:
     assert session.status == "failed"
     assert session.current_stage == "failed"
     assert session.error is not None
-    assert session.error.stage == "knowledge_generating"
+    assert session.error.stage == "knowledge_generation"
     assert session.error.validator_rule == "generation_contract"
-    assert session.completed_stages == ["understanding"]
+    assert session.completed_stages == ["scope"]
     assert fixture.provider.search_calls == 0
     assert runtime.get_events(session.session_id)[-1].event_type == "session_failed"
 
@@ -136,6 +142,10 @@ def test_runtime_progress_event_order_is_deterministic() -> None:
         "artifact_saved",
         "stage_completed",
         "stage_started",
+        "stage_completed",
+        "stage_started",
+        "stage_completed",
+        "stage_started",
         "artifact_saved",
         "artifact_saved",
         "stage_completed",
@@ -164,7 +174,7 @@ def test_quality_failure_never_returns_a_success_result() -> None:
     session = caught.value.session
     assert session.status == "failed"
     assert session.error is not None
-    assert session.error.stage == "quality_checking"
+    assert session.error.stage == "quality"
     assert session.error.validator_rule == "quality_gate"
     assert (
         store.get_latest_version(session.session_id, "learning_quality_report")

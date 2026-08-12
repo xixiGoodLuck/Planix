@@ -37,11 +37,13 @@ LearningArtifactType = Literal[
     "capability_graph",
     "knowledge_graph",
     "evidence_graph",
+    "evidence_intervention_report",
     "content_selection",
     "learning_content_plan",
     "learning_quality_report",
 ]
 Importance = Literal["required", "important", "optional"]
+TargetResultStatus = Literal["explicit", "assumed", "unknown"]
 
 
 class LearningArtifactRef(LearningContract):
@@ -105,16 +107,25 @@ class LearningUnknown(LearningContract):
     affected_fields: list[str] = Field(default_factory=list)
 
 
+class ExplicitScopeAnchor(LearningContract):
+    id: str = Field(min_length=1)
+    kind: Literal["user_goal", "target_result", "concept", "constraint"]
+    text: str = Field(min_length=1)
+    source_ref: str = Field(min_length=1)
+
+
 class LearningScope(LearningArtifact):
     artifact_id: str = Field(default_factory=lambda: _artifact_id("learning-scope"))
     user_goal: str = Field(min_length=1)
     target_result: str = Field(min_length=1)
+    target_result_status: TargetResultStatus = "assumed"
     current_level: CurrentLevel = Field(default_factory=CurrentLevel)
     content_budget: ContentBudget = Field(default_factory=ContentBudget)
     language_preference: LanguagePreference = Field(default_factory=LanguagePreference)
     resource_preference: ResourcePreference = Field(default_factory=ResourcePreference)
     assumptions: list[LearningAssumption] = Field(default_factory=list)
     unknowns: list[LearningUnknown] = Field(default_factory=list)
+    explicit_scope_anchors: list[ExplicitScopeAnchor] = Field(default_factory=list)
     source_refs: list[str] = Field(min_length=1)
     confirmed: bool = False
 
@@ -125,6 +136,7 @@ class LearningOutcome(LearningContract):
     acceptance_criteria: list[str] = Field(min_length=1)
     importance: Importance = "required"
     source_goal_refs: list[str] = Field(min_length=1)
+    scope_anchor_refs: list[str] = Field(default_factory=list)
 
 
 class CapabilityNode(LearningContract):
@@ -134,6 +146,7 @@ class CapabilityNode(LearningContract):
     why_required: str = Field(min_length=1)
     outcome_refs: list[str] = Field(min_length=1)
     importance: Importance = "required"
+    scope_anchor_refs: list[str] = Field(default_factory=list)
 
 
 class CapabilityEdge(LearningContract):
@@ -150,6 +163,11 @@ class CapabilityGraph(LearningArtifact):
     edges: list[CapabilityEdge] = Field(default_factory=list)
 
 
+class KnowledgeCoverageRequirement(LearningContract):
+    id: str = Field(min_length=1)
+    statement: str = Field(min_length=1)
+
+
 class KnowledgeNode(LearningContract):
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
@@ -159,6 +177,8 @@ class KnowledgeNode(LearningContract):
     outcome_refs: list[str] = Field(min_length=1)
     importance: Importance
     mastery_indicators: list[str] = Field(min_length=1)
+    scope_anchor_refs: list[str] = Field(default_factory=list)
+    coverage_requirements: list[KnowledgeCoverageRequirement] = Field(default_factory=list)
 
 
 class KnowledgeEdge(LearningContract):
@@ -262,6 +282,7 @@ class CoverageEdge(LearningContract):
     confidence: float = Field(ge=0, le=1)
     summary: str = ""
     reason: str = Field(min_length=1)
+    supported_requirement_refs: list[str] = Field(default_factory=list)
 
 
 class EvidenceGraph(LearningArtifact):
@@ -271,6 +292,36 @@ class EvidenceGraph(LearningArtifact):
     segments: list[ContentSegment] = Field(default_factory=list)
     evidence: list[SegmentEvidence] = Field(default_factory=list)
     coverage_edges: list[CoverageEdge] = Field(default_factory=list)
+
+
+class EvidenceInterventionGap(LearningContract):
+    knowledge_id: str = Field(min_length=1)
+    knowledge_name: str = Field(min_length=1)
+    gap_type: Literal["missing_knowledge", "weak_coverage", "unsupported_required"]
+    coverage_strength: Literal["FULL", "PARTIAL", "WEAK", "MISSING"]
+    missing_or_partial_reason: str = Field(min_length=1)
+
+
+class EvidenceInterventionCoverage(LearningContract):
+    knowledge_id: str = Field(min_length=1)
+    status: Literal["sufficient", "insufficient", "missing"]
+    coverage_strength: Literal["FULL", "PARTIAL", "WEAK", "MISSING"]
+    evidence_refs: list[str] = Field(default_factory=list)
+    segment_refs: list[str] = Field(default_factory=list)
+
+
+class EvidenceInterventionReport(LearningArtifact):
+    artifact_id: str = Field(default_factory=lambda: _artifact_id("evidence-intervention"))
+    knowledge_graph_ref: LearningArtifactRef
+    evidence_graph_ref: LearningArtifactRef | None = None
+    required_gaps: list[EvidenceInterventionGap] = Field(min_length=1)
+    knowledge_coverage: list[EvidenceInterventionCoverage] = Field(default_factory=list)
+    searched_queries: list[str] = Field(default_factory=list)
+    searched_resource_refs: list[str] = Field(default_factory=list)
+    transcript_unavailable_resource_refs: list[str] = Field(default_factory=list)
+    recommended_action: Literal["add_video_or_transcript", "retry_evidence"] = (
+        "add_video_or_transcript"
+    )
 
 
 class AlternativeRejection(LearningContract):
@@ -434,9 +485,14 @@ __all__ = [
     "CoverageGap",
     "CurrentLevel",
     "EvidenceGraph",
+    "EvidenceInterventionGap",
+    "EvidenceInterventionCoverage",
+    "EvidenceInterventionReport",
     "EvidenceSourceRange",
+    "ExplicitScopeAnchor",
     "KnowledgeEdge",
     "KnowledgeGraph",
+    "KnowledgeCoverageRequirement",
     "KnowledgeNode",
     "LanguagePreference",
     "LearningArtifactRef",
@@ -458,4 +514,5 @@ __all__ = [
     "SelectionOmissionReason",
     "SelectedSegment",
     "VideoResource",
+    "TargetResultStatus",
 ]

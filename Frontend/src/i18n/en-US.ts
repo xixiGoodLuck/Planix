@@ -7,6 +7,18 @@ export const enUS: I18nNamespace = {
     languageZh: 'Chinese', languageEn: 'English', productTagline: 'Technical learning content agent', navigation: 'Navigation'
   },
   learning: {
+    status_waiting_evidence: 'Needs evidence',
+    event_session_waiting_evidence: 'Waiting for additional evidence',
+    interventionEyebrow: 'Recoverable evidence pause',
+    interventionTitle: 'More content evidence is needed',
+    interventionDescription: 'The learning scope and knowledge route are safe. Planix paused before selection because required knowledge is not yet fully supported by verified transcripts.',
+    interventionRequiredGaps: 'Required knowledge gaps',
+    interventionEvidenceChecked: 'Verified videos checked',
+    interventionNoVerifiedResources: 'No verified transcript-backed video is available yet.',
+    interventionTranscriptUnavailable: 'Videos without an active transcript',
+    interventionTimestampBoundary: 'Precise viewing ranges can only come from validated transcript cues, so Planix will not invent timestamps while evidence is missing.',
+    interventionAddEvidence: 'Add video or transcript',
+    interventionResume: 'Check evidence again',
     productName: 'Planix Learning', title: 'Technical learning content planner', subtitle: 'Turn a goal into a knowledge route, verified video segments, and a quality report.',
     naturalLanguageFirst: 'Progressive understanding', tellPlanix: 'Tell Planix what you want to learn', learningIntent: 'Learning intent', progressiveGoalPlaceholder: 'For example: I want to learn FastAPI.',
     analyzeGoal: 'Analyze learning goal', analyzingScope: 'Understanding…', scopeReview: 'Learning scope review', knownInformation: 'Already understood', understoodSoFar: 'Known information',

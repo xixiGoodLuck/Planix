@@ -3,12 +3,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from ..contracts import (
     LearningArtifactRef,
     LearningArtifactType,
     LearningContentPlan,
+    EvidenceInterventionReport,
     LearningContract,
     LearningQualityReport,
 )
@@ -19,24 +20,19 @@ def _utc_now() -> str:
 
 
 LearningSessionStage = Literal[
-    "created",
     "scope",
-    "understanding",
     "knowledge_generation",
-    "knowledge_generating",
     "evidence_generation",
-    "evidence_generating",
     "coverage_analysis",
     "gap_completion",
     "selection",
-    "content_selecting",
     "quality",
-    "quality_checking",
     "completed",
     "failed",
+    "waiting_evidence",
 ]
-LearningSessionStatus = Literal["created", "running", "completed", "failed"]
-LearningProgressStatus = Literal["created", "started", "saved", "completed", "failed"]
+LearningSessionStatus = Literal["created", "running", "completed", "failed", "waiting_evidence"]
+LearningProgressStatus = Literal["created", "started", "saved", "completed", "failed", "waiting_evidence"]
 LearningProgressEventType = Literal[
     "session_created",
     "stage_started",
@@ -44,7 +40,22 @@ LearningProgressEventType = Literal[
     "stage_completed",
     "session_completed",
     "session_failed",
+    "session_waiting_evidence",
 ]
+
+
+_LEGACY_STAGE_MAP = {
+    "created": "scope",
+    "understanding": "scope",
+    "knowledge_generating": "knowledge_generation",
+    "evidence_generating": "evidence_generation",
+    "content_selecting": "selection",
+    "quality_checking": "quality",
+}
+
+
+def canonical_stage(value):
+    return _LEGACY_STAGE_MAP.get(value, value)
 
 
 class LearningSessionError(LearningContract):
@@ -54,16 +65,25 @@ class LearningSessionError(LearningContract):
     validator_rule: str = ""
     field_path: str = ""
 
+    _normalize_stage = field_validator("stage", mode="before")(canonical_stage)
+
 
 class LearningSessionState(LearningContract):
     session_id: str = Field(min_length=1)
-    current_stage: LearningSessionStage = "created"
+    current_stage: LearningSessionStage = "scope"
     status: LearningSessionStatus = "created"
     completed_stages: list[LearningSessionStage] = Field(default_factory=list)
     current_artifact_ref: LearningArtifactRef | None = None
     error: LearningSessionError | None = None
     created_at: str = Field(default_factory=_utc_now)
     updated_at: str = Field(default_factory=_utc_now)
+
+    _normalize_current_stage = field_validator("current_stage", mode="before")(canonical_stage)
+
+    @field_validator("completed_stages", mode="before")
+    @classmethod
+    def normalize_completed_stages(cls, value):
+        return [canonical_stage(item) for item in (value or [])]
 
 
 class LearningProgressEvent(LearningContract):
@@ -73,12 +93,20 @@ class LearningProgressEvent(LearningContract):
     message: str = Field(min_length=1)
     timestamp: str = Field(default_factory=_utc_now)
 
+    _normalize_stage = field_validator("stage", mode="before")(canonical_stage)
+
 
 class LearningRunResult(LearningContract):
     session: LearningSessionState
     artifacts: dict[LearningArtifactType, LearningArtifactRef]
     final_plan: LearningContentPlan
     quality_report: LearningQualityReport
+
+
+class LearningWaitingEvidenceResult(LearningContract):
+    session: LearningSessionState
+    artifacts: dict[LearningArtifactType, LearningArtifactRef]
+    intervention_report: EvidenceInterventionReport
 
 
 class LearningArtifactEnvelope(LearningContract):
@@ -101,6 +129,9 @@ class LearningRunCheckpoint(LearningContract):
     schema_version: Literal[1] = 1
     updated_at: str = Field(default_factory=_utc_now)
 
+    _normalize_current_stage = field_validator("current_stage", mode="before")(canonical_stage)
+    _normalize_last_stage = field_validator("last_successful_stage", mode="before")(canonical_stage)
+
 
 __all__ = [
     "LearningArtifactEnvelope",
@@ -108,6 +139,7 @@ __all__ = [
     "LearningProgressEventType",
     "LearningProgressStatus",
     "LearningRunResult",
+    "LearningWaitingEvidenceResult",
     "LearningRunCheckpoint",
     "LearningSessionError",
     "LearningSessionStage",

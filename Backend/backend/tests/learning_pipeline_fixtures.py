@@ -19,6 +19,7 @@ from app.learning.evidence.providers import (
     ProviderVideoMetadata,
 )
 from app.learning.generators import LearningModelResponse
+from app.learning.scope_anchor_semantics import text_matches_concept_anchor
 
 
 class ScriptedPipelineModel:
@@ -46,10 +47,65 @@ class ScriptedPipelineModel:
         )
         if not self.responses:
             raise AssertionError(f"unexpected model call at {stage}")
+        raw = self.responses.pop(0)
+        self._complete_phase_30_contract(stage, payload, raw)
         return LearningModelResponse(
-            value=response_type.model_validate(self.responses.pop(0)),
+            value=response_type.model_validate(raw),
             model_usage={"provider": "fixture", "model": "scripted"},
         )
+
+    @staticmethod
+    def _complete_phase_30_contract(
+        stage: str,
+        payload: dict[str, Any],
+        raw: dict[str, Any],
+    ) -> None:
+        anchors = payload.get("scopeAnchors", [])
+        concept_anchors = [item for item in anchors if item.get("kind") == "concept"]
+
+        def matching_indexes(text: str) -> list[int]:
+            matches = [
+                item["index"]
+                for item in concept_anchors
+                if text_matches_concept_anchor(text, item["text"])
+            ]
+            if matches:
+                return matches
+            return [anchors[0]["index"]] if anchors else []
+
+        if stage == "learning_outcomes" and anchors:
+            for outcome in raw.get("outcomes", []):
+                if outcome.get("importance") == "required":
+                    outcome.setdefault(
+                        "scopeAnchorIndexes",
+                        matching_indexes(outcome.get("statement", "")),
+                    )
+        elif stage == "learning_capabilities" and anchors:
+            for capability in raw.get("capabilities", []):
+                if capability.get("importance") == "required":
+                    capability.setdefault(
+                        "scopeAnchorIndexes",
+                        matching_indexes(capability.get("name", "")),
+                    )
+        elif stage == "learning_knowledge" and anchors:
+            for knowledge in raw.get("knowledge", []):
+                if knowledge.get("importance") == "required":
+                    knowledge.setdefault(
+                        "scopeAnchorIndexes",
+                        matching_indexes(knowledge.get("name", "")),
+                    )
+                indicators = knowledge.get("masteryIndicators", [])
+                if indicators:
+                    knowledge.setdefault("coverageRequirements", [indicators[0]])
+        elif stage == "learning_evidence_semantics":
+            requirements = [
+                item.get("coverageRequirements", [])
+                for item in payload.get("knowledge", [])
+            ]
+            for coverage in raw.get("coverage", []):
+                index = coverage.get("knowledgeIndex")
+                if isinstance(index, int) and index < len(requirements) and requirements[index]:
+                    coverage.setdefault("supportedRequirementIndexes", [0])
 
 
 @dataclass(frozen=True)

@@ -105,11 +105,13 @@ def test_get_learning_run_returns_runtime_status(learning_api) -> None:
     assert status["status"] == "completed"
     assert status["current_stage"] == "completed"
     assert status["completed_stages"] == [
-        "understanding",
-        "knowledge_generating",
-        "evidence_generating",
-        "content_selecting",
-        "quality_checking",
+        "scope",
+        "knowledge_generation",
+        "evidence_generation",
+        "coverage_analysis",
+        "gap_completion",
+        "selection",
+        "quality",
     ]
     assert status["error"] is None
 
@@ -138,6 +140,10 @@ def test_learning_events_sse_preserves_runtime_event_order(learning_api) -> None
         "stage_completed",
         "stage_started",
         "artifact_saved",
+        "stage_completed",
+        "stage_started",
+        "stage_completed",
+        "stage_started",
         "stage_completed",
         "stage_started",
         "artifact_saved",
@@ -177,7 +183,7 @@ def test_failed_runtime_is_exposed_as_failed_status(learning_api) -> None:
 
     assert status["status"] == "failed"
     assert status["current_stage"] == "failed"
-    assert status["error"]["stage"] == "knowledge_generating"
+    assert status["error"]["stage"] == "knowledge_generation"
     assert status["error"]["error_type"]
     result_response = client.get(f"/api/learning/runs/{run_id}/result")
     assert result_response.status_code == 409

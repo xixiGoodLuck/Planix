@@ -111,7 +111,7 @@ def _narrow_responses() -> list[dict]:
                     "importance": "required",
                 },
                 {
-                    "name": "Interactive API documentation inspection",
+                    "name": "Swagger UI inspection",
                     "description": "Inspect registered operations in Swagger UI.",
                     "whyRequired": "Swagger inspection is an explicit target.",
                     "outcomeIndexes": [0],
@@ -247,7 +247,7 @@ def _wait(client, run_id: str):
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         response = client.get(f"/api/learning/runs/{run_id}")
-        if response.json()["status"] in {"completed", "failed"}:
+        if response.json()["status"] in {"completed", "failed", "waiting_evidence"}:
             return response
         time.sleep(0.02)
     raise AssertionError("Learning run did not finish")
@@ -329,11 +329,11 @@ def test_controlled_narrow_golden_api_sse_result_and_restart_recovery(client) ->
         events = client.get(f"/api/learning/runs/{run_id}/events")
         result = client.get(f"/api/learning/runs/{run_id}/result")
         assert events.status_code == 200
-        assert events.text.index("knowledge_generating") < events.text.index(
-            "evidence_generating"
+        assert events.text.index("knowledge_generation") < events.text.index(
+            "evidence_generation"
         )
-        assert events.text.index("evidence_generating") < events.text.index(
-            "content_selecting"
+        assert events.text.index("evidence_generation") < events.text.index(
+            "selection"
         )
         assert "session_completed" in events.text
         assert result.status_code == 200
@@ -370,7 +370,7 @@ def test_controlled_narrow_golden_api_sse_result_and_restart_recovery(client) ->
     assert recovered_result.json() == expected_result
 
 
-def test_broad_goal_with_routing_only_transcript_fails_closed(client) -> None:
+def test_broad_goal_with_routing_only_transcript_waits_for_evidence(client) -> None:
     manager, transcript_service, semantic, _build = _setup(
         _broad_insufficient_responses()
     )
@@ -389,8 +389,12 @@ def test_broad_goal_with_routing_only_transcript_fails_closed(client) -> None:
         app.dependency_overrides.pop(get_learning_transcript_service, None)
         manager.shutdown()
 
-    assert payload["status"] == "failed"
-    assert payload["error"]["validator_rule"] == "required_knowledge_coverage"
-    assert payload["error"]["stage"] == "content_selecting"
+    assert payload["status"] == "waiting_evidence"
+    assert payload["error"] is None
+    assert payload["intervention"]["kind"] == "additional_evidence_required"
+    assert any(
+        item["coverageStrength"] in {"MISSING", "PARTIAL"}
+        for item in payload["intervention"]["requiredGaps"]
+    )
     assert result.status_code == 409
     assert len(semantic.calls) == 4

@@ -16,7 +16,7 @@ from ...contracts import (
 )
 from ...validators import LearningArtifactValidator
 from ..artifact_store import artifact_type_for
-from ..contracts import LearningRunCheckpoint
+from ..contracts import LearningRunCheckpoint, canonical_stage
 from .execution import ArtifactBundle
 from .stage_registry import LearningStage, LearningStageRegistry, StageArtifacts
 
@@ -272,20 +272,11 @@ class LearningResumeCommitValidator:
         return artifact
 
 
-_STAGE_ALIASES = {
-    "understanding": "scope",
-    "knowledge_generating": "knowledge_generation",
-    "evidence_generating": "evidence_generation",
-    "content_selecting": "selection",
-    "quality_checking": "quality",
-    "completed": "quality",
-}
-
-
 def normalize_stage(stage: str | None):
     if stage in {None, "created", "failed"}:
         return None
-    return _STAGE_ALIASES.get(stage, stage)
+    normalized = canonical_stage(stage)
+    return "quality" if normalized == "completed" else normalized
 
 
 __all__ = [

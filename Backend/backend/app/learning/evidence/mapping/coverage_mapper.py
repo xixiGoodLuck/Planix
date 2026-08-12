@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from ...contracts import CoverageEdge, EvidenceGraph, KnowledgeGraph, SegmentEvidence
 from ...generators import LearningModelOutputError, LearningSemanticModel, RouterLearningModel
-from ...generators.base import generated_id
+from ...generators.base import generated_id, require_index
 from ...validators import LearningArtifactValidationError
 from ..validators import EvidenceValidator
 from .schemas import CoverageMappingResponse
@@ -16,7 +16,8 @@ from .validators import CoverageMappingValidationError, CoverageMappingValidator
 COVERAGE_MAPPING_SYSTEM = """
 Map the supplied verified transcript content to the supplied knowledge nodes. The response list is positional: each
 response entry belongs to the input segment at the same list position. You may generate only knowledgeId,
-coverageType, summary, confidence, and reason. Never generate or return a segment id, evidence id, timestamp,
+coverageType, summary, confidence, reason, and supportedRequirementIndexes. A requirement index may be returned only
+when the verified transcript directly supports that supplied requirement. Never generate or return a segment id, evidence id, timestamp,
 duration, URL, external id, fingerprint, source range, artifact id, or version. Do not map knowledge unless the
 transcript text directly supports it. Return JSON only and do not reveal hidden reasoning.
 """.strip()
@@ -76,6 +77,10 @@ class CoverageMapper:
                             "explanation": node.explanation,
                             "whyRequired": node.why_required,
                             "importance": node.importance,
+                            "coverageRequirements": [
+                                {"index": index, "statement": item.statement}
+                                for index, item in enumerate(node.coverage_requirements)
+                            ],
                         }
                         for node in knowledge_graph.nodes
                     ],
@@ -103,6 +108,7 @@ class CoverageMapper:
                 )
             edges = self._bind_edges(
                 response.value,
+                knowledge_graph,
                 evidence_graph,
                 bound_evidence,
             )
@@ -142,10 +148,12 @@ class CoverageMapper:
     @staticmethod
     def _bind_edges(
         response: CoverageMappingResponse,
+        knowledge_graph: KnowledgeGraph,
         evidence_graph: EvidenceGraph,
         bound_evidence: list[list[SegmentEvidence]],
     ) -> list[CoverageEdge]:
         edges: list[CoverageEdge] = []
+        knowledge = {item.id: item for item in knowledge_graph.nodes}
         for segment, segment_response, evidence in zip(
             evidence_graph.segments,
             response.segments,
@@ -154,6 +162,37 @@ class CoverageMapper:
         ):
             evidence_refs = [item.id for item in evidence]
             for mapping_index, mapping in enumerate(segment_response.mappings):
+                node = knowledge.get(mapping.knowledge_id)
+                if node is None:
+                    raise CoverageMappingError(
+                        "coverage_knowledge_reference",
+                        f"mapping references unknown knowledge {mapping.knowledge_id}",
+                    )
+                supported_requirement_refs = list(
+                    dict.fromkeys(
+                        node.coverage_requirements[
+                            require_index(
+                                requirement_index,
+                                len(node.coverage_requirements),
+                                stage="learning_coverage_mapping",
+                                field="supportedRequirementIndexes",
+                            )
+                        ].id
+                        for requirement_index in mapping.supported_requirement_indexes
+                    )
+                )
+                if node.coverage_requirements:
+                    all_requirement_refs = {
+                        item.id for item in node.coverage_requirements
+                    }
+                    supported = set(supported_requirement_refs)
+                    strength = (
+                        "full"
+                        if supported == all_requirement_refs
+                        else "partial" if supported else "supplementary"
+                    )
+                else:
+                    strength = CoverageMapper._strength(mapping.confidence)
                 edges.append(
                     CoverageEdge(
                         id=generated_id(
@@ -166,10 +205,11 @@ class CoverageMapper:
                         segmentId=segment.id,
                         evidenceRefs=evidence_refs,
                         coverageType=mapping.coverage_type,
-                        coverageStrength=CoverageMapper._strength(mapping.confidence),
+                        coverageStrength=strength,
                         confidence=mapping.confidence,
                         summary=mapping.summary,
                         reason=mapping.reason,
+                        supportedRequirementRefs=supported_requirement_refs,
                     )
                 )
         return edges

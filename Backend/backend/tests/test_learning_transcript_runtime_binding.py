@@ -12,8 +12,8 @@ from app.learning.evidence.transcript import (
 )
 from app.learning.runtime import (
     LearningRuntimeConfig,
-    LearningRuntimeError,
     LearningRuntimeFactory,
+    LearningWaitingEvidenceResult,
     PostgresLearningArtifactRepository,
 )
 from app.learning.runtime.bootstrap import (
@@ -84,7 +84,7 @@ def test_bilibili_url_validation_rejects_non_bilibili_identity() -> None:
     )
 
 
-def test_user_supplied_video_without_transcript_fails_closed() -> None:
+def test_user_supplied_video_without_transcript_waits_for_evidence() -> None:
     fixture = build_fastapi_learning_pipeline_fixture()
     runtime = LearningRuntimeFactory(
         LearningRuntimeConfig(
@@ -107,8 +107,9 @@ def test_user_supplied_video_without_transcript_fails_closed() -> None:
         }
     )
 
-    with pytest.raises(LearningRuntimeError) as caught:
-        runtime.run(scope)
+    result = runtime.run(scope)
 
-    assert caught.value.session.status == "failed"
-    assert "TRANSCRIPT_UNAVAILABLE" in caught.value.session.error.message
+    assert isinstance(result, LearningWaitingEvidenceResult)
+    assert result.session.status == "waiting_evidence"
+    assert result.session.error is None
+    assert result.intervention_report.transcript_unavailable_resource_refs

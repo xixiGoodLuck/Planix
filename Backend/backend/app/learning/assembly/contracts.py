@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import Field, field_validator
 
 from ..contracts import (
+    EvidenceInterventionReport,
     LearningContentPlan,
     LearningContract,
     LearningQualityReport,
@@ -12,12 +13,13 @@ from ..contracts import (
 )
 
 
-LearningPipelineStatus = Literal["running", "completed", "failed"]
+LearningPipelineStatus = Literal["running", "completed", "failed", "waiting_evidence"]
 PipelineArtifactType = Literal[
     "learning_scope",
     "capability_graph",
     "knowledge_graph",
     "evidence_graph",
+    "evidence_intervention_report",
     "coverage_report",
     "content_selection",
     "learning_content_plan",
@@ -58,6 +60,7 @@ class LearningPipelineRunResult(LearningContract):
     artifact_refs: list[PipelineArtifactRef] = Field(default_factory=list)
     quality_report: LearningQualityReport | None = None
     final_plan: LearningContentPlan | None = None
+    intervention_report: EvidenceInterventionReport | None = None
     error: LearningPipelineStageError | None = None
 
 

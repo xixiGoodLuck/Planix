@@ -24,9 +24,12 @@ from ..learning.contracts import (
     ContentBudget,
     CurrentLevel,
     EvidenceGraph,
+    EvidenceInterventionGap,
+    EvidenceInterventionReport,
     LanguagePreference,
     LearningAssumption,
     LearningContentPlan,
+    KnowledgeGraph,
     LearningQualityReport,
     LearningScope,
     ResourcePreference,
@@ -39,11 +42,13 @@ from ..learning.scope import (
     canonicalize_bilibili_resource_urls,
     evaluate_readiness,
     is_continue_intent,
+    build_explicit_scope_anchors,
     project_scope_review,
 )
 from ..learning.runtime import (
     ArtifactStoreError,
     LearningRunResult,
+    LearningWaitingEvidenceResult,
     LearningRuntime,
     LearningRuntimeConfig,
     LearningRuntimeError,
@@ -128,6 +133,51 @@ class LearningRunStatusResponse(LearningApiModel):
     current_stage: str
     completed_stages: list[str]
     error: LearningRunErrorResponse | None = None
+    intervention: "LearningEvidenceInterventionResponse | None" = None
+
+
+class LearningInterventionResourceResponse(LearningApiModel):
+    id: str
+    title: str
+    canonical_url: str = Field(alias="canonicalUrl")
+    availability: str
+
+
+class LearningInterventionSegmentResponse(LearningApiModel):
+    id: str
+    resource_id: str = Field(alias="resourceId")
+    start_seconds: int = Field(alias="startSeconds")
+    end_seconds: int = Field(alias="endSeconds")
+    content_summary: str = Field(alias="contentSummary")
+
+
+class LearningInterventionKnowledgeResponse(LearningApiModel):
+    id: str
+    name: str
+    importance: str
+    coverage_strength: str = Field(alias="coverageStrength")
+
+
+class LearningEvidenceInterventionResponse(LearningApiModel):
+    kind: Literal["additional_evidence_required"] = "additional_evidence_required"
+    required_gaps: list[EvidenceInterventionGap] = Field(alias="requiredGaps")
+    searched_resources: list[str] = Field(alias="searchedResources")
+    transcript_unavailable_resources: list[str] = Field(
+        alias="transcriptUnavailableResources"
+    )
+    verified_resources: list[LearningInterventionResourceResponse] = Field(
+        default_factory=list,
+        alias="verifiedResources",
+    )
+    verified_segments: list[LearningInterventionSegmentResponse] = Field(
+        default_factory=list,
+        alias="verifiedSegments",
+    )
+    knowledge_coverage: list[LearningInterventionKnowledgeResponse] = Field(
+        default_factory=list,
+        alias="knowledgeCoverage",
+    )
+    can_resume: bool = Field(default=True, alias="canResume")
 
 
 class LearningRunResultResponse(LearningApiModel):
@@ -182,6 +232,7 @@ LearningIntakeStatus = Literal[
     "running",
     "completed",
     "failed",
+    "waiting_evidence",
 ]
 
 
@@ -360,9 +411,91 @@ class LearningRunManager:
             if handle is None:
                 handle = _LearningRunHandle(runtime=self.get_runtime(run_id))
                 self._runs[run_id] = handle
-            if handle.future is not None:
+            if handle.future is not None and not handle.future.done():
                 return
             handle.future = self._executor.submit(self._execute, run_id, scope)
+
+    def resume_evidence(self, run_id: str) -> None:
+        runtime = self.get_runtime(run_id)
+        state = runtime.get_session(run_id)
+        if state is None:
+            raise KeyError(run_id)
+        if state.status != "waiting_evidence":
+            raise ValueError("Learning run is not waiting for evidence")
+        with self._lock:
+            handle = self._runs.get(run_id)
+            if handle is None:
+                handle = _LearningRunHandle(runtime=runtime)
+                self._runs[run_id] = handle
+            if handle.future is not None and not handle.future.done():
+                raise RuntimeError("Learning evidence resume is already running")
+            handle.future = self._executor.submit(self._execute_resume, run_id)
+
+    def get_intervention(
+        self,
+        run_id: str,
+    ) -> LearningEvidenceInterventionResponse | None:
+        runtime = self.get_runtime(run_id)
+        report = runtime.artifact_store.get_latest_artifact(
+            run_id,
+            "evidence_intervention_report",
+        )
+        if not isinstance(report, EvidenceInterventionReport):
+            return None
+        evidence = runtime.artifact_store.get_latest_artifact(
+            run_id,
+            "evidence_graph",
+        )
+        graph = evidence if isinstance(evidence, EvidenceGraph) else None
+        knowledge_artifact = runtime.artifact_store.get_latest_artifact(
+            run_id,
+            "knowledge_graph",
+        )
+        knowledge = (
+            knowledge_artifact
+            if isinstance(knowledge_artifact, KnowledgeGraph)
+            else None
+        )
+        coverage_by_id = {
+            item.knowledge_id: item.coverage_strength
+            for item in report.knowledge_coverage
+        }
+        return LearningEvidenceInterventionResponse(
+            requiredGaps=report.required_gaps,
+            searchedResources=report.searched_resource_refs,
+            transcriptUnavailableResources=(
+                report.transcript_unavailable_resource_refs
+            ),
+            verifiedResources=[
+                LearningInterventionResourceResponse(
+                    id=item.id,
+                    title=item.title,
+                    canonicalUrl=item.canonical_url,
+                    availability=item.availability,
+                )
+                for item in (graph.resources if graph is not None else [])
+            ],
+            verifiedSegments=[
+                LearningInterventionSegmentResponse(
+                    id=item.id,
+                    resourceId=item.resource_id,
+                    startSeconds=item.start_seconds,
+                    endSeconds=item.end_seconds,
+                    contentSummary=item.content_summary,
+                )
+                for item in (graph.segments if graph is not None else [])
+            ],
+            knowledgeCoverage=[
+                LearningInterventionKnowledgeResponse(
+                    id=item.id,
+                    name=item.name,
+                    importance=item.importance,
+                    coverageStrength=coverage_by_id.get(item.id, "MISSING"),
+                )
+                for item in (knowledge.nodes if knowledge is not None else [])
+            ],
+            canResume=True,
+        )
 
     def get_runtime(self, run_id: str) -> LearningRuntime:
         with self._lock:
@@ -434,6 +567,19 @@ class LearningRunManager:
             result = runtime.run(scope, session_id=run_id)
         except LearningRuntimeError:
             return
+        if isinstance(result, LearningWaitingEvidenceResult):
+            return
+        with self._lock:
+            self._runs[run_id].result = result.model_copy(deep=True)
+
+    def _execute_resume(self, run_id: str) -> None:
+        runtime = self.get_runtime(run_id)
+        try:
+            result = runtime.resume_evidence(run_id)
+        except LearningRuntimeError:
+            return
+        if isinstance(result, LearningWaitingEvidenceResult):
+            return
         with self._lock:
             self._runs[run_id].result = result.model_copy(deep=True)
 
@@ -498,12 +644,31 @@ class LearningRunManager:
         return LearningScope(
             userGoal=goal,
             targetResult=preferences.target_result.strip() or goal,
+            targetResultStatus=(
+                "explicit" if preferences.target_result.strip() else "assumed"
+            ),
             currentLevel=preferences.current_level,
             contentBudget=preferences.content_budget,
             languagePreference=preferences.language_preference,
             resourcePreference=preferences.resource_preference,
             assumptions=assumptions,
-            sourceRefs=["api:goal", *constraint_refs],
+            sourceRefs=[
+                "api:goal",
+                *(["api:target-result"] if preferences.target_result.strip() else []),
+                *constraint_refs,
+            ],
+            explicitScopeAnchors=build_explicit_scope_anchors(
+                user_goal=goal,
+                user_goal_source_ref="api:goal",
+                target_result=preferences.target_result.strip() or goal,
+                target_result_status=(
+                    "explicit" if preferences.target_result.strip() else "assumed"
+                ),
+                target_result_source_ref=(
+                    "api:target-result" if preferences.target_result.strip() else None
+                ),
+                constraints=list(zip(constraints, constraint_refs, strict=True)),
+            ),
             confirmed=preferences.confirmed,
         )
 
@@ -813,18 +978,50 @@ def get_learning_run(
         current_stage=state.current_stage,
         completed_stages=list(state.completed_stages),
         error=error,
+        intervention=(
+            manager.get_intervention(run_id)
+            if state.status == "waiting_evidence"
+            else None
+        ),
     )
+
+
+@router.post(
+    "/runs/{run_id}/resume-evidence",
+    response_model=LearningRunStatusResponse,
+    status_code=202,
+)
+def resume_learning_run_evidence(
+    run_id: str,
+    manager: LearningManagerDependency,
+) -> LearningRunStatusResponse:
+    try:
+        manager.resume_evidence(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Learning run not found") from exc
+    except ArtifactStoreError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Learning evidence resume is temporarily unavailable",
+        ) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+    return get_learning_run(run_id, manager)
 
 
 @router.get("/runs/{run_id}/events")
 def get_learning_run_events(
     run_id: str,
     manager: LearningManagerDependency,
+    after: int = 0,
 ) -> StreamingResponse:
     runtime = _runtime_or_404(manager, run_id)
 
     def stream():
-        cursor = 0
+        cursor = max(0, after)
         while True:
             events = runtime.get_events(run_id)
             while cursor < len(events):
@@ -837,7 +1034,11 @@ def get_learning_run_events(
                 yield f"id: {cursor + 1}\nevent: progress\ndata: {payload}\n\n"
                 cursor += 1
             state = runtime.get_session(run_id)
-            if state is None or state.status in {"completed", "failed"}:
+            if state is None or state.status in {
+                "completed",
+                "failed",
+                "waiting_evidence",
+            }:
                 time.sleep(0.01)
                 final_events = runtime.get_events(run_id)
                 while cursor < len(final_events):
@@ -873,6 +1074,11 @@ def get_learning_run_result(
         raise HTTPException(status_code=404, detail="Learning run not found")
     if state.status == "failed":
         raise HTTPException(status_code=409, detail="Learning run failed")
+    if state.status == "waiting_evidence":
+        raise HTTPException(
+            status_code=409,
+            detail="Learning run is waiting for additional evidence",
+        )
     result = manager.get_result(run_id)
     if result is None:
         raise HTTPException(status_code=409, detail="Learning run is not complete")

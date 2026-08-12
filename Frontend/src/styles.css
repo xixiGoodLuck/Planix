@@ -172,6 +172,26 @@ textarea { resize: vertical; }
 .learning-run-status.running, .learning-run-status.analyzing_scope, .learning-run-status.starting_run { color: #d7d1ff; background: #2e2869; }
 .learning-run-status.completed { color: #a7f0ca; background: #123f35; }
 .learning-run-status.failed { color: #ffb9c1; background: #4a202a; }
+.learning-run-status.waiting_evidence { color: #f6d79b; background: #483616; }
+.learning-evidence-intervention { margin-top: 18px; border-color: #735c2e; background: linear-gradient(145deg, #191b27, #211c16); }
+.learning-evidence-intervention > header { display: flex; align-items: flex-start; gap: 13px; }
+.learning-evidence-intervention header h2 { margin: 3px 0 5px; }
+.learning-evidence-intervention header p { margin: 0; color: #b7b0a3; line-height: 1.55; }
+.learning-intervention-icon { display: grid; place-items: center; flex: 0 0 auto; width: 40px; height: 40px; color: #f1cb7c; background: #3b2d13; border: 1px solid #6e5422; border-radius: 12px; }
+.learning-intervention-grid { display: grid; grid-template-columns: minmax(0,1.2fr) minmax(0,.8fr); gap: 18px; margin-top: 20px; }
+.learning-intervention-grid h3 { margin: 0 0 10px; color: #dfe5ef; font-size: 14px; }
+.learning-intervention-gaps, .learning-intervention-facts ul { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
+.learning-intervention-gaps li, .learning-intervention-facts { padding: 13px; background: #101827; border: 1px solid #2d3b51; border-radius: 11px; }
+.learning-intervention-gaps li > div { display: flex; justify-content: space-between; gap: 12px; }
+.learning-intervention-gaps span { font-size: 12px; font-weight: 800; }
+.learning-intervention-gaps .coverage-missing, .learning-intervention-gaps .coverage-weak { color: #f0bd78; }
+.learning-intervention-gaps .coverage-partial { color: #e4d69b; }
+.learning-intervention-gaps p, .learning-intervention-facts p { margin: 7px 0 0; color: #9eaabe; line-height: 1.5; }
+.learning-intervention-facts h3:not(:first-child) { margin-top: 16px; }
+.learning-intervention-facts li { color: #c5cfdf; overflow-wrap: anywhere; }
+.learning-intervention-boundary { padding-top: 12px; border-top: 1px solid #2d3b51; }
+.learning-intervention-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.learning-intervention-actions button { display: inline-flex; align-items: center; gap: 7px; }
 .learning-stage-list { list-style: none; margin: 20px 0 0; padding: 0; display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
 .learning-stage-list li { min-height: 108px; display: flex; gap: 10px; padding: 13px; color: #72809a; background: #0a1424; border: 1px solid #202f47; border-radius: 13px; }
 .learning-stage-list li.active { color: #dedaff; border-color: #5a50c3; }
@@ -236,6 +256,6 @@ textarea { resize: vertical; }
   .menu-nav { grid-template-columns: 1fr 1fr; }
   .menu-nav span { opacity: 1; }
   .page-stack, .learning-workspace { padding: 22px 14px 50px; }
-  .settings-grid, .runtime-health-grid, .learning-form-grid, .learning-stage-list, .learning-quality-grid, .learning-resource-modes, .learning-resource-row, .learning-resource-summary dl { grid-template-columns: 1fr; }
+  .settings-grid, .runtime-health-grid, .learning-form-grid, .learning-stage-list, .learning-quality-grid, .learning-resource-modes, .learning-resource-row, .learning-resource-summary dl, .learning-intervention-grid { grid-template-columns: 1fr; }
   .learning-result-header { align-items: flex-start; flex-direction: column; }
 }

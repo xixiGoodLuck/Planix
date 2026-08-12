@@ -95,20 +95,25 @@ def test_final_quality_report_passes_code_owned_gate() -> None:
     assert result.quality_report.issues == []
 
 
-def test_repeated_run_is_idempotent_and_does_not_call_pipeline_twice() -> None:
-    fixture, runner, request, first = _successful_run()
-    model_calls = len(fixture.model.calls)
-    provider_search_calls = fixture.provider.search_calls
-    provider_fetch_calls = list(fixture.provider.fetch_calls)
+def test_legacy_adapter_does_not_own_a_second_idempotency_cache() -> None:
+    fixture = build_fastapi_learning_pipeline_fixture()
+    model = ScriptedPipelineModel(
+        [*fastapi_pipeline_responses(), *fastapi_pipeline_responses()]
+    )
+    runner = LearningPipelineRunner(
+        MockTranscriptProvider([]),
+        model=model,
+    )
+    request = _request(fixture.scope)
 
+    first = runner.run(request, fixture.provider)
     second = runner.run(request, fixture.provider)
 
     assert second == first
     assert second.run_id == first.run_id
     assert second.run_fingerprint == first.run_fingerprint
-    assert len(fixture.model.calls) == model_calls
-    assert fixture.provider.search_calls == provider_search_calls
-    assert fixture.provider.fetch_calls == provider_fetch_calls
+    assert len(model.calls) == 8
+    assert fixture.provider.search_calls == 2
 
 
 def test_knowledge_failure_stops_with_stage_error() -> None:
@@ -140,9 +145,9 @@ def test_evidence_failure_stops_before_gap_completion() -> None:
 
     result = runner.run(_request(fixture.scope), provider)
 
-    assert result.status == "failed"
-    assert result.error is not None
-    assert result.error.stage == "evidence_generation"
+    assert result.status == "waiting_evidence"
+    assert result.error is None
+    assert result.intervention_report is not None
     assert result.final_plan is None
     assert provider.search_calls == 1
 
@@ -176,7 +181,7 @@ def test_quality_failure_cannot_return_completed() -> None:
 
     assert result.status == "failed"
     assert result.error is not None
-    assert result.error.stage == "quality_evaluation"
+    assert result.error.stage == "quality"
     assert result.final_plan is not None
     assert result.quality_report is not None
     assert result.quality_report.passed is False

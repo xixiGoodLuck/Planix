@@ -222,7 +222,8 @@ class EvidenceValidator:
             "coverage_edge_id",
             "evidenceGraph.coverageEdges",
         )
-        knowledge_ids = {item.id for item in knowledge_graph.nodes}
+        knowledge = {item.id: item for item in knowledge_graph.nodes}
+        knowledge_ids = set(knowledge)
         segment_ids = {item.id for item in segments}
         evidence_map = {item.id: item for item in evidence}
         for edge in coverage_edges:
@@ -232,6 +233,28 @@ class EvidenceValidator:
                     f"evidenceGraph.coverageEdges.{edge.id}.knowledgeId",
                     "coverage references missing knowledge",
                 )
+            requirement_ids = {
+                item.id for item in knowledge[edge.knowledge_id].coverage_requirements
+            }
+            supported = set(edge.supported_requirement_refs)
+            if len(supported) != len(edge.supported_requirement_refs) or not supported <= requirement_ids:
+                self._fail(
+                    "coverage_requirement_reference",
+                    f"evidenceGraph.coverageEdges.{edge.id}.supportedRequirementRefs",
+                    "coverage must reference unique requirements owned by its knowledge node",
+                )
+            if requirement_ids:
+                expected_strength = (
+                    "full"
+                    if supported == requirement_ids
+                    else "partial" if supported else "supplementary"
+                )
+                if edge.coverage_strength != expected_strength:
+                    self._fail(
+                        "coverage_requirement_strength",
+                        f"evidenceGraph.coverageEdges.{edge.id}.coverageStrength",
+                        "coverage strength must be computed from supported requirements",
+                    )
             if edge.segment_id not in segment_ids:
                 self._fail(
                     "coverage_segment_reference",

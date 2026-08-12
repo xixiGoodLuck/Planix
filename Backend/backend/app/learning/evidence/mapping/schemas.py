@@ -24,6 +24,7 @@ class SemanticCoverageMapping(LearningContract):
     summary: str = Field(min_length=1)
     confidence: float = Field(ge=0, le=1)
     reason: str = Field(min_length=1)
+    supported_requirement_indexes: list[int] = Field(default_factory=list)
 
 
 class SegmentCoverageMappings(LearningContract):

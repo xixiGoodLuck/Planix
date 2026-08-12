@@ -90,12 +90,11 @@ class GapCompletionValidator:
             if (
                 after_ref.artifact_id != before_ref.artifact_id
                 or after_ref.version < before_ref.version
-                or after_ref.version > before_ref.version + 1
             ):
                 self._fail(
                     "round_artifact_lineage",
                     f"{path}.afterReport.evidenceGraphRef",
-                    "one round may preserve or advance the EvidenceGraph by one version",
+                    "a round must preserve the EvidenceGraph identity and monotonic version lineage",
                 )
             self._validate_gap_delta(round_run, path)
             is_last = index == len(result.rounds)
@@ -181,6 +180,7 @@ class GapCompletionValidator:
             "NO_COVERAGE_IMPROVEMENT",
             "MAX_ROUNDS_REACHED",
             "NO_EXECUTABLE_GAP",
+            "BUDGET_EXHAUSTED",
         }:
             self._fail(
                 "incomplete_status",
@@ -211,6 +211,18 @@ class GapCompletionValidator:
                     "terminationReason",
                     "NO_COVERAGE_IMPROVEMENT requires an unimproved final round",
                 )
+        if (
+            result.retrieval_plan_count > result.budget.max_retrieval_plans
+            or result.candidate_count > result.budget.max_candidates
+            or result.transcript_acquisition_count
+            > result.budget.max_transcript_acquisitions
+            or result.model_mapping_call_count > result.budget.max_model_mapping_calls
+        ):
+            self._fail(
+                "gap_completion_budget",
+                "budget",
+                "gap completion exceeded a code-owned execution budget",
+            )
 
     def _validate_gap_delta(self, round_run, path: str) -> None:
         after_keys = {

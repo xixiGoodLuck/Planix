@@ -133,6 +133,7 @@ class LearningScopeAnalyzer:
         return {
             "userGoal": scope.user_goal,
             "targetResult": scope.target_result,
+            "targetResultStatus": scope.target_result_status,
             "currentLevel": {
                 "summary": scope.current_level.summary,
                 "knownSkills": scope.current_level.known_skills,

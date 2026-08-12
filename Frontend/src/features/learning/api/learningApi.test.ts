@@ -5,6 +5,7 @@ import {
   createLearningRun,
   fetchLearningTranscriptMetadata,
   registerLearningTranscript,
+  resumeLearningEvidence,
   revokeLearningTranscript,
   supplementLearningIntake,
   streamLearningRunEvents,
@@ -123,7 +124,25 @@ describe('Learning API client', () => {
     expect(fetchMock.mock.calls[2][1]?.method).toBe('DELETE');
   });
 
-  it('parses named SSE progress events and closes on completion', () => {
+  it('resumes evidence through the typed run action', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({
+        status: 'running', current_stage: 'evidence_generation',
+        completed_stages: ['scope', 'knowledge_generation'], error: null
+      }),
+      { status: 202, headers: { 'Content-Type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await resumeLearningEvidence('learning-session-1');
+
+    expect(fetchMock.mock.calls[0][0]).toContain(
+      '/api/learning/runs/learning-session-1/resume-evidence'
+    );
+    expect(fetchMock.mock.calls[0][1]?.method).toBe('POST');
+  });
+
+  it('parses canonical SSE events, uses a cursor, and closes on waiting', () => {
     const source = new FakeEventStream();
     const onEvent = vi.fn();
     const onError = vi.fn();
@@ -132,21 +151,23 @@ describe('Learning API client', () => {
       { onEvent, onError },
       (url) => {
         expect(url).toContain('/api/learning/runs/learning-session-1/events');
+        expect(url).toContain('after=4');
         return source;
       },
+      4,
     );
 
     source.progress({
-      event_type: 'stage_started', stage: 'knowledge_generating', status: 'started',
+      event_type: 'stage_started', stage: 'knowledge_generation', status: 'started',
       message: 'started', timestamp: '2026-08-12T08:00:00Z'
     });
     source.progress({
-      event_type: 'session_completed', stage: 'completed', status: 'completed',
-      message: 'done', timestamp: '2026-08-12T08:00:01Z'
+      event_type: 'session_waiting_evidence', stage: 'waiting_evidence', status: 'waiting_evidence',
+      message: 'waiting', timestamp: '2026-08-12T08:00:01Z'
     });
 
     expect(onEvent).toHaveBeenCalledTimes(2);
-    expect(onEvent.mock.calls[0][0].stage).toBe('knowledge_generating');
+    expect(onEvent.mock.calls[0][0].stage).toBe('knowledge_generation');
     expect(onError).not.toHaveBeenCalled();
     expect(source.closed).toBe(true);
     stop();

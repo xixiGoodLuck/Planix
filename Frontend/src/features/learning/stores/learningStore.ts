@@ -7,6 +7,7 @@ import {
   isLearningBackendUnavailable,
   isLearningRuntimeUnavailable,
   registerLearningTranscript,
+  resumeLearningEvidence,
   revokeLearningTranscript,
   streamLearningRunEvents,
   supplementLearningIntake,
@@ -34,7 +35,8 @@ export interface LearningApiPort {
   revokeTranscript: (sourceId: string) => Promise<LearningTranscriptRevokeResponse>;
   getRun: (runId: string) => Promise<LearningRunState>;
   getResult: (runId: string) => Promise<LearningRunResult>;
-  streamEvents: (runId: string, handlers: LearningEventHandlers) => () => void;
+  streamEvents: (runId: string, handlers: LearningEventHandlers, after?: number) => () => void;
+  resumeEvidence: (runId: string) => Promise<LearningRunState>;
   runtimeUnavailable: (error: unknown) => boolean;
   backendUnavailable: (error: unknown) => boolean;
 }
@@ -47,7 +49,13 @@ const defaultApi: LearningApiPort = {
   revokeTranscript: revokeLearningTranscript,
   getRun: fetchLearningRun,
   getResult: fetchLearningRunResult,
-  streamEvents: streamLearningRunEvents,
+  streamEvents: (runId, handlers, after) => streamLearningRunEvents(
+    runId,
+    handlers,
+    undefined,
+    after,
+  ),
+  resumeEvidence: resumeLearningEvidence,
   runtimeUnavailable: isLearningRuntimeUnavailable,
   backendUnavailable: isLearningBackendUnavailable
 };
@@ -75,6 +83,7 @@ const emptyState = (): LearningWorkspaceState => ({
   plan: null,
   qualityReport: null,
   evidenceGraph: null,
+  intervention: null,
   originalInput: '',
   preferredLanguage: 'zh-CN',
   scopeAnalysisFailed: false,
@@ -136,6 +145,17 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
           completedStages: runStatus.completed_stages,
           failureKind: failureKindFor(runStatus)
         });
+        return;
+      }
+      if (runStatus.status === 'waiting_evidence') {
+        update({
+          status: 'waiting_evidence',
+          intakeStatus: 'waiting_evidence',
+          currentStage: runStatus.current_stage,
+          completedStages: runStatus.completed_stages,
+          intervention: runStatus.intervention ?? null,
+          failureKind: null,
+        });
       }
     } catch (error) {
       if (active(runId, token)) {
@@ -158,7 +178,11 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
       : state.completedStages;
     const nextStatus = event.event_type === 'session_failed'
       ? 'failed'
-      : event.event_type === 'session_completed' ? 'completed' : 'running';
+      : event.event_type === 'session_completed'
+        ? 'completed'
+        : event.event_type === 'session_waiting_evidence'
+          ? 'waiting_evidence'
+          : 'running';
     update({
       events: [...state.events, event],
       currentStage: event.stage,
@@ -166,16 +190,26 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
       status: nextStatus,
       intakeStatus: nextStatus
     });
-    if (event.event_type === 'session_completed' || event.event_type === 'session_failed') {
+    if (
+      event.event_type === 'session_completed'
+      || event.event_type === 'session_failed'
+      || event.event_type === 'session_waiting_evidence'
+    ) {
       stopEvents?.();
       stopEvents = null;
       void loadTerminal(runId, token);
     }
   }
 
-  async function connectRun(runId: string, token: number) {
+  async function connectRun(runId: string, token: number, resumingEvidence = false) {
     if (generation !== token) return;
-    update({ runId, status: 'running', intakeStatus: 'running', currentStage: 'understanding' });
+    update({
+      runId,
+      status: 'running',
+      intakeStatus: 'running',
+      currentStage: resumingEvidence ? 'evidence_generation' : 'scope',
+      intervention: null,
+    });
     stopEvents?.();
     stopEvents = api.streamEvents(runId, {
       onEvent: (event) => receiveEvent(runId, token, event),
@@ -183,7 +217,11 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
         if (!active(runId, token)) return;
         void api.getRun(runId).then((runStatus) => {
           if (!active(runId, token)) return;
-          if (runStatus.status === 'completed' || runStatus.status === 'failed') {
+          if (
+            runStatus.status === 'completed'
+            || runStatus.status === 'failed'
+            || runStatus.status === 'waiting_evidence'
+          ) {
             stopEvents?.();
             stopEvents = null;
             void loadTerminal(runId, token, runStatus);
@@ -194,11 +232,15 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
           update({ status: 'failed', intakeStatus: 'failed', failureKind: 'backend_unavailable' });
         });
       }
-    });
+    }, state.events.length);
     try {
       const initial = await api.getRun(runId);
       if (!active(runId, token)) return;
-      if (initial.status === 'completed' || initial.status === 'failed') {
+      if (
+        initial.status === 'completed'
+        || initial.status === 'failed'
+        || (initial.status === 'waiting_evidence' && !resumingEvidence)
+      ) {
         await loadTerminal(runId, token, initial);
       } else if (!state.events.length) {
         update({
@@ -406,6 +448,23 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
     }
     if (generation !== token) return false;
     update({ registeredTranscript: summary });
+    if (state.status === 'waiting_evidence') {
+      update({
+        resourceDraft: {
+          ...state.resourceDraft,
+          mode: 'specified',
+          videoUrl: summary.canonical_url,
+          subtitleFormat: summary.source_format,
+          subtitleLanguage: summary.language,
+          subtitleFileName: summary.source_name,
+          inputSource: 'none'
+        },
+        registeredTranscript: summary,
+        resourceStatus: 'registered',
+        resourceError: null
+      });
+      return true;
+    }
     try {
       const canonicalUrl = await patchResourceUrl(summary.canonical_url, token);
       if (!canonicalUrl || generation !== token) return false;
@@ -454,6 +513,41 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
     }
   }
 
+  async function resumeEvidence(): Promise<boolean> {
+    const runId = state.runId;
+    if (!runId || state.status !== 'waiting_evidence') return false;
+    const token = generation;
+    update({
+      status: 'running',
+      intakeStatus: 'running',
+      currentStage: 'evidence_generation',
+      intervention: null,
+      failureKind: null,
+    });
+    try {
+      await api.resumeEvidence(runId);
+      if (!active(runId, token)) return false;
+      await connectRun(runId, token, true);
+      return true;
+    } catch (error) {
+      if (active(runId, token)) {
+        const current = await api.getRun(runId).catch(() => null);
+        if (current?.status === 'waiting_evidence') {
+          await loadTerminal(runId, token, current);
+        } else {
+          update({
+            status: 'failed',
+            intakeStatus: 'failed',
+            failureKind: api.backendUnavailable(error)
+              ? 'backend_unavailable'
+              : api.runtimeUnavailable(error) ? 'provider_unavailable' : 'run_failed',
+          });
+        }
+      }
+      return false;
+    }
+  }
+
   function reset() {
     generation += 1;
     stopEvents?.();
@@ -478,6 +572,7 @@ export function createLearningStore(api: LearningApiPort = defaultApi) {
       bindVideoOnly,
       registerTranscript: registerTranscriptForIntake,
       revokeTranscript: revokeTranscriptForIntake,
+      resumeEvidence,
       reset
     }
   };

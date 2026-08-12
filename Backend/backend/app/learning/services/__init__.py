@@ -2,6 +2,7 @@ from .learning_pipeline import (
     LearningPipeline,
     LearningPipelineError,
     LearningPipelineResult,
+    LearningPipelineWaitingEvidenceResult,
     PipelineProgressCallback,
     PipelineProgressStatus,
 )
@@ -15,6 +16,7 @@ __all__ = [
     "LearningPipeline",
     "LearningPipelineError",
     "LearningPipelineResult",
+    "LearningPipelineWaitingEvidenceResult",
     "PipelineProgressCallback",
     "PipelineProgressStatus",
     "KnowledgeGenerationPipeline",

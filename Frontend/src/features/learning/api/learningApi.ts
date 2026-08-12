@@ -83,12 +83,21 @@ export function fetchLearningRunResult(runId: string) {
   return callApi<LearningRunResult>('GET', `/api/learning/runs/${encodeURIComponent(runId)}/result`);
 }
 
+export function resumeLearningEvidence(runId: string) {
+  return callApi<LearningRunState>(
+    'POST',
+    `/api/learning/runs/${encodeURIComponent(runId)}/resume-evidence`,
+  );
+}
+
 export function streamLearningRunEvents(
   runId: string,
   handlers: LearningEventHandlers,
   createStream: LearningEventStreamFactory = (url) => new EventSource(url),
+  after = 0,
 ): () => void {
-  const source = createStream(apiUrl(`/api/learning/runs/${encodeURIComponent(runId)}/events`));
+  const suffix = after > 0 ? `?after=${after}` : '';
+  const source = createStream(apiUrl(`/api/learning/runs/${encodeURIComponent(runId)}/events${suffix}`));
   let terminal = false;
   const onProgress: EventListener = (rawEvent) => {
     try {
@@ -98,7 +107,9 @@ export function streamLearningRunEvents(
         stream_id: messageEvent.lastEventId || undefined
       };
       handlers.onEvent(event);
-      terminal = event.event_type === 'session_completed' || event.event_type === 'session_failed';
+      terminal = event.event_type === 'session_completed'
+        || event.event_type === 'session_failed'
+        || event.event_type === 'session_waiting_evidence';
       if (terminal) source.close();
     } catch (error) {
       source.close();

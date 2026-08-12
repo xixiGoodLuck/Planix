@@ -1,6 +1,7 @@
 """Finite offline gap-completion loop for Planix Learning evidence."""
 
 from .contracts import (
+    GapCompletionBudget,
     GapCompletionResult,
     GapCompletionRun,
     GapCompletionStatus,
@@ -10,6 +11,7 @@ from .gap_completion_orchestrator import GapCompletionOrchestrator
 from .validators import GapCompletionValidationError, GapCompletionValidator
 
 __all__ = [
+    "GapCompletionBudget",
     "GapCompletionOrchestrator",
     "GapCompletionResult",
     "GapCompletionRun",

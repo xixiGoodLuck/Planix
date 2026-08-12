@@ -41,7 +41,7 @@ def test_learning_schema_is_postgresql17_current_and_isolated() -> None:
             ).fetchall()
         }
     assert 170000 <= server_version < 180000
-    assert revision == ALEMBIC_REVISION == "20260812_01"
+    assert revision == ALEMBIC_REVISION == "20260812_02"
     assert tables == {
         "learning_runs",
         "learning_artifacts",

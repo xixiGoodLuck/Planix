@@ -10,11 +10,11 @@ interface LearningProgressProps {
 }
 
 const steps: ReadonlyArray<{ key: string; stages: readonly string[] }> = [
-  { key: 'understanding', stages: ['created', 'scope', 'understanding'] },
-  { key: 'knowledge', stages: ['knowledge_generation', 'knowledge_generating'] },
-  { key: 'evidence', stages: ['evidence_generation', 'evidence_generating', 'coverage_analysis', 'gap_completion'] },
-  { key: 'selection', stages: ['selection', 'content_selecting'] },
-  { key: 'quality', stages: ['quality', 'quality_checking', 'completed'] }
+  { key: 'understanding', stages: ['scope'] },
+  { key: 'knowledge', stages: ['knowledge_generation'] },
+  { key: 'evidence', stages: ['evidence_generation', 'coverage_analysis', 'gap_completion', 'waiting_evidence'] },
+  { key: 'selection', stages: ['selection'] },
+  { key: 'quality', stages: ['quality', 'completed'] }
 ];
 
 function eventCompleted(stepStages: readonly string[], events: LearningProgressEvent[]) {

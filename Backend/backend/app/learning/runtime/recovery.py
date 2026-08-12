@@ -7,6 +7,7 @@ from ..contracts import (
     CapabilityGraph,
     ContentSelection,
     EvidenceGraph,
+    EvidenceInterventionReport,
     KnowledgeGraph,
     LearningArtifact,
     LearningArtifactRef,
@@ -26,6 +27,7 @@ _TYPE_ORDER: tuple[LearningArtifactType, ...] = (
     "capability_graph",
     "knowledge_graph",
     "evidence_graph",
+    "evidence_intervention_report",
     "content_selection",
     "learning_content_plan",
     "learning_quality_report",
@@ -161,6 +163,32 @@ class LearningRecoveryService:
             )
             return
         knowledge = self._require(artifacts, "knowledge_graph", KnowledgeGraph)
+        if artifact_type == "evidence_intervention_report":
+            intervention = cast(EvidenceInterventionReport, artifacts[artifact_type])
+            if intervention.knowledge_graph_ref.artifact_id != knowledge.artifact_id:
+                raise ValueError("intervention references another knowledge graph")
+            evidence = artifacts.get("evidence_graph")
+            if intervention.evidence_graph_ref is not None:
+                if not isinstance(evidence, EvidenceGraph):
+                    raise ValueError("intervention evidence dependency missing")
+                if (
+                    intervention.evidence_graph_ref.artifact_id != evidence.artifact_id
+                    or intervention.evidence_graph_ref.version != evidence.version
+                ):
+                    raise ValueError("intervention references another evidence graph")
+            knowledge_ids = {item.id for item in knowledge.nodes}
+            coverage_ids = [
+                item.knowledge_id for item in intervention.knowledge_coverage
+            ]
+            if len(coverage_ids) != len(set(coverage_ids)) or not set(
+                coverage_ids
+            ) <= knowledge_ids:
+                raise ValueError("intervention coverage references invalid knowledge")
+            if not {
+                item.knowledge_id for item in intervention.required_gaps
+            } <= knowledge_ids:
+                raise ValueError("intervention gaps reference invalid knowledge")
+            return
         if artifact_type == "evidence_graph":
             self.validator.validate_evidence_graph(
                 knowledge,

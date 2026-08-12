@@ -72,15 +72,30 @@ class CoverageAggregator:
                 )
             )
             segment_refs = list(dict.fromkeys(item.segment_id for item in edges))
-            full = any(
-                edge.confidence >= 0.85
-                and edge.coverage_type in cls._FULL_COVERAGE_TYPES
-                and any(
+            verified_transcript_edges = [
+                edge
+                for edge in edges
+                if any(
                     evidence[evidence_id].verification_status == "verified"
                     and evidence[evidence_id].kind == "transcript_span"
                     for evidence_id in edge.evidence_refs
                 )
-                for edge in edges
+            ]
+            requirement_ids = {item.id for item in node.coverage_requirements}
+            supported_requirement_ids = {
+                requirement_id
+                for edge in verified_transcript_edges
+                for requirement_id in edge.supported_requirement_refs
+                if requirement_id in requirement_ids
+            }
+            full = (
+                supported_requirement_ids == requirement_ids
+                if requirement_ids
+                else any(
+                    edge.confidence >= 0.85
+                    and edge.coverage_type in cls._FULL_COVERAGE_TYPES
+                    for edge in verified_transcript_edges
+                )
             )
             precise = any(
                 evidence[evidence_id].verification_status == "verified"
@@ -90,6 +105,9 @@ class CoverageAggregator:
             if full:
                 strength = "FULL"
                 status = "sufficient"
+            elif requirement_ids and supported_requirement_ids:
+                strength = "PARTIAL"
+                status = "insufficient"
             elif precise:
                 strength = "PARTIAL"
                 status = "insufficient"

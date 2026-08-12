@@ -14,7 +14,9 @@ from ..contracts import (
     LearningOutcome,
     LearningScope,
 )
+from ..scope_anchor_semantics import text_matches_concept_anchor
 from .base import (
+    LearningModelOutputError,
     LearningSemanticModel,
     RouterLearningModel,
     artifact_ref,
@@ -32,6 +34,13 @@ persistence, testing, or adjacent framework features unless an acceptance criter
 Refer to outcomes only by their zero-based input indexes. Return semantic fields and index relationships only. Never
 return ids, artifact references, versions, timestamps, or source references. Return JSON only and do not reveal
 hidden reasoning.
+Every required capability must cite at least one supplied scopeAnchorIndexes entry. Scope anchors are code-owned;
+reference them only by zero-based index and never invent anchor text or ids.
+When concept anchors are supplied, required capabilities must cite them directly. The broad user_goal anchor cannot
+authorize an adjacent implementation ability, example, parameter type, schema, or neighboring feature.
+Repeat at least one cited concept anchor text verbatim in each required capability name or description.
+For a bounded enumerated concept list, each concept anchor may support at most one required capability. Consolidate
+examples and directly necessary details into that capability instead of splitting adjacent required capabilities.
 """.strip()
 
 
@@ -44,7 +53,7 @@ class CapabilityDraft(LearningContract):
     why_required: str = Field(min_length=1)
     outcome_indexes: list[NonNegativeIndex] = Field(min_length=1)
     importance: Importance
-
+    scope_anchor_indexes: list[NonNegativeIndex] = Field(default_factory=list)
 
 class CapabilityEdgeDraft(LearningContract):
     source_index: NonNegativeIndex
@@ -72,16 +81,21 @@ class CapabilityGenerator:
         scope: LearningScope,
         outcomes: list[LearningOutcome],
     ) -> CapabilityGenerationResult:
-        response = self.model.complete(
-            stage="learning_capabilities",
-            feature="learning_capability_generation",
-            system=CAPABILITY_SYSTEM,
-            payload={
+        payload = {
                 "scope": {
                     "userGoal": scope.user_goal,
-                    "targetResult": scope.target_result,
+                    "targetResult": (
+                        scope.target_result
+                        if scope.target_result_status == "explicit"
+                        else None
+                    ),
+                    "targetResultStatus": scope.target_result_status,
                     "currentLevel": scope.current_level.model_dump(by_alias=True),
                 },
+                "scopeAnchors": [
+                    {"index": index, "kind": item.kind, "text": item.text}
+                    for index, item in enumerate(scope.explicit_scope_anchors)
+                ],
                 "outcomes": [
                     {
                         "index": index,
@@ -91,10 +105,29 @@ class CapabilityGenerator:
                     }
                     for index, outcome in enumerate(outcomes)
                 ],
-            },
+            }
+        response = self.model.complete(
+            stage="learning_capabilities",
+            feature="learning_capability_generation",
+            system=CAPABILITY_SYSTEM,
+            payload=payload,
             response_type=CapabilityDrafts,
             max_tokens=2600,
         )
+        if self._missing_required_anchors(scope, response.value):
+            response = self.model.complete(
+                stage="learning_capabilities",
+                feature="learning_capability_anchor_repair",
+                system=CAPABILITY_SYSTEM + "\nThis is the single bounded contract regeneration. Return valid anchor indexes and repeat each cited concept anchor text verbatim.",
+                payload=payload,
+                response_type=CapabilityDrafts,
+                max_tokens=2600,
+            )
+        if self._missing_required_anchors(scope, response.value):
+            raise LearningModelOutputError(
+                "learning_capabilities",
+                "required capability must reference an explicit scope anchor",
+            )
         graph_id = generated_id(
             "capability-graph",
             scope.artifact_id,
@@ -124,6 +157,17 @@ class CapabilityGenerator:
                     whyRequired=draft.why_required,
                     outcomeRefs=outcome_refs,
                     importance=draft.importance,
+                    scopeAnchorRefs=[
+                        scope.explicit_scope_anchors[
+                            require_index(
+                                anchor_index,
+                                len(scope.explicit_scope_anchors),
+                                stage="learning_capabilities",
+                                field=f"capabilities[{index}].scopeAnchorIndexes",
+                            )
+                        ].id
+                        for anchor_index in draft.scope_anchor_indexes
+                    ],
                 )
             )
 
@@ -159,6 +203,45 @@ class CapabilityGenerator:
         return CapabilityGenerationResult(
             capability_graph=graph,
             model_usage=response.model_usage,
+        )
+
+    @staticmethod
+    def _missing_required_anchors(
+        scope: LearningScope,
+        drafts: CapabilityDrafts,
+    ) -> bool:
+        concept_indexes = {
+            index
+            for index, anchor in enumerate(scope.explicit_scope_anchors)
+            if anchor.kind == "concept"
+        }
+        if not concept_indexes:
+            return bool(scope.explicit_scope_anchors) and any(
+                item.importance == "required"
+                and not any(
+                    anchor_index < len(scope.explicit_scope_anchors)
+                    for anchor_index in item.scope_anchor_indexes
+                )
+                for item in drafts.capabilities
+            )
+        referenced = [
+            anchor_index
+            for item in drafts.capabilities
+            if item.importance == "required"
+            for anchor_index in set(item.scope_anchor_indexes) & concept_indexes
+        ]
+        return len(referenced) != len(set(referenced)) or any(
+            item.importance == "required"
+            and not any(
+                anchor_index in concept_indexes
+                and anchor_index < len(scope.explicit_scope_anchors)
+                and text_matches_concept_anchor(
+                    item.name,
+                    scope.explicit_scope_anchors[anchor_index].text,
+                )
+                for anchor_index in item.scope_anchor_indexes
+            )
+            for item in drafts.capabilities
         )
 
 

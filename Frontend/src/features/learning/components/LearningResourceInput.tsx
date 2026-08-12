@@ -112,7 +112,7 @@ export function LearningResourceInput({
   const visibleError = localError || resourceError;
 
   return (
-    <section className="learning-card learning-resource-card" aria-label={t('learning.resourceSection')}>
+    <section id="learning-resource-input" className="learning-card learning-resource-card" aria-label={t('learning.resourceSection')}>
       <div className="learning-card-heading">
         <div>
           <span className="learning-eyebrow">{t('learning.optional')}</span>

@@ -206,7 +206,7 @@ def test_completed_runtime_checkpoint_recovers_valid_artifact_chain() -> None:
     assert recovered.status == "recovered"
     assert recovered.checkpoint is not None
     assert recovered.checkpoint.status == "completed"
-    assert recovered.checkpoint.last_successful_stage == "quality_checking"
+    assert recovered.checkpoint.last_successful_stage == "quality"
     assert set(recovered.artifacts) == set(completed.artifacts)
 
 
@@ -226,7 +226,7 @@ def test_interrupted_runtime_recovers_last_successful_artifact() -> None:
     assert recovered.status == "recovered"
     assert recovered.checkpoint is not None
     assert recovered.checkpoint.status == "failed"
-    assert recovered.checkpoint.last_successful_stage == "understanding"
+    assert recovered.checkpoint.last_successful_stage == "scope"
     assert set(recovered.artifacts) == {"learning_scope"}
 
 

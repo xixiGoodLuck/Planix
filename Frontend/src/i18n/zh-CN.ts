@@ -7,6 +7,18 @@ export const zhCN: I18nNamespace = {
     languageZh: '中文', languageEn: 'English', productTagline: '技术学习内容规划 Agent', navigation: '导航'
   },
   learning: {
+    status_waiting_evidence: '等待补充证据',
+    event_session_waiting_evidence: '等待补充内容证据',
+    interventionEyebrow: '可恢复的证据暂停',
+    interventionTitle: '还需要补充内容证据',
+    interventionDescription: '学习范围和知识路线已经安全保存。由于必需知识尚未获得完整的已验证字幕支持，Planix 会在内容选择前暂停。',
+    interventionRequiredGaps: '缺少的必需知识',
+    interventionEvidenceChecked: '已检查的验证视频',
+    interventionNoVerifiedResources: '目前还没有带已验证字幕的视频。',
+    interventionTranscriptUnavailable: '没有可用字幕的视频',
+    interventionTimestampBoundary: '精确观看范围只能来自已验证的字幕时间段；证据不足时 Planix 不会伪造时间戳。',
+    interventionAddEvidence: '添加视频或字幕',
+    interventionResume: '重新检查证据',
     productName: 'Planix Learning', title: '技术学习内容规划', subtitle: '从目标到知识路线，再到有证据的视频片段与质量验证。',
     naturalLanguageFirst: '渐进式理解', tellPlanix: '告诉 Planix 你想学什么', learningIntent: '学习意图', progressiveGoalPlaceholder: '例如：我想学习 FastAPI。',
     analyzeGoal: '分析学习目标', analyzingScope: '正在理解…', scopeReview: '学习目标理解', knownInformation: '已经了解到', understoodSoFar: '已了解的信息',

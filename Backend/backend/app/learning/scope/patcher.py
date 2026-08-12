@@ -13,6 +13,7 @@ from ..contracts import (
     LearningUnknown,
     ResourcePreference,
 )
+from .anchors import refresh_explicit_scope_anchors
 from .validators import (
     extract_bilibili_urls,
     extract_target_result,
@@ -367,6 +368,11 @@ class LearningScopePatcher:
         goal_identified = accepts_goal or current_goal_clear
 
         target_result = current.target_result if current else user_goal
+        target_result_status = (
+            current.target_result_status
+            if current
+            else "assumed" if goal_identified else "unknown"
+        )
         proposed_target = (draft.target_result or "").strip()
         target_signal = has_target_result_signal(safe_message)
         explicit_target = extract_target_result(safe_message)
@@ -382,14 +388,17 @@ class LearningScopePatcher:
         )
         if explicit_target:
             target_result = explicit_target
+            target_result_status = "explicit"
         elif current is not None and accepts_goal and target_signal:
             target_result = proposed_goal
+            target_result_status = "explicit"
         if (
             proposed_target_supported
             and not explicit_target
             and len(proposed_target) > len(target_result)
         ):
             target_result = proposed_target
+            target_result_status = "explicit"
 
         current_level = _current_level(current, draft, safe_message, source_ref)
         minutes = parse_content_minutes(safe_message)
@@ -435,6 +444,7 @@ class LearningScopePatcher:
             version=(current.version + 1) if current else 1,
             userGoal=user_goal,
             targetResult=target_result,
+            targetResultStatus=target_result_status,
             currentLevel=current_level,
             contentBudget=content_budget,
             languagePreference=language_preference,
@@ -443,6 +453,10 @@ class LearningScopePatcher:
             unknowns=[],
             sourceRefs=list(dict.fromkeys([*(current.source_refs if current else []), source_ref])),
             confirmed=False,
+        )
+        scope.explicit_scope_anchors = refresh_explicit_scope_anchors(
+            scope,
+            latest_source_ref=source_ref,
         )
         scope.unknowns = _unknowns(
             scope,

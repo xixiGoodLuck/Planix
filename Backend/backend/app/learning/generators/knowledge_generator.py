@@ -12,6 +12,7 @@ from ..contracts import (
     Importance,
     KnowledgeEdge,
     KnowledgeGraph,
+    KnowledgeCoverageRequirement,
     KnowledgeNode,
     LearningContract,
     LearningScope,
@@ -27,6 +28,7 @@ from .base import (
     require_index,
 )
 from ..validators import LearningArtifactValidationError, LearningArtifactValidator
+from ..scope_anchor_semantics import text_matches_concept_anchor
 
 
 logger = logging.getLogger("planix.learning.knowledge")
@@ -47,6 +49,14 @@ a later node: sourceIndex must be strictly less than targetIndex. Do not use pre
 semantic support; use part_of or supports for those meanings. Return semantic fields and index relationships only.
 Never return ids, artifact references, versions, timestamps, outcome references, or source references. Return JSON
 only and do not reveal hidden reasoning.
+Every required knowledge node must cite at least one supplied scopeAnchorIndexes entry. When concept anchors exist,
+the broad user_goal anchor cannot authorize Required knowledge. Each Required node must repeat at least one cited
+concept anchor text verbatim in its name or explanation. Common implementation details, examples, parameter
+categories, schemas, and neighboring features remain important or optional unless explicitly named. Return exactly
+one concise coverageRequirements statement for each required node.
+For a bounded enumerated concept list, each concept anchor may support at most one required knowledge node.
+Consolidate examples, decorators, parameters, access steps, and other directly necessary details into that single
+node instead of splitting them into additional required nodes.
 """.strip()
 
 
@@ -56,6 +66,14 @@ KNOWLEDGE_CONTRACT_REPAIR_SYSTEM = f"""
 The previous response failed the output contract. Regenerate the complete draft once. Every edge index must exist in
 the returned knowledge list. For prerequisite edges sourceIndex must be strictly less than targetIndex. Do not copy
 invalid indexes from the prior response.
+Every required knowledge node must cite at least one supplied scopeAnchorIndexes entry. Return exactly one concise
+coverageRequirements statement describing what verified transcript evidence must directly support. Scope anchors
+are code-owned; reference only their zero-based indexes and never invent anchor text or ids.
+When concept anchors exist, the broad user_goal anchor cannot authorize Required knowledge. Each Required node must
+be directly about a cited named concept. Common implementation details, examples, parameter categories, schemas,
+and neighboring features remain important or optional unless the user explicitly named them.
+Repeat at least one cited concept anchor text verbatim in each required node name or explanation.
+Each concept anchor may support at most one required knowledge node; consolidate its details into that node.
 """.strip()
 
 
@@ -79,6 +97,8 @@ class KnowledgeDraft(LearningContract):
     capability_indexes: list[NonNegativeIndex] = Field(min_length=1)
     importance: Importance
     mastery_indicators: list[str] = Field(min_length=1, max_length=6)
+    scope_anchor_indexes: list[NonNegativeIndex] = Field(default_factory=list)
+    coverage_requirements: list[str] = Field(default_factory=list, max_length=1)
 
 
 class KnowledgeEdgeDraft(LearningContract):
@@ -165,7 +185,24 @@ class KnowledgeGenerator:
                 response_type=KnowledgeDrafts,
                 traces=traces,
             )
-        graph = self._build_graph(scope, capability_graph, response.value)
+        try:
+            graph = self._build_graph(scope, capability_graph, response.value)
+        except LearningGenerationError as exc:
+            if "scope anchor" not in str(exc):
+                raise
+            response = self._complete(
+                feature="learning_knowledge_anchor_repair",
+                repair_type="contract",
+                attempt=len(traces) + 1,
+                system=KNOWLEDGE_CONTRACT_REPAIR_SYSTEM,
+                payload={
+                    **payload,
+                    "contractFailure": "required knowledge must reference supplied scope anchors",
+                },
+                response_type=KnowledgeDrafts,
+                traces=traces,
+            )
+            graph = self._build_graph(scope, capability_graph, response.value)
         usage = dict(response.model_usage)
         usage["calls"] = traces
         usage["contractRepairs"] = sum(
@@ -335,6 +372,22 @@ class KnowledgeGenerator:
                 outcomeRefs=outcome_refs,
                 importance=draft.importance,
                 masteryIndicators=draft.mastery_indicators,
+                scopeAnchorRefs=[
+                    scope.explicit_scope_anchors[
+                        require_index(
+                            anchor_index,
+                            len(scope.explicit_scope_anchors),
+                            stage="learning_knowledge_graph_repair",
+                            field=f"additions[{addition_index}].scopeAnchorIndexes",
+                        )
+                    ].id
+                    for anchor_index in draft.scope_anchor_indexes
+                ],
+                coverageRequirements=self._coverage_requirements(
+                    f"knowledge-repair-{combined_index}",
+                    draft,
+                    enabled=bool(scope.explicit_scope_anchors),
+                ),
             )
             for prerequisite_index in draft.prerequisite_indexes:
                 if prerequisite_index >= combined_index:
@@ -388,7 +441,51 @@ class KnowledgeGenerator:
             "|".join(item.id for item in capability_graph.capabilities),
         )
         nodes: list[KnowledgeNode] = []
+        concept_anchor_indexes = {
+            anchor_index
+            for anchor_index, anchor in enumerate(scope.explicit_scope_anchors)
+            if anchor.kind == "concept"
+        }
+        required_anchor_indexes = concept_anchor_indexes or set(
+            range(len(scope.explicit_scope_anchors))
+        )
+        used_required_concept_indexes: set[int] = set()
         for index, draft in enumerate(drafts.knowledge):
+            if (
+                required_anchor_indexes
+                and draft.importance == "required"
+                and not any(
+                    anchor_index in required_anchor_indexes
+                    and anchor_index < len(scope.explicit_scope_anchors)
+                    and (
+                        not concept_anchor_indexes
+                        or text_matches_concept_anchor(
+                            draft.name,
+                            scope.explicit_scope_anchors[anchor_index].text,
+                        )
+                    )
+                    for anchor_index in draft.scope_anchor_indexes
+                )
+            ):
+                raise LearningGenerationError(
+                    "learning_knowledge",
+                    f"knowledge[{index}] required node has no explicit scope anchor",
+                )
+            cited_concept_indexes = (
+                set(draft.scope_anchor_indexes) & concept_anchor_indexes
+                if draft.importance == "required"
+                else set()
+            )
+            duplicate_concept_indexes = (
+                cited_concept_indexes & used_required_concept_indexes
+            )
+            if duplicate_concept_indexes:
+                raise LearningGenerationError(
+                    "learning_knowledge",
+                    f"knowledge[{index}] duplicates a required scope anchor; "
+                    "consolidate details into one required node per concept anchor",
+                )
+            used_required_concept_indexes.update(cited_concept_indexes)
             referenced_capabilities = [
                 capability_graph.capabilities[
                     require_index(
@@ -408,9 +505,10 @@ class KnowledgeGenerator:
                     for outcome_ref in capability.outcome_refs
                 )
             )
+            node_id = generated_id("knowledge", graph_id, index, draft.name)
             nodes.append(
                 KnowledgeNode(
-                    id=generated_id("knowledge", graph_id, index, draft.name),
+                    id=node_id,
                     name=draft.name,
                     explanation=draft.explanation,
                     whyRequired=draft.why_required,
@@ -418,6 +516,22 @@ class KnowledgeGenerator:
                     outcomeRefs=outcome_refs,
                     importance=draft.importance,
                     masteryIndicators=draft.mastery_indicators,
+                    scopeAnchorRefs=[
+                        scope.explicit_scope_anchors[
+                            require_index(
+                                anchor_index,
+                                len(scope.explicit_scope_anchors),
+                                stage="learning_knowledge",
+                                field=f"knowledge[{index}].scopeAnchorIndexes",
+                            )
+                        ].id
+                        for anchor_index in draft.scope_anchor_indexes
+                    ],
+                    coverageRequirements=self._coverage_requirements(
+                        node_id,
+                        draft,
+                        enabled=bool(scope.explicit_scope_anchors),
+                    ),
                 )
             )
 
@@ -460,12 +574,21 @@ class KnowledgeGenerator:
         return {
             "scope": {
                 "userGoal": scope.user_goal,
-                "targetResult": scope.target_result,
+                "targetResult": (
+                    scope.target_result
+                    if scope.target_result_status == "explicit"
+                    else None
+                ),
+                "targetResultStatus": scope.target_result_status,
                 "currentLevel": scope.current_level.model_dump(by_alias=True),
                 "assumptions": [
                     item.model_dump(by_alias=True) for item in scope.assumptions
                 ],
             },
+            "scopeAnchors": [
+                {"index": index, "kind": item.kind, "text": item.text}
+                for index, item in enumerate(scope.explicit_scope_anchors)
+            ],
             "outcomes": [
                 {
                     "statement": outcome.statement,
@@ -531,6 +654,26 @@ class KnowledgeGenerator:
         traces.append(trace)
         logger.info("knowledge_model_call %s", trace)
         return response
+
+    @staticmethod
+    def _coverage_requirements(
+        knowledge_id: str,
+        draft: KnowledgeDraft,
+        *,
+        enabled: bool,
+    ) -> list[KnowledgeCoverageRequirement]:
+        if not enabled:
+            return []
+        statement = next(
+            (item.strip() for item in draft.coverage_requirements if item.strip()),
+            draft.mastery_indicators[0].strip(),
+        )
+        return [
+            KnowledgeCoverageRequirement(
+                id=generated_id("coverage-requirement", knowledge_id, 0, statement),
+                statement=statement,
+            )
+        ]
 
     @staticmethod
     def _is_contract_failure(exc: Exception) -> bool:

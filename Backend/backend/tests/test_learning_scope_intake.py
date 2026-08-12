@@ -338,8 +338,8 @@ def test_after_two_question_batches_the_system_does_not_ask_again(intake_api) ->
     assert second["review"]["recommendedGaps"]
     assert third["scope"]["version"] == 3
     assert third["review"]["recommendedGaps"] == []
-    assert third["review"]["autoContinueReason"] == "recommendation_round_limit_reached"
-    assert third["runId"] == created["intakeId"]
+    assert third["review"]["autoContinueReason"] == "high_impact_gaps_remain"
+    assert third["runId"] is None
 
 
 def test_model_examples_and_assumptions_never_become_user_facts(intake_api) -> None:
@@ -456,7 +456,7 @@ def test_continue_preserves_the_typed_video_on_the_runtime_scope(intake_api) -> 
     assert continued["scope"]["resourcePreference"]["userSuppliedUrls"] == [supplied]
     terminal = _wait_for_terminal(client, continued["runId"])
     assert terminal["status"] == "failed"
-    assert terminal["error"]["stage"] == "evidence_generating"
+    assert terminal["error"]["stage"] == "evidence_generation"
     versions = store.list_versions(
         created["intakeId"],
         "learning_scope",

@@ -16,6 +16,7 @@ from ..contracts import (
     LearningQualityReport,
     LearningScope,
 )
+from ..scope_anchor_semantics import text_matches_concept_anchor
 from ..selection_semantics import range_union_duration_seconds
 
 
@@ -101,6 +102,7 @@ class LearningArtifactValidator:
 
         outcome_ids = {item.id for item in graph.outcomes}
         capability_ids = {item.id for item in graph.capabilities}
+        scope_anchor_ids = self._required_scope_anchor_ids(scope)
         for capability in graph.capabilities:
             missing = set(capability.outcome_refs) - outcome_ids
             if missing:
@@ -109,6 +111,35 @@ class LearningArtifactValidator:
                     f"capabilityGraph.capabilities.{capability.id}.outcomeRefs",
                     f"unknown outcome refs: {sorted(missing)}",
                 )
+            if (
+                scope_anchor_ids
+                and capability.importance == "required"
+                and not set(capability.scope_anchor_refs) & scope_anchor_ids
+            ):
+                self._fail(
+                    "required_scope_anchor",
+                    f"capabilityGraph.capabilities.{capability.id}.scopeAnchorRefs",
+                    "required capability must reference a code-owned explicit scope anchor",
+                )
+            self._assert_required_concept_text(
+                scope,
+                capability.importance,
+                capability.scope_anchor_refs,
+                capability.name,
+                f"capabilityGraph.capabilities.{capability.id}.scopeAnchorRefs",
+            )
+        self._assert_unique_required_concept_anchors(
+            scope,
+            (
+                (
+                    capability.id,
+                    capability.importance,
+                    capability.scope_anchor_refs,
+                    f"capabilityGraph.capabilities.{capability.id}.scopeAnchorRefs",
+                )
+                for capability in graph.capabilities
+            ),
+        )
 
         for outcome in graph.outcomes:
             if outcome.importance != "required":
@@ -154,6 +185,7 @@ class LearningArtifactValidator:
             )
         self._assert_unique((item.id for item in outcomes), "outcome_id", "learningOutcomes")
         allowed_scope_refs = {scope.artifact_id, *scope.source_refs}
+        scope_anchor_ids = self._required_scope_anchor_ids(scope)
         for outcome in outcomes:
             if not set(outcome.source_goal_refs) & allowed_scope_refs:
                 self._fail(
@@ -161,6 +193,35 @@ class LearningArtifactValidator:
                     f"learningOutcomes.{outcome.id}.sourceGoalRefs",
                     "outcome does not reference the current LearningScope",
                 )
+            if (
+                scope_anchor_ids
+                and outcome.importance == "required"
+                and not set(outcome.scope_anchor_refs) & scope_anchor_ids
+            ):
+                self._fail(
+                    "required_scope_anchor",
+                    f"learningOutcomes.{outcome.id}.scopeAnchorRefs",
+                    "required outcome must reference a code-owned explicit scope anchor",
+                )
+            self._assert_required_concept_text(
+                scope,
+                outcome.importance,
+                outcome.scope_anchor_refs,
+                outcome.statement,
+                f"learningOutcomes.{outcome.id}.scopeAnchorRefs",
+            )
+        self._assert_unique_required_concept_anchors(
+            scope,
+            (
+                (
+                    outcome.id,
+                    outcome.importance,
+                    outcome.scope_anchor_refs,
+                    f"learningOutcomes.{outcome.id}.scopeAnchorRefs",
+                )
+                for outcome in outcomes
+            ),
+        )
 
     def validate_knowledge_graph(
         self,
@@ -181,6 +242,7 @@ class LearningArtifactValidator:
         outcome_ids = {item.id for item in capability_graph.outcomes}
         knowledge_ids = {item.id for item in graph.nodes}
         knowledge_by_id = {item.id: item for item in graph.nodes}
+        scope_anchor_ids = self._required_scope_anchor_ids(scope)
         normalized_names: dict[str, str] = {}
         for node in graph.nodes:
             normalized_name = re.sub(
@@ -219,6 +281,41 @@ class LearningArtifactValidator:
                     f"knowledgeGraph.nodes.{node.id}",
                     "required knowledge has no capability/outcome source",
                 )
+            if (
+                scope_anchor_ids
+                and node.importance == "required"
+                and not set(node.scope_anchor_refs) & scope_anchor_ids
+            ):
+                self._fail(
+                    "required_scope_anchor",
+                    f"knowledgeGraph.nodes.{node.id}.scopeAnchorRefs",
+                    "required knowledge must reference a code-owned explicit scope anchor",
+                )
+            self._assert_required_concept_text(
+                scope,
+                node.importance,
+                node.scope_anchor_refs,
+                node.name,
+                f"knowledgeGraph.nodes.{node.id}.scopeAnchorRefs",
+            )
+            if node.coverage_requirements:
+                self._assert_unique(
+                    (item.id for item in node.coverage_requirements),
+                    "coverage_requirement_id",
+                    f"knowledgeGraph.nodes.{node.id}.coverageRequirements",
+                )
+        self._assert_unique_required_concept_anchors(
+            scope,
+            (
+                (
+                    node.id,
+                    node.importance,
+                    node.scope_anchor_refs,
+                    f"knowledgeGraph.nodes.{node.id}.scopeAnchorRefs",
+                )
+                for node in graph.nodes
+            ),
+        )
 
         required_capabilities = {
             item.id
@@ -318,7 +415,8 @@ class LearningArtifactValidator:
         resources = {item.id: item for item in graph.resources}
         segments = {item.id: item for item in graph.segments}
         evidence = {item.id: item for item in graph.evidence}
-        knowledge_ids = {item.id for item in knowledge_graph.nodes}
+        knowledge = {item.id: item for item in knowledge_graph.nodes}
+        knowledge_ids = set(knowledge)
 
         for segment in graph.segments:
             resource = resources.get(segment.resource_id)
@@ -404,6 +502,28 @@ class LearningArtifactValidator:
                     f"evidenceGraph.coverageEdges.{edge.id}.knowledgeId",
                     "coverage edge references missing knowledge",
                 )
+            requirement_ids = {
+                item.id for item in knowledge[edge.knowledge_id].coverage_requirements
+            }
+            supported = set(edge.supported_requirement_refs)
+            if len(supported) != len(edge.supported_requirement_refs) or not supported <= requirement_ids:
+                self._fail(
+                    "coverage_requirement_reference",
+                    f"evidenceGraph.coverageEdges.{edge.id}.supportedRequirementRefs",
+                    "coverage must reference unique requirements owned by its knowledge node",
+                )
+            if requirement_ids:
+                expected_strength = (
+                    "full"
+                    if supported == requirement_ids
+                    else "partial" if supported else "supplementary"
+                )
+                if edge.coverage_strength != expected_strength:
+                    self._fail(
+                        "coverage_requirement_strength",
+                        f"evidenceGraph.coverageEdges.{edge.id}.coverageStrength",
+                        "coverage strength must be computed from supported requirements",
+                    )
             if segment is None:
                 self._fail(
                     "coverage_segment_reference",
@@ -810,6 +930,79 @@ class LearningArtifactValidator:
                 "learningQualityReport.remainingGaps",
                 "quality remaining gaps must exactly project ContentSelection coverage gaps",
             )
+
+    def _scope_anchor_ids(self, scope: LearningScope) -> set[str]:
+        self._assert_unique(
+            (item.id for item in scope.explicit_scope_anchors),
+            "scope_anchor_id",
+            "learningScope.explicitScopeAnchors",
+        )
+        source_refs = set(scope.source_refs)
+        for anchor in scope.explicit_scope_anchors:
+            if anchor.source_ref not in source_refs:
+                self._fail(
+                    "scope_anchor_source",
+                    f"learningScope.explicitScopeAnchors.{anchor.id}.sourceRef",
+                    "scope anchor must reference explicit user lineage in the LearningScope",
+                )
+        return {item.id for item in scope.explicit_scope_anchors}
+
+    def _required_scope_anchor_ids(self, scope: LearningScope) -> set[str]:
+        all_ids = self._scope_anchor_ids(scope)
+        concept_ids = {
+            item.id for item in scope.explicit_scope_anchors if item.kind == "concept"
+        }
+        return concept_ids or all_ids
+
+    def _assert_required_concept_text(
+        self,
+        scope: LearningScope,
+        importance: str,
+        anchor_refs: list[str],
+        semantic_text: str,
+        field_path: str,
+    ) -> None:
+        concept_by_id = {
+            item.id: item.text
+            for item in scope.explicit_scope_anchors
+            if item.kind == "concept"
+        }
+        if importance != "required" or not concept_by_id:
+            return
+        if not any(
+            reference in concept_by_id
+            and text_matches_concept_anchor(semantic_text, concept_by_id[reference])
+            for reference in anchor_refs
+        ):
+            self._fail(
+                "required_scope_anchor_semantics",
+                field_path,
+                "required content must be directly about a cited explicit concept anchor",
+            )
+
+    def _assert_unique_required_concept_anchors(
+        self,
+        scope: LearningScope,
+        items,
+    ) -> None:
+        concept_ids = {
+            item.id for item in scope.explicit_scope_anchors if item.kind == "concept"
+        }
+        if not concept_ids:
+            return
+        owner_by_anchor: dict[str, str] = {}
+        for item_id, importance, anchor_refs, field_path in items:
+            if importance != "required":
+                continue
+            for anchor_ref in set(anchor_refs) & concept_ids:
+                previous_owner = owner_by_anchor.get(anchor_ref)
+                if previous_owner is not None and previous_owner != item_id:
+                    self._fail(
+                        "required_scope_anchor_cardinality",
+                        field_path,
+                        "one explicit concept anchor may support at most one required item",
+                    )
+                owner_by_anchor[anchor_ref] = item_id
 
     @staticmethod
     def _assert_ref(

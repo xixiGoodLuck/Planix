@@ -8,13 +8,31 @@ import type {
 import { createLearningStore, type LearningApiPort } from './learningStore';
 
 const runningState: LearningRunState = {
-  status: 'running', current_stage: 'knowledge_generating', completed_stages: ['understanding'], error: null
+  status: 'running', current_stage: 'knowledge_generation', completed_stages: ['scope'], error: null
 };
 
 const completedState: LearningRunState = {
   status: 'completed', current_stage: 'completed',
-  completed_stages: ['understanding', 'knowledge_generating', 'evidence_generating', 'content_selecting', 'quality_checking'],
+  completed_stages: ['scope', 'knowledge_generation', 'evidence_generation', 'coverage_analysis', 'gap_completion', 'selection', 'quality'],
   error: null
+};
+
+const waitingState: LearningRunState = {
+  status: 'waiting_evidence',
+  current_stage: 'waiting_evidence',
+  completed_stages: ['scope', 'knowledge_generation', 'evidence_generation', 'coverage_analysis', 'gap_completion'],
+  error: null,
+  intervention: {
+    kind: 'additional_evidence_required',
+    requiredGaps: [{
+      knowledgeId: 'knowledge-database', knowledgeName: 'Database persistence',
+      gapType: 'missing_knowledge', coverageStrength: 'MISSING',
+      missingOrPartialReason: 'No verified transcript covers persistence.'
+    }],
+    searchedResources: ['database persistence'],
+    transcriptUnavailableResources: ['video-without-transcript'],
+    verifiedResources: [], verifiedSegments: [], knowledgeCoverage: [], canResume: true
+  }
 };
 
 const transcriptSummary = {
@@ -115,6 +133,7 @@ function fakeApi() {
       handlers = nextHandlers;
       return vi.fn();
     }),
+    resumeEvidence: vi.fn().mockImplementation(async () => runStatus),
     runtimeUnavailable: vi.fn().mockReturnValue(false),
     backendUnavailable: vi.fn().mockReturnValue(false)
   };
@@ -191,7 +210,7 @@ describe('Progressive Learning Store', () => {
     await store.actions.startIntake('I want to learn FastAPI', 'en-US');
     await store.actions.continueWithCurrentScope();
     fake.emit({
-      event_type: 'stage_completed', stage: 'knowledge_generating', status: 'completed',
+      event_type: 'stage_completed', stage: 'knowledge_generation', status: 'completed',
       message: 'done', timestamp: '2026-08-12T08:00:00Z'
     });
     fake.setStatus(completedState);
@@ -204,6 +223,36 @@ describe('Progressive Learning Store', () => {
     expect(store.getState().status).toBe('completed');
     expect(store.getState().qualityReport?.passed).toBe(true);
     expect(store.getState().evidenceGraph?.segments[0].startSeconds).toBe(60);
+  });
+
+  it('keeps waiting evidence recoverable and resumes the same SSE cursor', async () => {
+    const fake = fakeApi();
+    const store = createLearningStore(fake.api);
+    await store.actions.startIntake('I want to learn FastAPI', 'en-US');
+    await store.actions.continueWithCurrentScope();
+    fake.setStatus(waitingState);
+    fake.emit({
+      event_type: 'session_waiting_evidence', stage: 'waiting_evidence', status: 'waiting_evidence',
+      message: 'more evidence required', timestamp: '2026-08-12T08:00:01Z'
+    });
+    await vi.waitFor(() => expect(store.getState().intervention?.requiredGaps).toHaveLength(1));
+
+    expect(store.getState().status).toBe('waiting_evidence');
+    expect(store.getState().failureKind).toBeNull();
+    expect(await store.actions.resumeEvidence()).toBe(true);
+    expect(fake.api.resumeEvidence).toHaveBeenCalledWith('learning-intake-1');
+    expect(vi.mocked(fake.api.streamEvents).mock.calls[1][2]).toBe(1);
+    expect(store.getState()).toMatchObject({
+      runId: 'learning-intake-1', status: 'running', currentStage: 'evidence_generation',
+      intervention: null
+    });
+
+    fake.setStatus(completedState);
+    fake.emit({
+      event_type: 'session_completed', stage: 'completed', status: 'completed',
+      message: 'complete', timestamp: '2026-08-12T08:00:02Z'
+    });
+    await vi.waitFor(() => expect(store.getState().status).toBe('completed'));
   });
 
   it('keeps original and supplement text after scope analysis failures', async () => {
@@ -233,8 +282,8 @@ describe('Progressive Learning Store', () => {
     await store.actions.startIntake('I want to learn FastAPI', 'en-US');
     await store.actions.continueWithCurrentScope();
     fake.setStatus({
-      status: 'failed', current_stage: 'failed', completed_stages: ['understanding'],
-      error: { stage: 'evidence_generating', error_type: 'EvidenceUnavailable', message: 'internal detail', validator_rule: '', field_path: '' }
+      status: 'failed', current_stage: 'failed', completed_stages: ['scope'],
+      error: { stage: 'evidence_generation', error_type: 'EvidenceUnavailable', message: 'internal detail', validator_rule: '', field_path: '' }
     });
     fake.emit({
       event_type: 'session_failed', stage: 'failed', status: 'failed',

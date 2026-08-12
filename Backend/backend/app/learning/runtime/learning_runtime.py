@@ -8,10 +8,21 @@ import json
 from typing import cast
 from uuid import uuid4
 
-from ..contracts import LearningArtifact, LearningArtifactRef, LearningArtifactType, LearningScope
+from ..contracts import (
+    CapabilityGraph,
+    EvidenceGraph,
+    EvidenceInterventionReport,
+    KnowledgeGraph,
+    LearningArtifact,
+    LearningArtifactRef,
+    LearningArtifactType,
+    LearningScope,
+)
 from ..services.learning_pipeline import (
     LearningPipeline,
     LearningPipelineError,
+    LearningPipelineResult,
+    LearningPipelineWaitingEvidenceResult,
     PipelineProgressStatus,
 )
 from .artifact_store import ArtifactStore, CheckpointStore, InMemoryArtifactStore
@@ -19,6 +30,7 @@ from .contracts import (
     LearningProgressEvent,
     LearningRunCheckpoint,
     LearningRunResult,
+    LearningWaitingEvidenceResult,
     LearningSessionError,
     LearningSessionStage,
     LearningSessionState,
@@ -40,10 +52,12 @@ class LearningRuntime:
     """Runtime boundary around LearningPipeline; it owns no generation logic."""
 
     _PIPELINE_STAGES = {
-        "knowledge_generating",
-        "evidence_generating",
-        "content_selecting",
-        "quality_checking",
+        "knowledge_generation",
+        "evidence_generation",
+        "coverage_analysis",
+        "gap_completion",
+        "selection",
+        "quality",
     }
 
     def __init__(
@@ -87,7 +101,7 @@ class LearningRuntime:
             state,
             LearningProgressEvent(
                 eventType="session_created",
-                stage="created",
+                stage="scope",
                 status="created",
                 message="Learning session created.",
             ),
@@ -177,7 +191,7 @@ class LearningRuntime:
         scope: LearningScope,
         *,
         session_id: str | None = None,
-    ) -> LearningRunResult:
+    ) -> LearningRunResult | LearningWaitingEvidenceResult:
         if session_id is None:
             state = self._sessions[self.create_session().session_id]
         elif session_id not in self._sessions:
@@ -197,9 +211,9 @@ class LearningRuntime:
         artifacts = self._artifact_refs[state.session_id]
         self._run_fingerprints[state.session_id] = self._scope_fingerprint(scope)
         try:
-            self._start_stage(state, "understanding")
+            self._start_stage(state, "scope")
             self._save_artifact(state, scope, artifacts)
-            self._complete_stage(state, "understanding")
+            self._complete_stage(state, "scope")
 
             pipeline_result = self.pipeline.run(
                 scope,
@@ -211,32 +225,9 @@ class LearningRuntime:
                     artifact,
                 ),
             )
-            if not pipeline_result.quality_report.passed:
-                raise LearningPipelineError(
-                    stage="learning_quality",
-                    artifact_type="learning_quality_report",
-                    validator_rule="quality_gate",
-                    field_path="learningQualityReport",
-                    message="Learning quality gate failed",
-                )
-            state.current_stage = "completed"
-            state.status = "completed"
-            state.error = None
-            self._emit(
-                state,
-                LearningProgressEvent(
-                    eventType="session_completed",
-                    stage="completed",
-                    status="completed",
-                    message="Learning pipeline completed.",
-                ),
-            )
-            return LearningRunResult(
-                session=state.model_copy(deep=True),
-                artifacts=dict(artifacts),
-                finalPlan=pipeline_result.learning_content_plan,
-                qualityReport=pipeline_result.quality_report,
-            )
+            if isinstance(pipeline_result, LearningPipelineWaitingEvidenceResult):
+                return self._mark_waiting(state, artifacts, pipeline_result)
+            return self._mark_completed(state, artifacts, pipeline_result)
         except Exception as exc:
             failed_stage = state.current_stage
             error = LearningSessionError(
@@ -259,6 +250,146 @@ class LearningRuntime:
                 ),
             )
             raise LearningRuntimeError(state.model_copy(deep=True)) from exc
+
+    def resume_evidence(
+        self,
+        session_id: str,
+    ) -> LearningRunResult | LearningWaitingEvidenceResult:
+        state = self.get_session(session_id)
+        if state is None:
+            raise KeyError(session_id)
+        if state.status != "waiting_evidence":
+            raise ValueError("evidence resume requires waiting_evidence status")
+        internal = self._sessions[session_id]
+        artifacts = self._artifact_refs[session_id]
+        scope = self.artifact_store.get_latest_artifact(session_id, "learning_scope")
+        capability = self.artifact_store.get_latest_artifact(
+            session_id,
+            "capability_graph",
+        )
+        knowledge = self.artifact_store.get_latest_artifact(
+            session_id,
+            "knowledge_graph",
+        )
+        evidence = self.artifact_store.get_latest_artifact(
+            session_id,
+            "evidence_graph",
+        )
+        if not isinstance(scope, LearningScope):
+            raise ValueError("evidence resume is missing the validated LearningScope")
+        if not isinstance(capability, CapabilityGraph):
+            raise ValueError("evidence resume is missing the validated CapabilityGraph")
+        if not isinstance(knowledge, KnowledgeGraph):
+            raise ValueError("evidence resume is missing the validated KnowledgeGraph")
+        if evidence is not None and not isinstance(evidence, EvidenceGraph):
+            raise ValueError("evidence resume loaded an invalid EvidenceGraph")
+        internal.error = None
+        try:
+            outcome = self.pipeline.resume_evidence(
+                scope,
+                capability,
+                knowledge,
+                evidence,
+                progress_callback=lambda stage, status, artifact: self._on_pipeline_progress(
+                    internal,
+                    artifacts,
+                    stage,
+                    status,
+                    artifact,
+                ),
+            )
+            if isinstance(outcome, LearningPipelineWaitingEvidenceResult):
+                return self._mark_waiting(internal, artifacts, outcome)
+            return self._mark_completed(internal, artifacts, outcome)
+        except Exception as exc:
+            failed_stage = internal.current_stage
+            internal.current_stage = "failed"
+            internal.status = "failed"
+            internal.error = LearningSessionError(
+                stage=failed_stage,
+                errorType=type(exc).__name__,
+                message=str(exc) or type(exc).__name__,
+                validatorRule=str(getattr(exc, "validator_rule", "")),
+                fieldPath=str(getattr(exc, "field_path", "")),
+            )
+            self._emit(
+                internal,
+                LearningProgressEvent(
+                    eventType="session_failed",
+                    stage="failed",
+                    status="failed",
+                    message=f"Learning evidence resume failed during {failed_stage}.",
+                ),
+            )
+            raise LearningRuntimeError(internal.model_copy(deep=True)) from exc
+
+    def _mark_waiting(
+        self,
+        state: LearningSessionState,
+        artifacts: dict[LearningArtifactType, LearningArtifactRef],
+        outcome: LearningPipelineWaitingEvidenceResult,
+    ) -> LearningWaitingEvidenceResult:
+        state.current_stage = "waiting_evidence"
+        state.status = "waiting_evidence"
+        state.error = None
+        self._emit(
+            state,
+            LearningProgressEvent(
+                eventType="session_waiting_evidence",
+                stage="waiting_evidence",
+                status="waiting_evidence",
+                message="Additional verified evidence is required.",
+            ),
+        )
+        persisted_intervention = self.artifact_store.get_latest_artifact(
+            state.session_id,
+            "evidence_intervention_report",
+            outcome.intervention_report.artifact_id,
+        )
+        intervention = (
+            persisted_intervention
+            if isinstance(persisted_intervention, EvidenceInterventionReport)
+            else outcome.intervention_report
+        )
+        return LearningWaitingEvidenceResult(
+            session=state.model_copy(deep=True),
+            artifacts=dict(artifacts),
+            interventionReport=intervention,
+        )
+
+    def _mark_completed(
+        self,
+        state: LearningSessionState,
+        artifacts: dict[LearningArtifactType, LearningArtifactRef],
+        outcome: LearningPipelineResult,
+    ) -> LearningRunResult:
+        if not outcome.quality_report.passed:
+            raise LearningPipelineError(
+                stage="learning_quality",
+                artifact_type="learning_quality_report",
+                validator_rule="quality_gate",
+                field_path="learningQualityReport",
+                message="Learning quality gate failed",
+            )
+        artifacts.pop("evidence_intervention_report", None)
+        state.current_stage = "completed"
+        state.status = "completed"
+        state.error = None
+        self._emit(
+            state,
+            LearningProgressEvent(
+                eventType="session_completed",
+                stage="completed",
+                status="completed",
+                message="Learning pipeline completed.",
+            ),
+        )
+        return LearningRunResult(
+            session=state.model_copy(deep=True),
+            artifacts=dict(artifacts),
+            finalPlan=outcome.learning_content_plan,
+            qualityReport=outcome.quality_report,
+        )
 
     def _on_pipeline_progress(
         self,
@@ -319,6 +450,21 @@ class LearningRuntime:
         artifact: LearningArtifact,
         artifacts: dict[LearningArtifactType, LearningArtifactRef],
     ) -> None:
+        artifact_type = (
+            "evidence_intervention_report"
+            if isinstance(artifact, EvidenceInterventionReport)
+            else None
+        )
+        if artifact_type is not None:
+            latest = self.artifact_store.get_latest_version(
+                state.session_id,
+                artifact_type,
+                artifact.artifact_id,
+            )
+            if latest is not None and artifact.version <= latest.version:
+                artifact = artifact.model_copy(
+                    update={"version": latest.version + 1},
+                )
         atomic = getattr(self.artifact_store, "atomic", None)
         boundary = atomic() if callable(atomic) else nullcontext()
         with boundary:

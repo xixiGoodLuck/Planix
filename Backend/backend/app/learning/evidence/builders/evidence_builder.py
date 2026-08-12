@@ -14,7 +14,7 @@ from ...contracts import (
     SegmentEvidence,
     VideoResource,
 )
-from ...generators import LearningSemanticModel, RouterLearningModel
+from ...generators import LearningModelOutputError, LearningSemanticModel, RouterLearningModel
 from ...generators.base import artifact_ref, generated_id, require_index
 from ..providers import ProviderSegmentSource, ProviderVideoDocument
 
@@ -24,7 +24,9 @@ You map provider-supplied video content evidence to an existing KnowledgeGraph. 
 URL, video duration, fingerprint, source range, and video time range. You may only summarize each supplied segment,
 name its topics, and describe evidence-backed coverage using the supplied zero-based indexes. Never invent or return
 a URL, duration, start time, end time, timestamp, source range, external id, fingerprint, artifact id, or version.
-Coverage must cite verified evidence indexes belonging to the same segment. Return JSON only and do not reveal hidden
+Coverage must cite verified evidence indexes belonging to the same segment. When supplied coverage requirements are
+directly supported, cite their zero-based supportedRequirementIndexes; do not infer support from confidence alone.
+Return JSON only and do not reveal hidden
 reasoning. Map by meaning rather than exact wording. When verified transcript evidence explicitly states every side
 of a distinction or comparison knowledge node, that is direct full coverage of the distinction; do not omit it or
 downgrade it merely because the transcript phrases the compared concepts in separate adjacent sentences.
@@ -52,6 +54,7 @@ class CoverageDraft(LearningContract):
         "review",
     ]
     coverage_strength: Literal["full", "partial", "supplementary"]
+    supported_requirement_indexes: list[NonNegativeIndex] = Field(default_factory=list)
     confidence: float = Field(ge=0, le=1)
     reason: str = Field(min_length=1)
 
@@ -89,11 +92,7 @@ class EvidenceBuilder:
         evidence = [item for segment in prepared_segments for item in segment.evidence]
         evidence_index = {item.id: index for index, item in enumerate(evidence)}
 
-        response = self.model.complete(
-            stage="learning_evidence_semantics",
-            feature="learning_evidence_generation",
-            system=EVIDENCE_SYSTEM,
-            payload={
+        payload = {
                 "knowledge": [
                     {
                         "index": index,
@@ -101,6 +100,12 @@ class EvidenceBuilder:
                         "explanation": node.explanation,
                         "whyRequired": node.why_required,
                         "importance": node.importance,
+                        "coverageRequirements": [
+                            {"index": requirement_index, "statement": requirement.statement}
+                            for requirement_index, requirement in enumerate(
+                                node.coverage_requirements
+                            )
+                        ],
                     }
                     for index, node in enumerate(knowledge_graph.nodes)
                 ],
@@ -125,10 +130,30 @@ class EvidenceBuilder:
                     }
                     for index, segment in enumerate(prepared_segments)
                 ],
-            },
-            response_type=EvidenceSemanticDraft,
-            max_tokens=3800,
-        )
+            }
+        try:
+            response = self.model.complete(
+                stage="learning_evidence_semantics",
+                feature="learning_evidence_generation",
+                system=EVIDENCE_SYSTEM,
+                payload=payload,
+                response_type=EvidenceSemanticDraft,
+                max_tokens=3800,
+            )
+        except LearningModelOutputError:
+            response = self.model.complete(
+                stage="learning_evidence_semantics",
+                feature="learning_evidence_contract_repair",
+                system=(
+                    EVIDENCE_SYSTEM
+                    + "\nThis is the single bounded contract regeneration. Every coverage item must cite "
+                    "at least one supplied evidence index from its own segment. Omit unsupported coverage "
+                    "items instead of returning an empty evidenceIndexes list."
+                ),
+                payload=payload,
+                response_type=EvidenceSemanticDraft,
+                max_tokens=3800,
+            )
         annotations = self._annotations_by_segment(
             response.value,
             len(prepared_segments),
@@ -328,6 +353,32 @@ class EvidenceBuilder:
                 for evidence_index in item.evidence_indexes
             ]
             knowledge_id = knowledge_graph.nodes[knowledge_index].id
+            knowledge_node = knowledge_graph.nodes[knowledge_index]
+            supported_requirement_refs = list(
+                dict.fromkeys(
+                    knowledge_node.coverage_requirements[
+                        require_index(
+                            requirement_index,
+                            len(knowledge_node.coverage_requirements),
+                            stage="learning_evidence_semantics",
+                            field=f"coverage[{index}].supportedRequirementIndexes",
+                        )
+                    ].id
+                    for requirement_index in item.supported_requirement_indexes
+                )
+            )
+            if knowledge_node.coverage_requirements:
+                requirement_refs = {
+                    requirement.id for requirement in knowledge_node.coverage_requirements
+                }
+                supported = set(supported_requirement_refs)
+                coverage_strength = (
+                    "full"
+                    if supported == requirement_refs
+                    else "partial" if supported else "supplementary"
+                )
+            else:
+                coverage_strength = item.coverage_strength
             segment_id = segments[segment_index].id
             coverage.append(
                 CoverageEdge(
@@ -341,13 +392,14 @@ class EvidenceBuilder:
                     segmentId=segment_id,
                     evidenceRefs=list(dict.fromkeys(evidence_refs)),
                     coverageType=item.coverage_type,
-                    coverageStrength=item.coverage_strength,
+                    coverageStrength=coverage_strength,
                     confidence=item.confidence,
                     reason=EvidenceBuilder._safe_generated_text(
                         item.reason,
                         raw_transcript,
                         "Coverage is supported by verified transcript evidence.",
                     ),
+                    supportedRequirementRefs=supported_requirement_refs,
                 )
             )
         return coverage
