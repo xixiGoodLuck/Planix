@@ -3,10 +3,11 @@ import type { I18nNamespace } from './index';
 export const enUS: I18nNamespace = {
   common: { appName: 'Planix Learning', unknown: 'Unknown' },
   shell: {
-    menu: 'Menu', learning: 'Learning', settings: 'Settings', language: 'Language',
+    menu: 'Menu', learning: 'Learning', learningNav: 'Planix Learning', settings: 'Settings', language: 'Language', languageBilingual: 'Language / 语言',
     languageZh: 'Chinese', languageEn: 'English', productTagline: 'Technical learning content agent', navigation: 'Navigation'
   },
   learning: {
+    landingTitle: 'Planix', landingSubtitle: 'Describe what you want to learn. Planix will understand your goal, build the knowledge route, and select the learning content.', landingComposer: 'Learning goal composer', landingPlaceholder: 'Describe the technology, goal, or problem you want to learn...',
     status_waiting_evidence: 'Needs evidence',
     event_session_waiting_evidence: 'Waiting for additional evidence',
     interventionEyebrow: 'Recoverable evidence pause',
@@ -31,7 +32,7 @@ export const enUS: I18nNamespace = {
     activeSubtitleSource: 'Active subtitle source', noSubtitleSelected: 'No transcript selected; you can still bind only the video.', transcriptRegister: 'Register and verify transcript', transcriptRegistering: 'Validating and registering…', videoOnly: 'Use this video without a transcript', transcriptNotProvided: 'Video specified; no verified transcript is available.', transcriptVerified: 'Transcript verified', transcriptRevoked: 'The video remains specified, but its transcript evidence was revoked.', transcriptRevoke: 'Revoke transcript',
     subtitleSourceType: 'Subtitle source type', subtitleSegments: 'Segment count', subtitleStatus: 'Transcript status', subtitleRegisteredAt: 'Registered at',
     resourceError_empty_file: 'The subtitle file or pasted text cannot be empty.', resourceError_unsupported_file: 'Only .srt and .vtt files are supported.', resourceError_file_too_large: 'The subtitle file exceeds the 2 MB hard limit.', resourceError_invalid_encoding: 'Subtitles must be valid UTF-8 text.', resourceError_video_invalid: 'Enter a valid Bilibili BV video URL.', resourceError_binding_failed: 'The video cannot be bound right now. Check the URL and retry.', resourceError_registration_failed: 'Transcript registration failed. The goal, URL, and current transcript input are preserved for retry.', resourceError_revoke_failed: 'The transcript cannot be revoked right now. Please retry.',
-    newRun: 'New learning goal', describeGoal: 'What do you want to master?', goal: 'Learning goal', goalPlaceholder: 'For example: learn FastAPI in 30 days and build a CRUD API',
+    newRun: 'New learning goal', startNewLearningGoal: 'New learning goal', describeGoal: 'What do you want to master?', goal: 'Learning goal', goalPlaceholder: 'For example: learn FastAPI in 30 days and build a CRUD API',
     targetResult: 'Target result', targetResultPlaceholder: 'For example: independently build a working project', currentLevel: 'Current level', currentLevelPlaceholder: 'For example: comfortable with Python basics',
     contentBudget: 'Content budget (minutes)', contentBudgetPlaceholder: 'For example: 180', constraints: 'Constraints', constraintsPlaceholder: 'Comma separated, for example: Chinese content only',
     generatePlan: 'Generate learning content plan', generating: 'Generating…', goalUnderstanding: 'Goal understanding', notSpecified: 'Not specified', minutes: 'minutes',

@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { ArrowRight, BookOpenCheck, CircleHelp, Sparkles } from 'lucide-react';
+import { ArrowRight, ArrowUp, CircleHelp, LoaderCircle, ShieldCheck, Sparkles } from 'lucide-react';
 import { LearningFailureNotice } from '../components/LearningFailureNotice';
 import { LearningEvidenceIntervention } from '../components/LearningEvidenceIntervention';
 import { LearningProgress } from '../components/LearningProgress';
@@ -7,6 +7,7 @@ import { LearningResourceInput } from '../components/LearningResourceInput';
 import { LearningResult } from '../components/LearningResult';
 import { learningStoreActions, useLearningStore } from '../stores/learningStore';
 import type { LearningScopeReview as ScopeReview } from '../types';
+import { resetCompletedLearningView } from './resetCompletedLearningView';
 
 interface LearningWorkspaceProps {
   language: 'zh-CN' | 'en-US';
@@ -35,6 +36,52 @@ function knownLabel(field: string, t: (key: string) => string) {
     user_supplied_urls: t('learning.knownUserVideos')
   };
   return labels[field] || field;
+}
+
+interface LearningLandingProps {
+  goal: string;
+  busy: boolean;
+  analysisFailed: boolean;
+  onGoalChange: (value: string) => void;
+  onSubmit: (event: FormEvent) => void;
+  t: (key: string) => string;
+}
+
+export function LearningLanding({
+  goal,
+  busy,
+  analysisFailed,
+  onGoalChange,
+  onSubmit,
+  t,
+}: LearningLandingProps) {
+  return (
+    <section className="learning-landing" aria-label={t('learning.landingTitle')}>
+      <div className="learning-landing-intro">
+        <h1>{t('learning.landingTitle')}</h1>
+        <p>{t('learning.landingSubtitle')}</p>
+      </div>
+      <form className="learning-composer learning-landing-composer" onSubmit={onSubmit} aria-label={t('learning.landingComposer')}>
+        <textarea
+          aria-label={t('learning.learningIntent')}
+          value={goal}
+          onChange={(event) => onGoalChange(event.target.value)}
+          placeholder={t('learning.landingPlaceholder')}
+          rows={4}
+          required
+        />
+        <div className="learning-composer-footer">
+          <ShieldCheck size={19} aria-hidden="true" />
+          <button className="learning-send-button" type="submit" disabled={busy || !goal.trim()} aria-label={busy ? t('learning.analyzingScope') : t('learning.analyzeGoal')}>
+            {busy ? <LoaderCircle className="learning-spinner" size={19} /> : <ArrowUp size={20} />}
+          </button>
+        </div>
+        {analysisFailed && (
+          <p className="learning-scope-error" role="alert">{t('learning.scopeAnalysisFailed')}</p>
+        )}
+      </form>
+    </section>
+  );
 }
 
 export function LearningScopeReviewPanel({
@@ -101,7 +148,7 @@ export function LearningScopeReviewPanel({
         </div>
       )}
 
-      <form className="learning-supplement-form" onSubmit={submit}>
+      <form className="learning-supplement-form learning-composer" onSubmit={submit}>
         <label>
           <span>{t('learning.supplementAllAtOnce')}</span>
           <textarea
@@ -152,47 +199,33 @@ export function LearningWorkspace({ language, t }: LearningWorkspaceProps) {
     });
   }
 
+  function startNewLearningGoal() {
+    resetCompletedLearningView(learningStoreActions.reset, setGoal);
+  }
+
+  const landingMode = !learning.intakeId;
+
+  if (landingMode) {
+    return (
+      <LearningLanding
+        goal={goal}
+        busy={busy}
+        analysisFailed={learning.scopeAnalysisFailed}
+        onGoalChange={setGoal}
+        onSubmit={submit}
+        t={t}
+      />
+    );
+  }
+
   return (
-    <section className="learning-workspace" id="learning-workspace" aria-label={t('learning.title')}>
-      <header className="learning-hero">
-        <div className="learning-hero-mark"><BookOpenCheck size={28} /></div>
-        <div>
-          <span className="learning-eyebrow">{t('learning.productName')}</span>
-          <h1>{t('learning.title')}</h1>
-          <p>{t('learning.subtitle')}</p>
-        </div>
+    <section className="learning-workspace learning-workspace-mode" id="learning-workspace" aria-label={t('learning.title')}>
+      <header className="learning-workspace-header">
+        <span className="learning-eyebrow">{t('learning.productName')}</span>
+        <h1>{learning.scope?.userGoal || learning.originalInput || t('learning.title')}</h1>
       </header>
 
-      <div className="learning-workspace-grid">
-        <form className="learning-card learning-input-card" onSubmit={submit}>
-          <div className="learning-card-heading">
-            <div>
-              <span className="learning-eyebrow">{t('learning.naturalLanguageFirst')}</span>
-              <h2>{t('learning.tellPlanix')}</h2>
-            </div>
-          </div>
-          <label>
-            <span>{t('learning.learningIntent')}</span>
-            <textarea
-              value={goal}
-              onChange={(event) => setGoal(event.target.value)}
-              placeholder={t('learning.progressiveGoalPlaceholder')}
-              rows={6}
-              required
-              disabled={Boolean(learning.intakeId)}
-            />
-          </label>
-          {!learning.intakeId && (
-            <button className="learning-primary-action" type="submit" disabled={busy || !goal.trim()}>
-              <Sparkles size={17} />
-              {busy ? t('learning.analyzingScope') : t('learning.analyzeGoal')}
-            </button>
-          )}
-          {learning.scopeAnalysisFailed && !learning.intakeId && (
-            <p className="learning-scope-error" role="alert">{t('learning.scopeAnalysisFailed')}</p>
-          )}
-        </form>
-
+      <div className="learning-workspace-flow">
         {learning.scopeReview && (
           <>
             {(learning.status !== 'waiting_evidence' || learning.scopeReviewExpanded) && (
@@ -272,6 +305,7 @@ export function LearningWorkspace({ language, t }: LearningWorkspaceProps) {
           plan={learning.plan}
           qualityReport={learning.qualityReport}
           evidenceGraph={learning.evidenceGraph}
+          onNewGoal={learning.status === 'completed' ? startNewLearningGoal : undefined}
           t={t}
         />
       )}

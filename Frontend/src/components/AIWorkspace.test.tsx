@@ -14,11 +14,20 @@ describe('AIWorkspace backend availability', () => {
   });
 
   it('starts offline with persistence actions disabled', () => {
-    const html = renderToStaticMarkup(<AIWorkspace t={(key) => key} />);
+    const html = renderToStaticMarkup(<AIWorkspace language="zh-CN" onLanguageChange={() => undefined} t={(key) => key} />);
     expect(html).toContain('settings.backendOfflineHint');
     expect(html).toContain('settings.forceNonThinkingDisabled');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>.*settings\.saveSettings/s);
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>.*settings\.testModel/s);
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>.*settings\.saveRouting/s);
+  });
+
+  it('offers the language switch in Settings with the active language exposed', () => {
+    const html = renderToStaticMarkup(<AIWorkspace language="zh-CN" onLanguageChange={() => undefined} t={(key) => key} />);
+
+    expect(html).toContain('aria-label="shell.languageBilingual"');
+    expect(html).toContain('shell.languageZh');
+    expect(html).toContain('shell.languageEn');
+    expect(html).toMatch(/class="active"[^>]*aria-pressed="true"[^>]*>\s*shell\.languageZh/);
   });
 });

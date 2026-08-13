@@ -92,10 +92,10 @@ export function LearningProgress(props: LearningProgressProps) {
 
       <ol className="learning-stage-list">
         {steps.map((step) => {
-          const isComplete = (status === 'completed' && step.key !== 'complete')
+          const isComplete = status === 'completed'
             || step.stages.some((stage) => completed.has(stage))
             || eventCompleted(step.stages, events);
-          const isActive = !isComplete && (step.stages.includes(currentStage) || (status === 'completed' && step.key === 'complete'));
+          const isActive = !isComplete && step.stages.includes(currentStage);
           return (
             <li className={isComplete ? 'complete' : isActive ? 'active' : 'pending'} key={step.key}>
               <span className="learning-stage-icon" aria-hidden="true">

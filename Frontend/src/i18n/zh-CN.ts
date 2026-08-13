@@ -3,10 +3,11 @@ import type { I18nNamespace } from './index';
 export const zhCN: I18nNamespace = {
   common: { appName: 'Planix Learning', unknown: '未知' },
   shell: {
-    menu: '菜单', learning: '学习规划', settings: '设置', language: '语言',
+    menu: '菜单', learning: '学习规划', learningNav: 'Planix Learning', settings: '设置', language: '语言', languageBilingual: '语言 / Language',
     languageZh: '中文', languageEn: 'English', productTagline: '技术学习内容规划 Agent', navigation: '导航'
   },
   learning: {
+    landingTitle: 'Planix', landingSubtitle: '描述你的学习目标，Planix 会先理解需求，再为你建立知识路线并筛选学习内容。', landingComposer: '学习目标输入', landingPlaceholder: '描述你想学习的技术、目标或想解决的问题...',
     status_waiting_evidence: '等待补充证据',
     event_session_waiting_evidence: '等待补充内容证据',
     interventionEyebrow: '可恢复的证据暂停',
@@ -31,7 +32,7 @@ export const zhCN: I18nNamespace = {
     activeSubtitleSource: '当前字幕来源', noSubtitleSelected: '尚未选择字幕；仍可只绑定视频。', transcriptRegister: '注册并验证字幕', transcriptRegistering: '正在验证并注册…', videoOnly: '只使用此视频，暂不上传字幕', transcriptNotProvided: '视频已指定，尚无已验证字幕。', transcriptVerified: '字幕已验证', transcriptRevoked: '视频仍已指定，但字幕证据已撤销。', transcriptRevoke: '撤销字幕',
     subtitleSourceType: '字幕来源类型', subtitleSegments: 'Segment 数量', subtitleStatus: '字幕状态', subtitleRegisteredAt: '注册成功时间',
     resourceError_empty_file: '字幕文件或粘贴内容不能为空。', resourceError_unsupported_file: '仅支持 .srt 或 .vtt 文件。', resourceError_file_too_large: '字幕文件超过 2 MB 硬上限。', resourceError_invalid_encoding: '字幕必须是有效的 UTF-8 文本。', resourceError_video_invalid: '请输入有效的 Bilibili BV 视频链接。', resourceError_binding_failed: '暂时无法绑定该视频，请检查链接后重试。', resourceError_registration_failed: '字幕注册失败。目标、链接和当前字幕输入已保留，可修改后重试。', resourceError_revoke_failed: '暂时无法撤销字幕，请重试。',
-    newRun: '新的学习目标', describeGoal: '你想掌握什么？', goal: '学习目标', goalPlaceholder: '例如：30 天学习 FastAPI，并完成一个 CRUD API',
+    newRun: '新的学习目标', startNewLearningGoal: '开始新的学习目标', describeGoal: '你想掌握什么？', goal: '学习目标', goalPlaceholder: '例如：30 天学习 FastAPI，并完成一个 CRUD API',
     targetResult: '期望成果', targetResultPlaceholder: '例如：能够独立完成可运行的项目', currentLevel: '当前水平', currentLevelPlaceholder: '例如：会 Python 基础',
     contentBudget: '内容预算（分钟）', contentBudgetPlaceholder: '例如：180', constraints: '约束', constraintsPlaceholder: '用逗号分隔，例如：只看中文内容',
     generatePlan: '生成学习内容计划', generating: '正在生成…', goalUnderstanding: '目标理解', notSpecified: '未指定', minutes: '分钟',

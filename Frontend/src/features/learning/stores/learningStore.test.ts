@@ -622,7 +622,7 @@ describe('Progressive Learning Store', () => {
     store.actions.reset();
 
     expect(store.getState()).toMatchObject({
-      intakeId: null, resourceStatus: 'idle', registeredTranscript: null,
+      intakeId: null, runId: null, status: 'idle', resourceStatus: 'idle', registeredTranscript: null,
       resourceDraft: { mode: 'automatic', videoUrl: '', subtitleFileName: '', inputSource: 'none' }
     });
   });

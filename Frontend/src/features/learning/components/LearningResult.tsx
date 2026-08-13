@@ -9,6 +9,7 @@ interface LearningResultProps {
   plan: LearningContentPlan;
   evidenceGraph: LearningEvidenceGraph;
   qualityReport: LearningQualityReport;
+  onNewGoal?: () => void;
   t: (key: string) => string;
 }
 
@@ -21,7 +22,7 @@ function formatSeconds(value: number) {
     : `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
-export function LearningResult({ plan, evidenceGraph, qualityReport, t }: LearningResultProps) {
+export function LearningResult({ plan, evidenceGraph, qualityReport, onNewGoal, t }: LearningResultProps) {
   const resources = new Map(evidenceGraph.resources.map((resource) => [resource.id, resource]));
   const segments = new Map(evidenceGraph.segments.map((segment) => [segment.id, segment]));
   const deferredKnowledge = new Set((plan.deferredKnowledge ?? []).map((item) => item.knowledgeId));
@@ -34,10 +35,17 @@ export function LearningResult({ plan, evidenceGraph, qualityReport, t }: Learni
           <h2>{t('learning.knowledgeRoute')}</h2>
           <p>{t('learning.resultDescription')}</p>
         </div>
-        <div className="learning-duration-total">
-          <Clock3 size={18} />
-          <span>{t('learning.totalDuration')}</span>
-          <strong>{formatSeconds(plan.totalDurationSeconds)}</strong>
+        <div className="learning-result-actions">
+          {onNewGoal && (
+            <button className="learning-new-goal-button" type="button" onClick={onNewGoal}>
+              + {t('learning.startNewLearningGoal')}
+            </button>
+          )}
+          <div className="learning-duration-total">
+            <Clock3 size={18} />
+            <span>{t('learning.totalDuration')}</span>
+            <strong>{formatSeconds(plan.totalDurationSeconds)}</strong>
+          </div>
         </div>
       </section>
 

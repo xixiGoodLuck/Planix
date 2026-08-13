@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { enUS } from '../../../i18n/en-US';
 import { LearningFailureNotice } from '../components/LearningFailureNotice';
 import { LearningResult } from '../components/LearningResult';
-import { LearningScopeReviewPanel, LearningWorkspace } from './LearningWorkspace';
+import { LearningLanding, LearningScopeReviewPanel, LearningWorkspace } from './LearningWorkspace';
+import { resetCompletedLearningView } from './resetCompletedLearningView';
 import type { LearningContentPlan, LearningEvidenceGraph, LearningQualityReport, LearningScopeReview } from '../types';
 
 const t = (key: string): string => {
@@ -50,14 +51,37 @@ const quality: LearningQualityReport = {
 };
 
 describe('Learning Workspace results', () => {
-  it('renders a natural-language-first screen without the old fixed four-field form', () => {
+  it('renders the idle landing with a centered Planix title and one composer only', () => {
     const html = renderToStaticMarkup(<LearningWorkspace language="en-US" t={t} />);
 
-    expect(html).toContain(enUS.learning.tellPlanix);
-    expect(html).toContain(enUS.learning.progressiveGoalPlaceholder);
+    expect(html).toContain(`<h1>${enUS.learning.landingTitle}</h1>`);
+    expect(html).toContain(enUS.learning.landingSubtitle);
+    expect(html).toContain(enUS.learning.landingPlaceholder);
+    expect(html.match(/<textarea/g)).toHaveLength(1);
+    expect(html).not.toContain(enUS.learning.scopeReview);
+    expect(html).not.toContain(enUS.learning.resourceSection);
+    expect(html).not.toContain(enUS.learning.progressTitle);
+    expect(html).not.toContain(enUS.learning.finalPlan);
     expect(html).not.toContain(enUS.learning.targetResultPlaceholder);
     expect(html).not.toContain(enUS.learning.currentLevelPlaceholder);
     expect(html).not.toContain('type="number"');
+  });
+
+  it('keeps the landing send action disabled until a goal exists', () => {
+    const empty = renderToStaticMarkup(
+      <LearningLanding goal="" busy={false} analysisFailed={false} onGoalChange={vi.fn()} onSubmit={vi.fn()} t={t} />
+    );
+    const ready = renderToStaticMarkup(
+      <LearningLanding goal="I want to learn FastAPI" busy={false} analysisFailed={false} onGoalChange={vi.fn()} onSubmit={vi.fn()} t={t} />
+    );
+    const analyzing = renderToStaticMarkup(
+      <LearningLanding goal="I want to learn FastAPI" busy analysisFailed={false} onGoalChange={vi.fn()} onSubmit={vi.fn()} t={t} />
+    );
+
+    expect(empty).toMatch(/<button[^>]*disabled=""/);
+    expect(ready).not.toMatch(/<button[^>]*disabled=""/);
+    expect(analyzing).toContain(enUS.learning.analyzingScope);
+    expect(analyzing).toMatch(/<button[^>]*disabled=""/);
   });
 
   it('renders known facts, multiple optional gaps, assumptions, and an always-present continue action', () => {
@@ -132,6 +156,37 @@ describe('Learning Workspace results', () => {
     expect(html).toContain('10:00');
     expect(html).toContain(enUS.learning.qualityPassed);
     expect(html).toContain(enUS.learning.quality_knowledge_coverage);
+  });
+
+  it('offers a new learning goal action for a completed result', () => {
+    const html = renderToStaticMarkup(
+      <LearningResult plan={plan} evidenceGraph={evidenceGraph} qualityReport={quality} onNewGoal={vi.fn()} t={t} />
+    );
+
+    expect(html).toContain(`+ ${enUS.learning.startNewLearningGoal}`);
+  });
+
+  it('resets completed UI state, clears the goal, and scrolls to the Landing', () => {
+    let learningStatus = 'completed';
+    let goal = 'Learn FastAPI';
+    const scrollTo = vi.fn();
+
+    resetCompletedLearningView(
+      () => { learningStatus = 'idle'; },
+      (value) => { goal = value; },
+      scrollTo,
+    );
+
+    expect(learningStatus).toBe('idle');
+    expect(goal).toBe('');
+    expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' });
+
+    const landing = renderToStaticMarkup(
+      <LearningLanding goal={goal} busy={false} analysisFailed={false} onGoalChange={vi.fn()} onSubmit={vi.fn()} t={t} />
+    );
+    expect(landing).toContain(enUS.learning.landingComposer);
+    expect(landing).toContain('<textarea');
+    expect(landing).not.toContain(enUS.learning.finalPlan);
   });
 
   it('distinguishes deferred verified knowledge from missing evidence', () => {

@@ -20,12 +20,12 @@ export function App() {
   return (
     <RivaShell
       route={route}
-      language={language}
       onRouteChange={setRoute}
-      onLanguageChange={setLanguage}
       t={t}
     >
-      {route === 'learning' ? <LearningWorkspace language={language} t={t} /> : <SettingsPage t={t} />}
+      {route === 'learning'
+        ? <LearningWorkspace language={language} t={t} />
+        : <SettingsPage language={language} onLanguageChange={setLanguage} t={t} />}
     </RivaShell>
   );
 }

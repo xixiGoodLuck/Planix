@@ -6,6 +6,7 @@ import type {
   AiProvider,
   AiSettings,
   AiSettingsInput,
+  Language,
   LearningRuntimeHealth,
   RoutingPrimaryProvider
 } from '../types';
@@ -29,7 +30,11 @@ import {
   settingsForEditor
 } from '../lib/aiSettingsDefaults';
 
-interface AIWorkspaceProps { t: (key: string) => string; }
+interface AIWorkspaceProps {
+  language: Language;
+  onLanguageChange: (language: Language) => void;
+  t: (key: string) => string;
+}
 type RoutedProvider = Exclude<AiProvider, 'mock'>;
 
 const providers: RoutedProvider[] = ['deepseek', 'kimi', 'zhipu_glm', 'openai', 'custom', 'local'];
@@ -99,7 +104,7 @@ function healthStatus(health: LearningRuntimeHealth | null, key: 'model' | 'vide
   return health.status;
 }
 
-export function AIWorkspace({ t }: AIWorkspaceProps) {
+export function AIWorkspace({ language, onLanguageChange, t }: AIWorkspaceProps) {
   const [settings, setSettings] = useState(defaultSettings);
   const [apiKey, setApiKey] = useState('');
   const [status, setStatus] = useState('');
@@ -236,7 +241,33 @@ export function AIWorkspace({ t }: AIWorkspaceProps) {
   const recommendedModels = providerModelRecommendations[settings.provider] || [];
   return (
     <section className="surface ai-panel">
-      <div className="section-head"><div><h1>{t('settings.title')}</h1><p className="section-hint">{t('settings.subtitle')}</p></div></div>
+      <div className="section-head">
+        <div>
+          <h1>{t('settings.title')}</h1>
+          <p className="section-hint">{t('settings.subtitle')}</p>
+          <div className="settings-language-row">
+            <span>{t('shell.language')}</span>
+            <div className="settings-language-switch" role="group" aria-label={t('shell.languageBilingual')}>
+              <button
+                className={language === 'zh-CN' ? 'active' : ''}
+                type="button"
+                aria-pressed={language === 'zh-CN'}
+                onClick={() => onLanguageChange('zh-CN')}
+              >
+                {t('shell.languageZh')}
+              </button>
+              <button
+                className={language === 'en-US' ? 'active' : ''}
+                type="button"
+                aria-pressed={language === 'en-US'}
+                onClick={() => onLanguageChange('en-US')}
+              >
+                {t('shell.languageEn')}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
       <div className="model-settings">
         <div className="settings-title"><span><Settings size={15} />{t('settings.aiSettings')}</span><strong>{backendVersion || t('settings.backendOffline')}</strong></div>
         {!backendOnline && <div className="settings-actions"><span>{t('settings.backendOfflineHint')}</span><button type="button" onClick={() => setReloadToken((value) => value + 1)}>{t('settings.retryBackend')}</button></div>}
