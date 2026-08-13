@@ -95,7 +95,19 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
       - uses: dtolnay/rust-toolchain@stable
+      - name: Prepare desktop web resources
+        shell: pwsh
+        run: .\scripts\build-web.ps1
+      - name: Prepare desktop backend sidecar
+        shell: pwsh
+        run: .\scripts\build-backend.ps1
       - name: Cargo check
         working-directory: apps/desktop/src-tauri
         run: cargo check --locked
